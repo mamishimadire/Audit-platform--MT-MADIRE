@@ -77,6 +77,18 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
     onChanged()
   }
 
+  const startEscalating = () => {
+    // Pre-fill from the exception itself so the common case is a single
+    // click + review, not retyping what's already on the row — both fields
+    // stay in normal editable inputs, so an auditor can still change either
+    // before submitting.
+    if (!escalating) {
+      setTitle(exception.exception_description ?? '')
+      setRiskRating(exception.severity ?? 'medium')
+    }
+    setEscalating(!escalating)
+  }
+
   const escalate = async () => {
     setIsSubmitting(true)
     setError(null)
@@ -150,7 +162,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
             <span className="text-xs font-medium text-ink-soft">✓ Finding created</span>
           ) : (
             canManage && (
-              <button onClick={() => setEscalating(!escalating)} className="text-xs font-medium text-accent-ink hover:underline">
+              <button onClick={startEscalating} className="text-xs font-medium text-accent-ink hover:underline">
                 Escalate to finding
               </button>
             )

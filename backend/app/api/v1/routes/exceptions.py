@@ -34,6 +34,13 @@ def _get_exception_with_org(db: Session, exception_id: uuid.UUID) -> tuple[Excep
     return exception, audit_test.organization_id
 
 
+@router.get("/exceptions/{exception_id}", response_model=ExceptionOut)
+def get_one(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Exception_:
+    exception, organization_id = _get_exception_with_org(db, exception_id)
+    enforce_same_organization(organization_id, user, db)
+    return exception
+
+
 @router.patch("/exceptions/{exception_id}", response_model=ExceptionOut)
 def update(
     exception_id: uuid.UUID,

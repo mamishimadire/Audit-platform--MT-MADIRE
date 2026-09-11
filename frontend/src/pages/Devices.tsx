@@ -170,6 +170,7 @@ function DeviceRow({
   canCommandSafe,
   canCommandDisruptive,
   canManagePolicy,
+  currentUserId,
   eligibleRevokeApprovers,
   eligibleDeleteApprovers,
   eligibleClassificationApprovers,
@@ -184,6 +185,7 @@ function DeviceRow({
   canCommandSafe: boolean
   canCommandDisruptive: boolean
   canManagePolicy: boolean
+  currentUserId: string | undefined
   eligibleRevokeApprovers: EligibleApproverOut[]
   eligibleDeleteApprovers: EligibleApproverOut[]
   eligibleClassificationApprovers: EligibleApproverOut[]
@@ -785,7 +787,7 @@ function DeviceRow({
                                           <div className="mt-0.5 text-[10px] text-ink-faint">
                                             Sent to {classificationApproverNames} — compliance status updates once approved or rejected.
                                           </div>
-                                          {canManagePolicy && (
+                                          {canManagePolicy && pending.created_by !== currentUserId ? (
                                             <div className="mt-1 flex justify-end gap-1">
                                               <button
                                                 onClick={() => approveClassificationEntry(pending.approved_software_id)}
@@ -802,6 +804,11 @@ function DeviceRow({
                                                 Reject
                                               </button>
                                             </div>
+                                          ) : (
+                                            canManagePolicy &&
+                                            pending.created_by === currentUserId && (
+                                              <div className="mt-0.5 text-[10px] text-ink-faint">You submitted this — a different approver must decide it.</div>
+                                            )
                                           )}
                                         </div>
                                       ) : (
@@ -1004,7 +1011,7 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
               ))}
             </ul>
           )}
-          {canApprove ? (
+          {canApprove && pending.requested_by !== user?.user_id ? (
             <div className="mt-2 flex gap-2">
               <button onClick={() => approve(pending.policy_change_id)} disabled={busyId === pending.policy_change_id} className={BTN_PRIMARY}>
                 {busyId === pending.policy_change_id ? 'Approving…' : 'Approve'}
@@ -1151,6 +1158,7 @@ const APPROVAL_STATUS_STYLES: Record<ApprovalStatus, string> = {
 }
 
 function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
+  const { user } = useAuth()
   const [entries, setEntries] = useState<ApprovedSoftwareOut[]>([])
   const [form, setForm] = useState({ app_name: '', publisher: '', classification: 'approved' as PolicyClassification, risk_level: 'medium' as RiskLevel })
   const [adding, setAdding] = useState(false)
@@ -1260,16 +1268,19 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
                 <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${APPROVAL_STATUS_STYLES[entry.approval_status]}`}>
                   {APPROVAL_STATUS_LABELS[entry.approval_status]}
                 </span>
-                {entry.approval_status === 'pending_approval' && (
-                  <>
-                    <button onClick={() => approve(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_PRIMARY}>
-                      Approve
-                    </button>
-                    <button onClick={() => setRejectingId(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_SECONDARY}>
-                      Reject
-                    </button>
-                  </>
-                )}
+                {entry.approval_status === 'pending_approval' &&
+                  (entry.created_by !== user?.user_id ? (
+                    <>
+                      <button onClick={() => approve(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_PRIMARY}>
+                        Approve
+                      </button>
+                      <button onClick={() => setRejectingId(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_SECONDARY}>
+                        Reject
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-[11px] text-ink-faint">You submitted this — a different approver must decide it.</span>
+                  ))}
                 {entry.approval_status !== 'superseded' && (
                   <button onClick={() => setRemovingId(entry.approved_software_id)} className="text-xs font-medium text-red-600 hover:underline">
                     Remove
@@ -1553,6 +1564,7 @@ export function DevicesPage() {
                 canCommandSafe={canCommandSafe}
                 canCommandDisruptive={canCommandDisruptive}
                 canManagePolicy={canManagePolicy}
+                currentUserId={user?.user_id}
                 eligibleRevokeApprovers={eligibleRevokeApprovers}
                 eligibleDeleteApprovers={eligibleDeleteApprovers}
                 eligibleClassificationApprovers={eligibleClassificationApprovers}

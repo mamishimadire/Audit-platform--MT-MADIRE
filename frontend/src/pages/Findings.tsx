@@ -4,7 +4,13 @@ import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
-import type { FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode } from '../types/api'
+import type { ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode } from '../types/api'
+
+function inNDays(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
 
 const STATUS_STYLES: Record<string, string> = {
   open: 'bg-red-50 text-red-700',
@@ -43,6 +49,23 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   }
 
   useEffect(load, [finding.finding_id])
+
+  // Suggest a starting point for root cause and remediation instead of a
+  // blank form — the exception behind this finding already carries a
+  // description and (for endpoint/software checks) ready-written
+  // remediation guidance. Both fields stay in normal editable inputs, so
+  // an auditor reviews/edits before adding, never submits blind. Runs once
+  // per finding (not tied to `load`, which also re-fires on every add —
+  // re-prefilling there would overwrite whatever the auditor just typed).
+  useEffect(() => {
+    if (!canManage) return
+    apiClient.get<ExceptionOut>(`/exceptions/${finding.exception_id}`).then((res) => {
+      const exception = res.data
+      setRcDescription((prev) => prev || exception.exception_description || '')
+      setActionDescription((prev) => prev || exception.recommended_remediation || '')
+      setTargetDate((prev) => prev || inNDays(30))
+    })
+  }, [finding.finding_id, canManage])
 
   const addRootCause = async () => {
     await apiClient.post(`/findings/${finding.finding_id}/root-causes`, { root_cause_category: rcCategory || null, description: rcDescription || null })
