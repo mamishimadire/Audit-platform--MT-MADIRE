@@ -105,8 +105,8 @@ const CONNECTOR_REGISTRY: Record<string, { status: ConnectorStatus; type: Connec
   'Oracle Database': { status: 'live', type: 'database' },
   'SAP HANA': { status: 'live', type: 'database' },
   'HubSpot': { status: 'live', type: 'api_oauth' },
-  'Snowflake': { status: 'planned', type: 'database' },
-  'MongoDB': { status: 'planned', type: 'database' },
+  'Snowflake': { status: 'live', type: 'database' },
+  'MongoDB': { status: 'live', type: 'database' },
 }
 
 const KIND_LABEL: Record<ConnectorKind, string> = { database: 'DB', api_oauth: 'API/OAuth' }
@@ -124,14 +124,23 @@ export function ConnectorCataloguePage() {
       <div className="mt-4 rounded-lg border border-accent-soft bg-accent-soft/40 p-4 text-sm">
         <div className="font-semibold text-accent-ink">What's actually live today</div>
         <p className="mt-1 text-ink">
-          <span className="font-medium">PostgreSQL, MySQL, Microsoft SQL Server, Oracle Database and SAP HANA</span> are
-          fully working end to end via the database layer — connect directly to a cloud-hosted database, or via the
-          Gateway for anything on a private network — real connection testing and schema discovery, not a mockup.
+          <span className="font-medium">PostgreSQL, MySQL, Microsoft SQL Server, Oracle Database, SAP HANA, Snowflake
+          and MongoDB</span> are working end to end via the database layer — connect directly to a cloud-hosted
+          database (all seven), or via the Gateway for anything on a private network (Postgres/MySQL/MSSQL only —
+          Oracle, SAP HANA, Snowflake and MongoDB don't have a Gateway-relay connector yet, direct-cloud only) — real
+          connection testing and schema discovery, not a mockup.
           <span className="font-medium"> HubSpot</span> is fully working end to end via a genuinely separate
           <span className="font-medium"> API/OAuth</span> connector — no SQL involved, its own token-refresh and
           revocation-detection lifecycle. Anything below marked <span className="font-medium">✓ DB</span> or <span className="font-medium">✓ API/OAuth</span> works
-          today for exactly that reason: it sits on one of those. Everything else (MongoDB, Snowflake, every other
-          CRM/ERP/banking vendor) is the target catalogue this platform is built to extend to next — not yet connectable.
+          today for exactly that reason: it sits on one of those. Everything else (every other CRM/ERP/banking vendor)
+          is the target catalogue this platform is built to extend to next — not yet connectable.
+        </p>
+        <p className="mt-2 text-amber-800">
+          Known gap, applies to every connector above: a <span className="font-medium">direct</span> connection (and
+          HubSpot) can be tested and schema-discovered today, but there's no scheduler yet that picks it up for
+          <span className="font-medium"> continuous</span> monitoring test execution — only a Gateway-relay connection
+          runs on a recurring schedule right now. Mapping/approval/control-activation all work the same regardless of
+          connection mode; only the "run this automatically, repeatedly" step is Gateway-only so far.
         </p>
         <p className="mt-2 text-ink-soft">
           Set up a real connection from{' '}
@@ -181,10 +190,11 @@ export function ConnectorCataloguePage() {
         <p className="mt-1 text-white/80">
           Any application not yet in the catalogue can still connect immediately if it sits on a supported database —
           the database layer handles connectivity, and only field-level mapping needs configuring per application.
-          Adding a brand-new database engine (MongoDB, Snowflake — the way Oracle and SAP HANA just were) means adding one new
-          driver to the Gateway and direct-connection layer. Adding a new vendor-API/OAuth connector (Salesforce,
-          SAP SuccessFactors — the way HubSpot just proved out) means implementing that vendor's own auth and discovery
-          calls against the same api_connectors pattern — neither path means rebuilding the platform.
+          Adding a brand-new database engine (the way MongoDB and Snowflake just were) means adding one new driver to
+          the direct-connection layer, and — separately — a new Gateway connector class if private-network relay
+          access matters for it too. Adding a new vendor-API/OAuth connector (Salesforce, SAP SuccessFactors — the way
+          HubSpot proved out) means implementing that vendor's own auth and discovery calls against the same
+          api_connectors pattern — neither path means rebuilding the platform.
         </p>
       </div>
     </div>
