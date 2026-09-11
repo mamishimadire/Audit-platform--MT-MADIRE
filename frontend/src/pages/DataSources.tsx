@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
@@ -81,6 +82,43 @@ const PROVIDER_GUIDES: Record<Provider, string[]> = {
   other: [
     'Ask whoever manages this database for: the hostname or IP address, port, database name, and a username/password with read access.',
     "If it sits behind a firewall or VPC, that firewall needs an inbound rule allowing this platform to reach it — an address unreachable from the internet can't be connected to this way.",
+  ],
+}
+
+// Which cloud-hosting guides above are actually relevant to each Postgres/
+// MySQL/MSSQL engine — Azure SQL is SQL-Server-specific, Neon/Supabase are
+// Postgres-only; "Other" always applies. Oracle/SAP HANA/Snowflake/MongoDB
+// get their own guide below instead (DB_TYPE_GUIDES) since for those the
+// engine itself, not "which cloud host", is what a user needs steps for.
+const PROVIDERS_FOR_DB_TYPE: Partial<Record<DirectDbType, Provider[]>> = {
+  postgresql: ['neon', 'supabase', 'aws_rds', 'gcp_sql', 'other'],
+  mysql: ['aws_rds', 'gcp_sql', 'other'],
+  mssql: ['azure_sql', 'aws_rds', 'other'],
+}
+
+// Step-by-step "where do I find these values" guidance for the four engines
+// that aren't just "Postgres/MySQL/MSSQL hosted somewhere" — each of these
+// is its own product with its own console.
+const DB_TYPE_GUIDES: Partial<Record<DirectDbType, string[]>> = {
+  oracle: [
+    'Oracle Cloud (Autonomous Database): Oracle Cloud Console → your ADB instance → DB Connection. Copy the host and port from the connection string shown there — the Service Name is usually listed alongside it (use "Service Name" below, not SID, unless you specifically know this instance uses SID addressing).',
+    'Self-hosted / on-prem Oracle: ask your DBA for the host, listener port (usually 1521), and Service Name or SID — and confirm the account has read-only access, since an audit connection should never be able to write.',
+    "If this instance isn't reachable from the internet, switch to \"Via Gateway\" above instead — install a Gateway inside that network from the Gateways page.",
+  ],
+  sap_hana: [
+    'SAP BTP / HANA Cloud: BTP Cockpit → your HANA Cloud instance → Connections tab. Copy the Host and Port shown there (the port depends on the instance number, per the hint on that field below).',
+    'Self-hosted SAP HANA: ask your Basis/DBA team for the tenant database host and SQL port, and whether TLS is enforced on that instance (affects the "Require encryption" checkbox below).',
+    "If this instance isn't reachable from the internet, switch to \"Via Gateway\" above instead.",
+  ],
+  snowflake: [
+    'Snowsight (Snowflake\'s web UI) → bottom-left account name → "Connect a tool to Snowflake", or Admin → Accounts — this shows your account identifier (e.g. xy12345.us-east-1). That identifier is what goes in "Host" below, not a real hostname.',
+    'Warehouse, database and schema are listed in the left sidebar of Snowsight. Ask your Snowflake admin for a role with read-only access to the schema this audit needs.',
+    'Prefer key-pair auth if your account disallows passwords: generate an RSA key pair, register the public key on your Snowflake user (ALTER USER ... SET RSA_PUBLIC_KEY=...), then paste the private key below.',
+  ],
+  mongodb: [
+    'MongoDB Atlas: Database → your cluster → Connect → Drivers → choose Python → copy the connection string shown there. The part between "@" and the next "/" is the cluster address that goes in "Host" below.',
+    'Atlas also requires your IP address on its Network Access allowlist before any connection (including this one) will succeed — add this platform\'s outbound address there, or 0.0.0.0/0 ("allow from anywhere") for a non-production test cluster.',
+    'Self-hosted MongoDB / replica set (not Atlas): uncheck "Use SRV connection" below and provide the host and port directly.',
   ],
 }
 
@@ -340,6 +378,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
   const [entities, setEntities] = useState<DataEntityOut[]>([])
   const [mode, setMode] = useState<'gateway' | 'direct'>('gateway')
   const [selectedGatewayId, setSelectedGatewayId] = useState('')
+  const [provider, setProvider] = useState<Provider | ''>('')
   const [direct, setDirect] = useState({
     db_type: 'postgresql' as DirectDbType,
     host: '',
@@ -391,6 +430,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
           snowflake_key_passphrase: '',
           mongodb_srv: true,
         })
+        setProvider('')
       }
       load()
     } catch (err: any) {
@@ -452,7 +492,18 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
             </div>
 
             {mode === 'gateway' ? (
-              <div className="mt-2 flex gap-2">
+              <div className="mt-2">
+                <p className="text-xs text-ink-soft">
+                  For a database on your own network or this machine — anything not directly reachable from the
+                  internet. Install a Gateway inside that network first (it makes an outbound-only connection out to
+                  this platform, so no inbound firewall port ever needs opening), then select it below. Haven't set
+                  one up yet? Go to the{' '}
+                  <Link to="/gateways" className="font-medium text-accent-ink hover:underline">
+                    Gateways
+                  </Link>{' '}
+                  page.
+                </p>
+                <div className="mt-2 flex gap-2">
                 <select
                   value={selectedGatewayId}
                   onChange={(e) => setSelectedGatewayId(e.target.value)}
@@ -472,6 +523,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                 >
                   {isAddingConnection ? 'Adding…' : 'Add connection'}
                 </button>
+                </div>
               </div>
             ) : (
               <div className="mt-2 space-y-2">
@@ -499,6 +551,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                     onChange={(e) => {
                       const db_type = e.target.value as DirectDbType
                       setDirect({ ...direct, db_type, port: DEFAULT_PORT[db_type] })
+                      setProvider('')
                     }}
                     className="rounded-md border border-line px-2 py-1 text-sm"
                   >
@@ -530,6 +583,49 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                     />
                   )}
                 </div>
+
+                {PROVIDERS_FOR_DB_TYPE[direct.db_type] && (
+                  <div className="rounded-md border border-line bg-bg p-2">
+                    <label className="flex items-center gap-2 text-xs font-medium text-ink">
+                      Where is this hosted?
+                      <select
+                        value={provider}
+                        onChange={(e) => {
+                          const p = e.target.value as Provider | ''
+                          setProvider(p)
+                          const impliedDbType = p ? PROVIDER_DB_TYPE[p as Provider] : undefined
+                          if (impliedDbType) setDirect({ ...direct, db_type: impliedDbType, port: DEFAULT_PORT[impliedDbType] })
+                        }}
+                        className="rounded-md border border-line px-2 py-1 text-xs"
+                      >
+                        <option value="">Show me where to find these values…</option>
+                        {PROVIDERS_FOR_DB_TYPE[direct.db_type]!.map((p) => (
+                          <option key={p} value={p}>
+                            {PROVIDER_LABELS[p]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {provider && (
+                      <ol className="mt-2 list-decimal space-y-1 pl-4 text-[11px] text-ink-soft">
+                        {PROVIDER_GUIDES[provider].map((step, i) => (
+                          <li key={i}>{step}</li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                )}
+                {DB_TYPE_GUIDES[direct.db_type] && (
+                  <div className="rounded-md border border-line bg-bg p-2">
+                    <div className="text-xs font-medium text-ink">Where do I find these values?</div>
+                    <ol className="mt-1 list-decimal space-y-1 pl-4 text-[11px] text-ink-soft">
+                      {DB_TYPE_GUIDES[direct.db_type]!.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
                 {direct.db_type === 'mongodb' && (
                   <label className="flex items-center gap-2 text-xs text-ink">
                     <input
