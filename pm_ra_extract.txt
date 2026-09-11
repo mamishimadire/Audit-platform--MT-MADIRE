@@ -1,0 +1,33 @@
+18. Patch Management
+ID	Control	Audit Procedure	Tables Required
+PM-001	Critical security patches must be applied within SLA	Compare patch release date + severity against installation date	patch_inventory, patch_releases, sla_rules
+PM-002	Unpatched systems must be identified	Compare installed patch levels against available/required patches	asset_register, patch_inventory, patch_catalogue
+PM-003	End-of-life/unsupported systems must be flagged	Compare OS/software versions against vendor support matrix	system_inventory, support_matrix
+PM-004	Patch deployment must be approved	Compare deployed patches to change/patch approval records	patch_deployments, patch_approvals
+PM-005	Patch testing must occur before production deployment	Identify patches deployed without test evidence	patch_deployments, test_results
+PM-006	Emergency patches require retrospective approval	Identify emergency patches without follow-up approval	patch_deployments, patch_approvals
+PM-007	Failed patch deployments must be investigated	Identify patches that failed to install and remain unresolved	patch_deployments, patch_incidents
+PM-008	Patch compliance must be reconciled per device	Compare required vs. installed patches per asset	asset_register, patch_inventory, patch_catalogue
+PM-009	Third-party/application patches must be tracked, not just OS	Compare application version against vendor patch releases	software_inventory, patch_releases
+PM-010	Patch exceptions/deferrals require documented justification	Identify systems excluded from patching without an approved exception	patch_exceptions, exception_approvals
+
+This slots naturally next to your existing Vulnerability Management (VM-xxx) and IT Asset Management (AS-xxx) domains — in fact PM-002/PM-008 will usually share the same asset_register and support_matrix tables as AS-005 and VM-003, so your data mapping layer can reuse those joins rather than duplicating them.
+
+19. Remote Access Testing
+ID	Control	Audit Procedure	Tables Required
+RA-001	Remote access must require MFA	Identify remote sessions/accounts without MFA enforced	remote_access_logs, mfa_config, system_users
+RA-002	Remote access must be explicitly authorised	Compare active remote access grants against approval records	remote_access_grants, access_requests
+RA-003	VPN access must be restricted to approved users	Match VPN account list to approved user/employee list	vpn_accounts, hr_employees, access_requests
+RA-004	Terminated employees must have remote access revoked	Compare termination list to active VPN/remote sessions	hr_employees, vpn_accounts, remote_access_logs
+RA-005	Remote sessions must be logged	Identify remote access without corresponding session logs	remote_access_logs, session_audit
+RA-006	Remote access outside approved hours/geography should be reviewed	Apply time/geo rules to session logs	remote_access_logs, access_policies
+RA-007	Privileged remote access requires additional approval	Identify privileged remote sessions without elevated approval	remote_access_logs, user_roles, privileged_access_approvals
+RA-008	Third-party/vendor remote access must be time-bound and logged	Compare vendor access grants to defined access windows	vendor_access_grants, remote_access_logs
+RA-009	Remote access tools must be from an approved catalogue	Compare tools in use (RDP, TeamViewer, AnyDesk, etc.) against approved list	remote_access_tools, approved_software
+RA-010	Idle remote sessions must time out	Identify sessions exceeding approved idle duration	remote_access_logs, session_policies
+RA-011	Failed remote login attempts must be monitored	Identify unusual patterns of failed remote authentication	remote_access_logs, login_history
+RA-012	Split-tunnelling / unauthorised network bridging should be identified	Compare VPN configuration to approved network policy	vpn_config, network_policies
+
+A note worth building into the architecture: RA-004 (terminated employee remote access) is a great candidate for your Audit Evidence Graph correlation example in Section 23 — it chains naturally off the existing "Employee terminated → account still active" example, extending it to "→ VPN access remains → remote session logged after termination date," which is a genuinely high-severity finding pattern auditors care about.
+
+lets move to phase 8

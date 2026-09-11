@@ -1,0 +1,136 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_current_user
+from app.db.session import get_db
+from app.models.rbac import Permission, Role, RolePermission
+from app.schemas.role import PermissionOut, RoleOut, SodWorkflowOut
+
+router = APIRouter(prefix="/reference", tags=["reference"])
+
+
+@router.get("/roles", response_model=list[RoleOut])
+def list_roles(db: Session = Depends(get_db), _user=Depends(get_current_user)) -> list[RoleOut]:
+    roles = list(db.scalars(select(Role)))
+    permission_rows = db.execute(
+        select(RolePermission.role_id, Permission.permission_name).join(
+            Permission, Permission.permission_id == RolePermission.permission_id
+        )
+    ).all()
+    permissions_by_role: dict = {}
+    for role_id, permission_name in permission_rows:
+        permissions_by_role.setdefault(role_id, []).append(permission_name)
+
+    return [
+        RoleOut(
+            role_id=role.role_id,
+            role_name=role.role_name,
+            description=role.description,
+            role_scope=role.role_scope,
+            account_classification="MT_AUDIT_INTERNAL" if role.role_scope == "platform" else "CLIENT_EXTERNAL",
+            permissions=sorted(permissions_by_role.get(role.role_id, [])),
+        )
+        for role in roles
+    ]
+
+
+@router.get("/permissions", response_model=list[PermissionOut])
+def list_permissions(db: Session = Depends(get_db), _user=Depends(get_current_user)) -> list[Permission]:
+    return list(db.scalars(select(Permission)))
+
+
+# Every maker-checker workflow actually enforced today, kept as one
+# constant next to the roles/permissions endpoints above rather than
+# scattered as comments across mapping_service.py/test_rule_service.py/
+# control_service.py/finding_service.py/exception_service.py — this is
+# the single place that must be updated whenever a workflow's states or
+# enforcement rule changes, so the Administration page can never silently
+# drift out of sync with what the backend actually does.
+_SOD_WORKFLOWS: list[SodWorkflowOut] = [
+    SodWorkflowOut(
+        action="Data mapping approval",
+        states=["needs_review / auto / manually_mapped", "approved", "rejected", "superseded (replaced by a later version)"],
+        maker="Creates or edits a field mapping.",
+        checker="Approves the mapping (POST /data-mappings/{id}/approve) or rejects it with a reason.",
+        enforcement="created_by != approved_by, checked by user identity — not by role. A mapping is never execution-ready on AI confidence score alone; only 'approved' status executes. Editing an already-approved mapping creates a new version instead of changing the live one in place.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Test rule approval",
+        states=["pending_approval", "active", "rejected", "superseded (replaced by a later version)", "deleted"],
+        maker="Writes or edits a test rule's logic, or generates one from a control template.",
+        checker="Approves the rule (POST /test-rules/{id}/approve) or rejects it with a reason.",
+        enforcement="created_by/edited_by != approved_by, checked by user identity. Only 'active' rules execute. Editing an active rule creates a new version rather than changing live test logic in place.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Control activation",
+        states=["pending_mapping", "pending_activation", "active"],
+        maker="Requests activation once all required tables are bound.",
+        checker="Approves the activation request.",
+        enforcement="activation_requested_by != activation_approved_by, checked by user identity.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Control deactivation",
+        states=["active", "pending_deactivation", "inactive"],
+        maker="Requests deactivation, with a mandatory reason.",
+        checker="Approves the deactivation request.",
+        enforcement="deactivation_requested_by != deactivation_approved_by, checked by user identity — never skippable. A control's table bindings cannot be changed while it is active; deactivation must go through this same dual control first.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Remediation verification",
+        states=["pending", "in_progress", "completed", "awaiting_retest -> closed / reopened"],
+        maker="Marks a remediation action complete.",
+        checker="Performs the re-test that actually closes the finding (a passed re-test is independent evidence, not a second opinion on the same claim).",
+        enforcement="When the organization's SoD setting is enabled, whoever marked the remediation complete cannot also be the one who performs the re-test.",
+        mandatory=False,
+    ),
+    SodWorkflowOut(
+        action="Exception closure",
+        states=["open", "awaiting_evidence", "in_progress", "resolved / closed"],
+        maker="The assigned owner investigates and updates the exception's status.",
+        checker="A different, authorized user closes the exception.",
+        enforcement="When the organization's SoD setting is enabled, the assigned owner cannot close their own exception.",
+        mandatory=False,
+    ),
+    SodWorkflowOut(
+        action="Software classification / reclassification",
+        states=["unknown / review_required", "approved / required / restricted / system_component / ignored"],
+        maker="Classifies or reclassifies an installed application (POST or PATCH /organizations/{id}/approved-software) — sets the org-wide policy every enrolled device's inventory is judged against.",
+        checker="None — a single authorized user acts alone. This is a role/permission boundary, not an identity-based maker/checker dual control.",
+        enforcement="Requires devices:manage_policy, held only by internal roles (Platform Super Admin, Platform Admin, Audit Manager, IT/Audit Technical User, Device Manager). Deliberately excludes Client IT Admin and every other client-side role, so the organization being audited can never grade its own devices' software.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Device revocation",
+        states=["pending / online / offline", "pending_revocation", "deregistered"],
+        maker="Requests revocation, with a mandatory reason (POST /devices/{id}/revocation/request). Holds devices:request_revoke: Device Manager, IT/Audit Technical User, Client IT Admin (their own org's devices only).",
+        checker="Approves or rejects the revocation request. Holds devices:approve_revoke: Audit Manager, Platform Admin — never the same roles as the maker list, so a client can never quietly drop its own non-compliant device out of monitoring.",
+        enforcement="revocation_requested_by != revocation_approved_by, checked by user identity, AND the maker/checker permissions are never granted to the same role — two independent layers, not one.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Device deletion",
+        states=["pending / online / offline / deregistered", "pending_deletion", "deleted (soft delete — the row and its history stay, see Deleted devices)"],
+        maker="Requests deletion, with a mandatory reason (POST /devices/{id}/deletion/request). Holds devices:request_delete: Device Manager, Client IT Admin (their own org's devices only).",
+        checker="Approves or rejects the deletion request. Holds devices:approve_delete: Platform Super Admin only — the single most restricted device action in the system, deliberately narrower than revocation approval. Any of the device's still-open exceptions are auto-closed on approval, since a deleted device can never be remediated.",
+        enforcement="deletion_requested_by != deletion_approved_by, checked by user identity, AND devices:approve_delete is granted to no role but Platform Super Admin.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="Escalate exception to finding",
+        states=["open (exception)", "escalated -> Finding created (the exception stays open and linked, it isn't consumed)"],
+        maker="Escalates an open exception — including a non-compliant/restricted-software exception from AS-004, or an endpoint check failure from EP-001 — into a formal Finding (POST /exceptions/{id}/findings).",
+        checker="None — a single authorized user acts alone. No second approver is required to open a Finding.",
+        enforcement="Requires audit_framework:manage, held only by internal roles (Platform Super Admin, Audit Manager, Auditor, IT/Audit Technical User, Compliance Manager). No client-side role — including Client IT Admin, who manages the devices themselves — can create a Finding against their own organization's data.",
+        mandatory=True,
+    ),
+]
+
+
+@router.get("/sod-workflows", response_model=list[SodWorkflowOut])
+def list_sod_workflows(_user=Depends(get_current_user)) -> list[SodWorkflowOut]:
+    return _SOD_WORKFLOWS

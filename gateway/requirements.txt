@@ -1,0 +1,7 @@
+requests>=2.31
+sqlalchemy>=2.0,<2.1
+psycopg[binary]>=3.1
+pymysql>=1.1
+pymssql>=2.2.11
+pyyaml>=6.0
+pandas>=2.0

@@ -1,0 +1,19 @@
+# Copy to config.yaml — this file stays on the client machine and is never
+# sent to the cloud platform. Credentials referenced here never leave this
+# machine except as a live database connection.
+platform_url: "https://your-platform.example.com/api/v1"
+
+# How often the gateway sends a heartbeat and re-runs connection tests.
+heartbeat_interval_seconds: 300
+
+connections:
+  - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
+    type: postgresql # postgresql | mysql | sql_server
+    host: "192.168.1.10"
+    port: 5432
+    database: "FinanceDB"
+    username: "audit_readonly"
+    # Prefer an environment variable over a plaintext password here:
+    password_env: "FINANCE_DB_PASSWORD"
+    # password: "only-if-you-must — password_env is strongly preferred"
+    schema: null # optional; defaults to the database's default schema

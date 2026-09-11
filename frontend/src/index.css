@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #1b2430;
+  --color-ink-soft: #5b6472;
+  --color-line: #dcd5c6;
+  --color-surface: #ffffff;
+  --color-bg: #f7f5f1;
+  --color-accent: #1f6f5c;
+  --color-accent-ink: #0f4a3d;
+  --color-accent-soft: #e3eee9;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+}

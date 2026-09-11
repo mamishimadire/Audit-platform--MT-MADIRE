@@ -1,0 +1,797 @@
+<!doctype html>
+<title>Audit Schema Ledger</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root{
+  --bg:#F7F5F1; --surface:#FFFFFF; --surface-2:#F0ECE3;
+  --ink:#1B2430; --ink-soft:#5B6472;
+  --line:#DCD5C6;
+  --accent:#1F6F5C; --accent-ink:#0F4A3D; --accent-soft:#E3EEE9;
+  --pk-bg:#F3E3D0; --pk-ink:#7A4A1D;
+  --fk-bg:#DEE7F0; --fk-ink:#2E4A66;
+  --shadow:rgba(27,36,48,0.10);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14181D; --surface:#1B2027; --surface-2:#20262E;
+    --ink:#E9E6DE; --ink-soft:#9BA3AE;
+    --line:#333B44;
+    --accent:#4FBF9F; --accent-ink:#8FE0C7; --accent-soft:#1E332E;
+    --pk-bg:#3A2C1C; --pk-ink:#E0B27A;
+    --fk-bg:#202C3A; --fk-ink:#9DBBDA;
+    --shadow:rgba(0,0,0,0.45);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14181D; --surface:#1B2027; --surface-2:#20262E;
+  --ink:#E9E6DE; --ink-soft:#9BA3AE;
+  --line:#333B44;
+  --accent:#4FBF9F; --accent-ink:#8FE0C7; --accent-soft:#1E332E;
+  --pk-bg:#3A2C1C; --pk-ink:#E0B27A;
+  --fk-bg:#202C3A; --fk-ink:#9DBBDA;
+  --shadow:rgba(0,0,0,0.45);
+}
+
+*{box-sizing:border-box;}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:'IBM Plex Sans',system-ui,sans-serif;
+  line-height:1.55;
+}
+.wrap{max-width:980px;margin:0 auto;padding:56px 24px 96px;}
+
+h1,h2,h3{font-family:'Source Serif 4',Georgia,serif; text-wrap:balance; margin:0;}
+code, .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;}
+
+header.top{margin-bottom:40px;}
+header.top .kicker{
+  display:flex; align-items:center; gap:10px;
+  font-size:12.5px; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--accent-ink); font-weight:600; margin-bottom:14px;
+}
+header.top .kicker .rule{height:1px;flex:1;background:var(--line);}
+header.top h1{font-size:clamp(30px,4.2vw,44px); font-weight:700;}
+header.top p.sub{
+  margin-top:12px; max-width:62ch; color:var(--ink-soft); font-size:16px;
+}
+
+.stat-row{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px; background:var(--line);
+  border:1px solid var(--line); border-radius:10px; overflow:hidden;
+  margin-top:28px;
+}
+.stat{background:var(--surface); padding:16px 18px;}
+.stat .n{font-family:'Source Serif 4',serif; font-size:26px; font-weight:700; font-variant-numeric:tabular-nums;}
+.stat .l{font-size:12.5px; color:var(--ink-soft); margin-top:2px;}
+
+nav.modnav{
+  display:flex; flex-wrap:wrap; gap:8px;
+  margin:28px 0 8px;
+}
+nav.modnav a{
+  font-size:12.5px; color:var(--ink-soft); text-decoration:none;
+  border:1px solid var(--line); border-radius:999px; padding:5px 12px;
+  font-weight:500; transition:border-color .15s, color .15s;
+}
+nav.modnav a:hover, nav.modnav a:focus-visible{ border-color:var(--accent); color:var(--accent-ink); outline:none;}
+
+figure.chain{
+  margin:44px 0 8px; padding:20px 8px 4px;
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  box-shadow:0 1px 2px var(--shadow);
+}
+figure.chain svg{width:100%; height:auto; display:block;}
+figure.chain figcaption{
+  padding:14px 22px 18px; font-size:13.5px; color:var(--ink-soft); border-top:1px solid var(--line); margin-top:10px;
+}
+
+.callout{
+  margin:28px 0; padding:16px 20px; border-radius:10px;
+  background:var(--accent-soft); border:1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  font-size:14.5px;
+}
+.callout b{color:var(--accent-ink);}
+
+section.module{margin-top:56px; scroll-margin-top:20px;}
+.module-head{
+  display:flex; align-items:baseline; gap:14px; margin-bottom:6px;
+  padding-bottom:12px; border-bottom:2px solid var(--ink);
+}
+.module-head .num{
+  font-family:'IBM Plex Mono',monospace; font-size:13px; color:var(--accent-ink);
+  background:var(--accent-soft); border-radius:5px; padding:3px 7px; font-weight:500;
+}
+.module-head h2{font-size:22px;}
+.module-role{color:var(--ink-soft); font-size:14.5px; margin:10px 0 20px; max-width:70ch;}
+
+.tables{display:flex; flex-direction:column; gap:10px;}
+details.tcard{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  overflow:hidden;
+}
+details.tcard[open]{box-shadow:0 1px 3px var(--shadow);}
+summary.trow{
+  list-style:none; cursor:pointer; padding:13px 18px;
+  display:flex; align-items:center; gap:12px; user-select:none;
+}
+summary.trow::-webkit-details-marker{display:none;}
+summary.trow .caret{
+  font-size:11px; color:var(--ink-soft); transition:transform .15s; flex-shrink:0;
+}
+details[open] summary.trow .caret{transform:rotate(90deg);}
+summary.trow .tname{font-family:'IBM Plex Mono',monospace; font-weight:500; font-size:14.5px;}
+summary.trow .tpurpose{color:var(--ink-soft); font-size:13.5px; flex:1;}
+summary.trow .tcount{
+  font-size:11.5px; color:var(--ink-soft); font-variant-numeric:tabular-nums;
+  background:var(--surface-2); border-radius:999px; padding:2px 9px; flex-shrink:0;
+}
+summary.trow:focus-visible{outline:2px solid var(--accent); outline-offset:-2px;}
+
+.fieldtable-wrap{overflow-x:auto; border-top:1px solid var(--line);}
+table.fields{width:100%; border-collapse:collapse; font-size:13.5px;}
+table.fields th{
+  text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--ink-soft); font-weight:600; padding:10px 18px 8px; background:var(--surface-2);
+}
+table.fields td{padding:8px 18px; border-top:1px solid var(--line); vertical-align:top;}
+table.fields td.fname{font-family:'IBM Plex Mono',monospace;}
+table.fields td.ftype{font-family:'IBM Plex Mono',monospace; color:var(--ink-soft); white-space:nowrap;}
+.badge{
+  display:inline-block; font-size:10.5px; font-weight:600; letter-spacing:.03em;
+  border-radius:4px; padding:1px 6px; margin-right:4px;
+}
+.badge.pk{background:var(--pk-bg); color:var(--pk-ink);}
+.badge.fk{background:var(--fk-bg); color:var(--fk-ink);}
+
+footer.foot{
+  margin-top:64px; padding-top:20px; border-top:1px solid var(--line);
+  color:var(--ink-soft); font-size:13px;
+}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">MT AUDIT / AuditIQ <span class="rule"></span> Version 1 schema</div>
+  <h1>Audit Schema Ledger</h1>
+  <p class="sub">The complete Version 1 entity relationship design for the continuous audit platform — 34 tables across 10 modules, built to keep one chain intact: business process → risk → control → audit test → data source → execution → evidence → exception → finding → remediation → re-test.</p>
+  <div class="stat-row">
+    <div class="stat"><div class="n">34</div><div class="l">tables</div></div>
+    <div class="stat"><div class="n">10</div><div class="l">modules</div></div>
+    <div class="stat"><div class="n">UUID</div><div class="l">primary keys</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">tenant column per table</div></div>
+  </div>
+  <nav class="modnav" aria-label="Jump to module">
+    <a href="#mod-01">01 Organization</a>
+    <a href="#mod-02">02 Access</a>
+    <a href="#mod-03">03 Processes</a>
+    <a href="#mod-04">04 Risk &amp; Control</a>
+    <a href="#mod-05">05 Data Sources</a>
+    <a href="#mod-06">06 Audit Testing</a>
+    <a href="#mod-07">07 Monitoring</a>
+    <a href="#mod-08">08 Evidence &amp; Exceptions</a>
+    <a href="#mod-09">09 Findings &amp; Remediation</a>
+    <a href="#mod-10">10 Governance</a>
+  </nav>
+</header>
+
+<figure class="chain">
+<svg viewBox="0 0 760 1010" role="img" aria-label="The audit chain: business process feeds a risk, which is covered by controls, which are tested by audit tests via test rules and mapped data fields, producing test executions that yield evidence and exceptions, exceptions become findings, findings drive remediation and a re-test that loops back to run the audit test again.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="IBM Plex Mono, monospace" font-size="12" fill="currentColor" opacity="0.75">
+    <!-- vertical spine labels -->
+  </g>
+
+  <!-- Business Process -->
+  <rect x="270" y="16" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="380" y="44" text-anchor="middle" font-size="14" font-weight="600">Business Process</text>
+
+  <line x1="380" y1="62" x2="380" y2="100" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="398" y="86" font-size="11.5" fill="var(--accent-ink)">risks.process_id</text>
+
+  <!-- Risk -->
+  <rect x="270" y="100" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="380" y="128" text-anchor="middle" font-size="14" font-weight="600">Risk</text>
+
+  <line x1="380" y1="146" x2="380" y2="184" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="398" y="170" font-size="11.5" fill="var(--accent-ink)">risk_controls</text>
+
+  <!-- Control -->
+  <rect x="270" y="184" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="380" y="212" text-anchor="middle" font-size="14" font-weight="600">Control</text>
+
+  <line x1="380" y1="230" x2="380" y2="268" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="398" y="254" font-size="11.5" fill="var(--accent-ink)">control_audit_tests</text>
+
+  <!-- Audit Test -->
+  <rect x="270" y="268" width="220" height="46" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="1.6"/>
+  <text x="380" y="296" text-anchor="middle" font-size="14" font-weight="700">Audit Test</text>
+
+  <!-- diverge to Test Rule / Data Source chain -->
+  <line x1="330" y1="314" x2="250" y2="360" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="152" y="340" font-size="11.5" fill="var(--accent-ink)">test_rules</text>
+  <line x1="430" y1="314" x2="510" y2="360" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="470" y="340" font-size="11.5" fill="var(--accent-ink)">test_data_mappings</text>
+
+  <!-- Test Rule box -->
+  <rect x="140" y="360" width="220" height="56" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="250" y="384" text-anchor="middle" font-size="13.5" font-weight="600">Test Rule</text>
+  <text x="250" y="401" text-anchor="middle" font-size="10.5" opacity="0.65">rule_definition, severity</text>
+
+  <!-- Data Source chain box -->
+  <rect x="400" y="360" width="220" height="56" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="510" y="380" text-anchor="middle" font-size="13.5" font-weight="600">Data Source</text>
+  <text x="510" y="396" text-anchor="middle" font-size="10.5" opacity="0.65">→ data_entities → data_fields</text>
+
+  <!-- converge to Test Execution -->
+  <line x1="250" y1="416" x2="370" y2="452" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="510" y1="416" x2="390" y2="452" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+  <!-- Test Execution -->
+  <rect x="270" y="452" width="220" height="46" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="1.6"/>
+  <text x="380" y="480" text-anchor="middle" font-size="14" font-weight="700">Test Execution</text>
+
+  <!-- diverge to Evidence / Exception -->
+  <line x1="330" y1="498" x2="250" y2="542" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="158" y="524" font-size="11.5" fill="var(--accent-ink)">evidence</text>
+  <line x1="430" y1="498" x2="510" y2="542" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="478" y="524" font-size="11.5" fill="var(--accent-ink)">exceptions</text>
+
+  <!-- Evidence box -->
+  <rect x="140" y="542" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="250" y="570" text-anchor="middle" font-size="14" font-weight="600">Evidence</text>
+
+  <!-- Exception box -->
+  <rect x="400" y="542" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="510" y="570" text-anchor="middle" font-size="14" font-weight="600">Exception</text>
+
+  <!-- Exception -> Finding -->
+  <line x1="480" y1="588" x2="400" y2="628" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="440" y="612" font-size="11.5" fill="var(--accent-ink)">confirmed as</text>
+
+  <!-- Finding -->
+  <rect x="270" y="628" width="220" height="46" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-width="1.6"/>
+  <text x="380" y="656" text-anchor="middle" font-size="14" font-weight="700">Finding</text>
+
+  <!-- diverge to Remediation / Retest -->
+  <line x1="330" y1="674" x2="250" y2="718" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="130" y="700" font-size="11.5" fill="var(--accent-ink)">remediation_actions</text>
+  <line x1="430" y1="674" x2="510" y2="718" stroke="currentColor" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="486" y="700" font-size="11.5" fill="var(--accent-ink)">retests</text>
+
+  <!-- Remediation box -->
+  <rect x="140" y="718" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="250" y="746" text-anchor="middle" font-size="14" font-weight="600">Remediation</text>
+
+  <!-- Retest box -->
+  <rect x="400" y="718" width="220" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+  <text x="510" y="746" text-anchor="middle" font-size="14" font-weight="600">Re-test</text>
+
+  <!-- loop back -->
+  <path d="M 610 718 C 700 620, 700 420, 500 300 C 480 288, 460 282, 440 278" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#arrow)" opacity="0.8"/>
+  <text x="712" y="500" font-size="11.5" fill="var(--accent-ink)" transform="rotate(90 712 500)" text-anchor="middle">re-runs the audit test at next cycle</text>
+
+</svg>
+<figcaption>The join tables carry the meaning: <code>risk_controls</code>, <code>control_audit_tests</code> and <code>test_data_mappings</code> are what let one audit test survive contact with a different client schema. The dashed line is the loop the platform is built around — a retest doesn't create a new test, it re-runs the same <code>audit_test_id</code> and records a fresh result.</figcaption>
+</figure>
+
+<div class="callout">
+  <b>Two tables added beyond the original list.</b> <code>gateways</code> now exists because <code>data_connections.gateway_id</code> had nothing to point to — it carries the registration-code lifecycle (single-use, time-limited, tenant-bound) and device-certificate fingerprint described for the Audit Data Gateway. <code>risk_categories</code> was designed alongside <code>risks</code> earlier but dropped from the final table count — restored here as <code>risks.risk_category_id</code>. No raw credentials are modeled anywhere: <code>data_connections.secret_reference</code> is a pointer into a vault, never a password.
+</div>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-01">
+  <div class="module-head"><span class="num">01</span><h2>Organization</h2></div>
+  <p class="module-role">The client tenants. Every audit-relevant row elsewhere carries an <code>organization_id</code> back to this table, which is how tenant isolation is enforced at the schema level.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">organizations</span><span class="tpurpose">one row per client tenant</span><span class="tcount">8 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>organization_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname">organization_name</td><td class="ftype">varchar(255)</td><td>legal name</td></tr>
+        <tr><td class="fname">trading_name</td><td class="ftype">varchar(255)</td><td></td></tr>
+        <tr><td class="fname">registration_number</td><td class="ftype">varchar(100)</td><td></td></tr>
+        <tr><td class="fname">industry</td><td class="ftype">varchar(100)</td><td></td></tr>
+        <tr><td class="fname">country</td><td class="ftype">varchar(100)</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>onboarding · active · inactive · suspended</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>created_by</td><td class="ftype">uuid → users</td><td>which owner added this client</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">organization_settings</span><span class="tpurpose">per-tenant key/value platform settings</span><span class="tcount">4 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>setting_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname">setting_name</td><td class="ftype">varchar(150)</td><td>unique per org</td></tr>
+        <tr><td class="fname">setting_value</td><td class="ftype">text</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">business_units</span><span class="tpurpose">divisions/departments within a client, self-referencing</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>business_unit_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>parent_business_unit_id</td><td class="ftype">uuid → business_units</td><td>self-reference for hierarchy</td></tr>
+        <tr><td class="fname">business_unit_name</td><td class="ftype">varchar(255)</td><td></td></tr>
+        <tr><td class="fname">business_unit_code</td><td class="ftype">varchar(50)</td><td></td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-02">
+  <div class="module-head"><span class="num">02</span><h2>Access Management</h2></div>
+  <p class="module-role">Who can act, and what they're allowed to touch — deliberately separate from audit logic, so an auditor's role can't quietly widen into technical access.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">users</span><span class="tpurpose">every person who logs in, platform-wide or client-scoped</span><span class="tcount">8 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>user_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td>null = platform-level (System Owner)</td></tr>
+        <tr><td class="fname">first_name / last_name</td><td class="ftype">varchar(100)</td><td></td></tr>
+        <tr><td class="fname">email</td><td class="ftype">varchar(255)</td><td>unique</td></tr>
+        <tr><td class="fname">password_hash</td><td class="ftype">varchar(255)</td><td>hash only, never plaintext</td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>pending · active · inactive · locked</td></tr>
+        <tr><td class="fname">last_login</td><td class="ftype">timestamptz</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">roles</span><span class="tpurpose">System Owner, Auditor, Control Owner, etc.</span><span class="tcount">3 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>role_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname">role_name</td><td class="ftype">varchar(100)</td><td>unique</td></tr>
+        <tr><td class="fname">description</td><td class="ftype">text</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">permissions</span><span class="tpurpose">granular capabilities a role can hold</span><span class="tcount">3 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>permission_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname">permission_name</td><td class="ftype">varchar(150)</td><td>unique</td></tr>
+        <tr><td class="fname">description</td><td class="ftype">text</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">user_roles</span><span class="tpurpose">join: which users hold which roles</span><span class="tcount">3 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>user_role_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>user_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>role_id</td><td class="ftype">uuid → roles</td><td>unique with user_id</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">role_permissions</span><span class="tpurpose">join: which permissions a role grants</span><span class="tcount">2 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>role_id</td><td class="ftype">uuid → roles</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>permission_id</td><td class="ftype">uuid → permissions</td><td>unique with role_id</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">user_sessions</span><span class="tpurpose">login/logout tracking for session management</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>session_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>user_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname">login_time / logout_time</td><td class="ftype">timestamptz</td><td></td></tr>
+        <tr><td class="fname">ip_address</td><td class="ftype">inet</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>active · expired · revoked</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-03">
+  <div class="module-head"><span class="num">03</span><h2>Business Processes</h2></div>
+  <p class="module-role">What the platform is actually monitoring isn't a database — it's a process. Procure-to-Pay, Payroll, User Access Management. Risks and controls attach here, not to raw tables.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">business_processes</span><span class="tpurpose">e.g. Procure-to-Pay, Payroll, Change Management</span><span class="tcount">7 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>process_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname">process_name / process_code</td><td class="ftype">varchar</td><td></td></tr>
+        <tr><td class="fname">description</td><td class="ftype">text</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>process_owner_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>active · inactive</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">process_activities</span><span class="tpurpose">the ordered steps inside a process</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>activity_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>process_id</td><td class="ftype">uuid → business_processes</td><td></td></tr>
+        <tr><td class="fname">activity_name / activity_description</td><td class="ftype">varchar / text</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>activity_owner_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname">sequence_number</td><td class="ftype">int</td><td>ordering within the process</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-04">
+  <div class="module-head"><span class="num">04</span><h2>Risk &amp; Control</h2></div>
+  <p class="module-role">A risk can be covered by several controls, and one control can mitigate several risks — <code>risk_controls</code> is the many-to-many that makes that true instead of forcing a one-to-one fiction.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">risk_categories</span><span class="tpurpose">lookup — Financial, Operational, Cybersecurity, Fraud…</span><span class="tcount">3 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>risk_category_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname">category_name</td><td class="ftype">varchar(100)</td><td>unique</td></tr>
+        <tr><td class="fname">description</td><td class="ftype">text</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">risks</span><span class="tpurpose">e.g. "unauthorized users may retain financial system access"</span><span class="tcount">10 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>risk_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>process_id</td><td class="ftype">uuid → business_processes</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>risk_category_id</td><td class="ftype">uuid → risk_categories</td><td></td></tr>
+        <tr><td class="fname">risk_name / risk_description</td><td class="ftype">varchar / text</td><td></td></tr>
+        <tr><td class="fname">inherent_risk_rating</td><td class="ftype">varchar(20)</td><td>low · medium · high · critical</td></tr>
+        <tr><td class="fname">residual_risk_rating</td><td class="ftype">varchar(20)</td><td>same scale, post-control</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>risk_owner_id</td><td class="ftype">uuid → users</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">controls</span><span class="tpurpose">the mitigation itself — preventive, detective or corrective</span><span class="tcount">9 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>control_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname">control_code / control_name</td><td class="ftype">varchar</td><td></td></tr>
+        <tr><td class="fname">control_description</td><td class="ftype">text</td><td></td></tr>
+        <tr><td class="fname">control_type</td><td class="ftype">varchar(20)</td><td>preventive · detective · corrective</td></tr>
+        <tr><td class="fname">control_nature</td><td class="ftype">varchar(20)</td><td>manual · automated · it_dependent</td></tr>
+        <tr><td class="fname">control_frequency</td><td class="ftype">varchar(30)</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>control_owner_id</td><td class="ftype">uuid → users</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">risk_controls</span><span class="tpurpose">join: many controls per risk, many risks per control</span><span class="tcount">2 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>risk_id</td><td class="ftype">uuid → risks</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>control_id</td><td class="ftype">uuid → controls</td><td>unique with risk_id</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-05">
+  <div class="module-head"><span class="num">05</span><h2>Data Sources</h2></div>
+  <p class="module-role">Client systems, the Gateway that reaches them, and everything schema discovery finds inside — down to individual fields. <code>gateways</code> is the addition: it's what <code>data_connections.gateway_id</code> needed to mean something.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">gateways</span><span class="tpurpose">added — the registration-code &amp; certificate lifecycle</span><span class="tcount">10 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>gateway_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td>a code can never register under another tenant</td></tr>
+        <tr><td class="fname">gateway_name</td><td class="ftype">varchar(150)</td><td></td></tr>
+        <tr><td class="fname">registration_code</td><td class="ftype">varchar(20)</td><td>single-use, cleared once redeemed</td></tr>
+        <tr><td class="fname">registration_code_expires_at</td><td class="ftype">timestamptz</td><td>15-minute window</td></tr>
+        <tr><td class="fname">registration_status</td><td class="ftype">varchar(20)</td><td>unused · registered · expired · revoked</td></tr>
+        <tr><td class="fname">device_certificate_fingerprint</td><td class="ftype">varchar(255)</td><td>issued post-registration; the code itself plays no further role</td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>pending · online · offline · deregistered</td></tr>
+        <tr><td class="fname">last_heartbeat / certificate_expiry</td><td class="ftype">timestamptz</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">data_sources</span><span class="tpurpose">one row per connected system — SQL Server, Sage, an API…</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>data_source_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname">source_name / source_type</td><td class="ftype">varchar</td><td>sql_server · postgresql · oracle · sap · sage…</td></tr>
+        <tr><td class="fname">environment</td><td class="ftype">varchar(20)</td><td>on_premise · cloud</td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>pending · connected · error · disabled</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">data_connections</span><span class="tpurpose">the live link — never stores a raw credential</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>connection_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>data_source_id</td><td class="ftype">uuid → data_sources</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>gateway_id</td><td class="ftype">uuid → gateways</td><td>null for direct cloud connections</td></tr>
+        <tr><td class="fname">secret_reference</td><td class="ftype">varchar(255)</td><td>vault pointer, not a password</td></tr>
+        <tr><td class="fname">connection_status</td><td class="ftype">varchar(20)</td><td>pending · connected · failed · revoked</td></tr>
+        <tr><td class="fname">last_tested_at</td><td class="ftype">timestamptz</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">data_entities</span><span class="tpurpose">tables, views, files or API objects discovered on a source</span><span class="tcount">4 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>entity_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>data_source_id</td><td class="ftype">uuid → data_sources</td><td></td></tr>
+        <tr><td class="fname">entity_name</td><td class="ftype">varchar(150)</td><td>e.g. EMP_MASTER, HR_STAFF</td></tr>
+        <tr><td class="fname">entity_type</td><td class="ftype">varchar(30)</td><td>table · view · api · file</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">data_fields</span><span class="tpurpose">individual columns — where field mapping ultimately points</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>field_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>entity_id</td><td class="ftype">uuid → data_entities</td><td></td></tr>
+        <tr><td class="fname">field_name / data_type</td><td class="ftype">varchar</td><td>e.g. EMP_STAT, char(1)</td></tr>
+        <tr><td class="fname">is_primary_key / is_sensitive</td><td class="ftype">boolean</td><td></td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-06">
+  <div class="module-head"><span class="num">06</span><h2>Audit Testing</h2></div>
+  <p class="module-role">This is the module that makes the platform audit-native rather than a generic dashboard: a test defined once, mapped onto whatever schema a given client actually has.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">audit_tests</span><span class="tpurpose">e.g. "Terminated user still active"</span><span class="tcount">8 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>audit_test_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname">test_code / test_name</td><td class="ftype">varchar</td><td></td></tr>
+        <tr><td class="fname">test_description / test_type</td><td class="ftype">text / varchar</td><td></td></tr>
+        <tr><td class="fname">frequency</td><td class="ftype">varchar(30)</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>draft · pending_approval · active · disabled</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>created_by</td><td class="ftype">uuid → users</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">control_audit_tests</span><span class="tpurpose">join: which tests evidence which controls</span><span class="tcount">2 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>control_id</td><td class="ftype">uuid → controls</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td>unique with control_id</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">test_data_mappings</span><span class="tpurpose">field-level mapping, confidence score, auditor approval</span><span class="tcount">8 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>mapping_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>data_source_id</td><td class="ftype">uuid → data_sources</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>entity_id</td><td class="ftype">uuid → data_entities</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>field_id</td><td class="ftype">uuid → data_fields</td><td></td></tr>
+        <tr><td class="fname">canonical_field</td><td class="ftype">varchar(150)</td><td>e.g. employee.employment_status</td></tr>
+        <tr><td class="fname">confidence_score</td><td class="ftype">numeric(5,2)</td><td></td></tr>
+        <tr><td class="fname">mapping_status</td><td class="ftype">varchar(20)</td><td>auto · needs_review · manually_mapped · approved</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>approved_by</td><td class="ftype">uuid → users</td><td>logged with approved_at for the evidence trail</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">test_rules</span><span class="tpurpose">the actual monitoring logic behind a test</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>rule_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td></td></tr>
+        <tr><td class="fname">rule_name / rule_type</td><td class="ftype">varchar</td><td>sql · python</td></tr>
+        <tr><td class="fname">rule_definition</td><td class="ftype">text</td><td>the SQL or rule logic itself</td></tr>
+        <tr><td class="fname">severity</td><td class="ftype">varchar(20)</td><td>low · medium · high · critical</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-07">
+  <div class="module-head"><span class="num">07</span><h2>Continuous Monitoring</h2></div>
+  <p class="module-role">Scheduling and the permanent record of every run — the part that makes "continuous" more than a marketing word.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">monitoring_schedules</span><span class="tpurpose">when a test runs — real-time to monthly</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>schedule_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td></td></tr>
+        <tr><td class="fname">frequency</td><td class="ftype">varchar(30)</td><td>real_time · hourly · daily · weekly · monthly</td></tr>
+        <tr><td class="fname">next_run / last_run</td><td class="ftype">timestamptz</td><td></td></tr>
+        <tr><td class="fname">is_active</td><td class="ftype">boolean</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">test_executions</span><span class="tpurpose">a permanent record every time a test runs</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>execution_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td></td></tr>
+        <tr><td class="fname">started_at / completed_at</td><td class="ftype">timestamptz</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>running · completed · failed</td></tr>
+        <tr><td class="fname">records_analyzed / exceptions_found</td><td class="ftype">int</td><td></td></tr>
+        <tr><td class="fname">execution_log</td><td class="ftype">text</td><td>re-performance record</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-08">
+  <div class="module-head"><span class="num">08</span><h2>Evidence &amp; Exceptions</h2></div>
+  <p class="module-role">What a test found, and proof that it found it. Evidence stores a pointer and a hash, not the file itself — the file lives in object storage.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">evidence</span><span class="tpurpose">pointer + hash into object storage, tied to one execution</span><span class="tcount">5 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>evidence_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>execution_id</td><td class="ftype">uuid → test_executions</td><td></td></tr>
+        <tr><td class="fname">evidence_type</td><td class="ftype">varchar(50)</td><td>data_extract · test_result · report · screenshot · system_log</td></tr>
+        <tr><td class="fname">evidence_location</td><td class="ftype">text</td><td>object storage path, not the file</td></tr>
+        <tr><td class="fname">evidence_hash</td><td class="ftype">varchar(128)</td><td>proves the file wasn't altered after the fact</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">exceptions</span><span class="tpurpose">a failed condition, routed to an owner</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>exception_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>execution_id</td><td class="ftype">uuid → test_executions</td><td></td></tr>
+        <tr><td class="fname">exception_reference / exception_description</td><td class="ftype">varchar / text</td><td></td></tr>
+        <tr><td class="fname">severity</td><td class="ftype">varchar(20)</td><td>low · medium · high · critical</td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>open · awaiting_evidence · in_progress · resolved · closed</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>owner_id</td><td class="ftype">uuid → users</td><td>assigned control owner</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">exception_records</span><span class="tpurpose">the individual rows that triggered the exception</span><span class="tcount">4 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>exception_record_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>exception_id</td><td class="ftype">uuid → exceptions</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>entity_id</td><td class="ftype">uuid → data_entities</td><td></td></tr>
+        <tr><td class="fname">record_identifier / exception_data</td><td class="ftype">varchar / jsonb</td><td>e.g. employee_id = 10245</td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-09">
+  <div class="module-head"><span class="num">09</span><h2>Findings &amp; Remediation</h2></div>
+  <p class="module-role">Not every exception becomes a finding — that judgement call is the auditor's. Once it does, remediation and the re-test that closes it are tracked here.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">findings</span><span class="tpurpose">an exception the auditor has confirmed matters</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>finding_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>exception_id</td><td class="ftype">uuid → exceptions</td><td></td></tr>
+        <tr><td class="fname">finding_title / finding_description</td><td class="ftype">varchar / text</td><td></td></tr>
+        <tr><td class="fname">risk_rating</td><td class="ftype">varchar(20)</td><td>low · medium · high · critical</td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>open · remediation_in_progress · awaiting_retest · closed · reopened</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">finding_root_causes</span><span class="tpurpose">why it happened, not just what happened</span><span class="tcount">3 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>root_cause_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>finding_id</td><td class="ftype">uuid → findings</td><td></td></tr>
+        <tr><td class="fname">root_cause_category / description</td><td class="ftype">varchar / text</td><td></td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">remediation_actions</span><span class="tpurpose">what management commits to fix it, and by when</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>remediation_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>finding_id</td><td class="ftype">uuid → findings</td><td></td></tr>
+        <tr><td class="fname">action_description</td><td class="ftype">text</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>responsible_user_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname">target_date</td><td class="ftype">date</td><td></td></tr>
+        <tr><td class="fname">status</td><td class="ftype">varchar(20)</td><td>pending · in_progress · completed · overdue</td></tr>
+      </table></div>
+    </details>
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">retests</span><span class="tpurpose">re-runs the same audit test; result closes or reopens the finding</span><span class="tcount">6 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>retest_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>finding_id</td><td class="ftype">uuid → findings</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>audit_test_id</td><td class="ftype">uuid → audit_tests</td><td>the very same test — not a copy</td></tr>
+        <tr><td class="fname">retest_date</td><td class="ftype">timestamptz</td><td></td></tr>
+        <tr><td class="fname">result</td><td class="ftype">varchar(20)</td><td>pass · fail</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>performed_by</td><td class="ftype">uuid → users</td><td></td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="module" id="mod-10">
+  <div class="module-head"><span class="num">10</span><h2>Governance</h2></div>
+  <p class="module-role">One table, and it watches everything else — every connection, mapping approval, and audit-test change is logged here, independent of what changed.</p>
+  <div class="tables">
+
+    <details class="tcard">
+      <summary class="trow"><span class="caret">▸</span><span class="tname">audit_logs</span><span class="tpurpose">system-wide activity trail — the audit trail of the audit platform itself</span><span class="tcount">8 fields</span></summary>
+      <div class="fieldtable-wrap"><table class="fields">
+        <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+        <tr><td class="fname"><span class="badge pk">PK</span>log_id</td><td class="ftype">uuid</td><td></td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>organization_id</td><td class="ftype">uuid → organizations</td><td>null = platform-level action</td></tr>
+        <tr><td class="fname"><span class="badge fk">FK</span>user_id</td><td class="ftype">uuid → users</td><td></td></tr>
+        <tr><td class="fname">action</td><td class="ftype">varchar(255)</td><td>e.g. "changed Audit Test ABC"</td></tr>
+        <tr><td class="fname">entity_type / entity_id</td><td class="ftype">varchar / uuid</td><td>which record was touched</td></tr>
+        <tr><td class="fname">old_value / new_value</td><td class="ftype">jsonb</td><td></td></tr>
+        <tr><td class="fname">ip_address</td><td class="ftype">inet</td><td></td></tr>
+      </table></div>
+    </details>
+
+  </div>
+</section>
+
+<footer class="foot">
+  Full DDL — <code>CREATE TABLE</code> statements, indexes, and constraints for all 34 tables — lives in <code>database/schema.sql</code> alongside this reference. Nothing here has been run against Neon yet.
+</footer>
+
+</div>

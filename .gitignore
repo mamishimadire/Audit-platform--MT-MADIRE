@@ -1,0 +1,32 @@
+# Secrets — never commit these
+backend/.env
+frontend/.env
+*.env
+!*.env.example
+gateway/config.yaml
+gateway/.gateway_identity.json
+gateway/.venv/
+gateway/build/
+gateway/dist/
+gateway/logs/
+gateway/*.spec
+endpoint-agent/build/
+endpoint-agent/dist/
+endpoint-agent/logs/
+endpoint-agent/*.spec
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
