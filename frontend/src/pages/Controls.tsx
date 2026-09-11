@@ -20,12 +20,22 @@ function ControlLifecycleActions({
   control,
   organizationId,
   onChanged,
+  progress,
 }: {
   control: ControlOut
   organizationId: string
   onChanged: () => void
+  progress?: TableBindingProgressOut
 }) {
   const [busy, setBusy] = useState(false)
+  // Only block on readiness once we actually know it (progress loaded) —
+  // never render the button live-and-clickable only to fail after the
+  // click, but also never falsely block it during the brief window before
+  // progress has loaded for a control with required tables.
+  const notReady = control.required_tables.length > 0 && progress !== undefined && !progress.ready
+  const missingTables = notReady
+    ? progress!.required_tables.filter((t) => !progress!.bindings.some((b) => b.canonical_table_name === t))
+    : []
   const [error, setError] = useState<string | null>(null)
   const [mode, setMode] = useState<'deactivate' | 'reject-activation' | 'reject-deactivation' | null>(null)
   const [reason, setReason] = useState('')
@@ -78,9 +88,21 @@ function ControlLifecycleActions({
   return (
     <div className="text-right">
       {control.status === 'pending_mapping' && (
-        <button onClick={() => post('activation/request')} disabled={busy} className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60">
-          {busy ? 'Requesting…' : 'Request activation'}
-        </button>
+        <>
+          <button
+            onClick={() => post('activation/request')}
+            disabled={busy || notReady}
+            title={notReady ? `Bind every required table first — still missing: ${missingTables.join(', ')}.` : undefined}
+            className="text-xs font-medium text-accent-ink hover:underline disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
+          >
+            {busy ? 'Requesting…' : 'Request activation'}
+          </button>
+          {notReady && (
+            <p className="mt-0.5 text-[11px] text-ink-faint">
+              {progress!.satisfied} of {progress!.total} required tables bound — missing {missingTables.join(', ')}.
+            </p>
+          )}
+        </>
       )}
       {control.status === 'pending_activation' && (
         <div className="flex justify-end gap-2">
@@ -108,9 +130,21 @@ function ControlLifecycleActions({
         </div>
       )}
       {control.status === 'inactive' && (
-        <button onClick={() => post('activation/request')} disabled={busy} className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60">
-          {busy ? 'Requesting…' : 'Request reactivation'}
-        </button>
+        <>
+          <button
+            onClick={() => post('activation/request')}
+            disabled={busy || notReady}
+            title={notReady ? `Bind every required table first — still missing: ${missingTables.join(', ')}.` : undefined}
+            className="text-xs font-medium text-accent-ink hover:underline disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
+          >
+            {busy ? 'Requesting…' : 'Request reactivation'}
+          </button>
+          {notReady && (
+            <p className="mt-0.5 text-[11px] text-ink-faint">
+              {progress!.satisfied} of {progress!.total} required tables bound — missing {missingTables.join(', ')}.
+            </p>
+          )}
+        </>
       )}
       {error && <p className="text-xs text-red-600">{error}</p>}
     </div>
@@ -196,7 +230,7 @@ function ControlRow({
               Set up testing →
             </Link>
             {canManage && c.status !== 'retired' && (
-              <ControlLifecycleActions control={c} organizationId={organizationId} onChanged={onChanged} />
+              <ControlLifecycleActions control={c} organizationId={organizationId} onChanged={onChanged} progress={progress} />
             )}
           </div>
         </td>
@@ -289,7 +323,7 @@ function LibraryRow({
         <td className="px-4 py-2 text-right">
           {activeControl && organizationId ? (
             activeControl.status !== 'retired' && (
-              <ControlLifecycleActions control={activeControl} organizationId={organizationId} onChanged={onChanged} />
+              <ControlLifecycleActions control={activeControl} organizationId={organizationId} onChanged={onChanged} progress={progress} />
             )
           ) : (
             <button

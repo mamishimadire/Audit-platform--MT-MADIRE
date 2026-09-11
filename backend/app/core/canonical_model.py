@@ -142,3 +142,35 @@ def suggest_canonical_field(
 
 def mapping_status_for_confidence(confidence: float) -> str:
     return "auto" if confidence >= AUTO_ACCEPT_THRESHOLD else "needs_review"
+
+
+# Below this, a name match is noise, not a real candidate — not worth
+# showing an auditor "system_users ~ 14% match: invoice_approvals".
+TABLE_SUGGESTION_MIN_SCORE = 40.0
+
+
+def score_table_name_match(canonical_table_name: str, candidate_entity_name: str) -> float:
+    """How likely `candidate_entity_name` (a discovered table/collection) is
+    to be the physical table a control's required canonical table name
+    (e.g. "system_users") refers to. Reuses the same token-overlap +
+    fuzzy-ratio approach as suggest_canonical_field, just compared directly
+    name-to-name instead of against a fixed canonical field list — control
+    required_tables are already free-form strings (schema.sql's
+    canonical_field is deliberately not an enum either, see the module
+    docstring), not a second taxonomy to maintain here.
+    """
+    source_tokens = set(_tokens(canonical_table_name))
+    target_tokens = set(_tokens(candidate_entity_name))
+    token_score = _token_overlap_score(source_tokens, target_tokens)
+
+    normalized_source = "".join(sorted(source_tokens))
+    normalized_target = "".join(sorted(target_tokens))
+    seq_ratio = difflib.SequenceMatcher(None, normalized_source, normalized_target).ratio() * 100
+
+    # A literal (case-insensitive) match — the common case when a
+    # connector's table/collection name already matches a canonical name
+    # verbatim — always wins outright over any heuristic score.
+    if canonical_table_name.strip().lower() == candidate_entity_name.strip().lower():
+        return 100.0
+
+    return round(max(token_score, seq_ratio), 2)

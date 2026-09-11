@@ -9,28 +9,57 @@ export interface BindingSuggestion {
   entity_id: string
   source_name: string | null
   entity_name: string | null
+  // 'reused': this exact table is already bound elsewhere in the org for a
+  // different control — the strongest possible signal, since a human
+  // already confirmed it. 'name_match': nobody has bound this canonical
+  // table anywhere yet — the platform is guessing from discovered-table
+  // names alone (see score_table_name_match), so it always carries a
+  // confidence score the picker can show plainly as a guess, not a fact.
+  source: 'reused' | 'name_match'
+  confidence_score?: number
 }
 
 /**
  * Same canonical table (e.g. system_users) is required by dozens of
  * controls. Once it's bound anywhere in this org, every other control
  * that needs it should default to that same binding instead of asking
- * the auditor to re-search for it.
+ * the auditor to re-search for it — that reuse always outranks a fresh
+ * name-match guess. Only for a table nobody has bound anywhere yet does
+ * this fall back to the backend's name-similarity suggestion (progress.
+ * suggestions, computed once per control against every discovered table
+ * in the org — see control_binding_service._suggest_bindings).
  */
 export function suggestionsFromProgress(bindingProgress: Record<string, TableBindingProgressOut>): Record<string, BindingSuggestion> {
-  const suggestions: Record<string, BindingSuggestion & { bound_at: string }> = {}
+  const reused: Record<string, BindingSuggestion & { bound_at: string }> = {}
   for (const progress of Object.values(bindingProgress)) {
     for (const b of progress.bindings) {
       if (b.status !== 'bound' || !b.data_source_id || !b.entity_id) continue
-      const existing = suggestions[b.canonical_table_name]
+      const existing = reused[b.canonical_table_name]
       if (!existing || b.bound_at > existing.bound_at) {
-        suggestions[b.canonical_table_name] = {
+        reused[b.canonical_table_name] = {
           data_source_id: b.data_source_id,
           entity_id: b.entity_id,
           source_name: b.source_name,
           entity_name: b.entity_name,
+          source: 'reused',
           bound_at: b.bound_at,
         }
+      }
+    }
+  }
+
+  const suggestions: Record<string, BindingSuggestion> = { ...reused }
+  for (const progress of Object.values(bindingProgress)) {
+    for (const [table, candidates] of Object.entries(progress.suggestions)) {
+      if (suggestions[table] || candidates.length === 0) continue // reuse already wins, or nothing to suggest
+      const top = candidates[0]
+      suggestions[table] = {
+        data_source_id: top.data_source_id,
+        entity_id: top.entity_id,
+        source_name: top.source_name,
+        entity_name: top.entity_name,
+        source: 'name_match',
+        confidence_score: top.confidence_score,
       }
     }
   }
@@ -149,7 +178,9 @@ export function TableBindingPicker({
       </button>
       {suggestion && sourceId === suggestion.data_source_id && entityId === suggestion.entity_id && (
         <p className="w-full text-xs text-accent-ink">
-          Suggested from another control that already uses this table — confirm, or change it above.
+          {suggestion.source === 'reused'
+            ? 'Suggested from another control that already uses this table — confirm, or change it above.'
+            : `Suggested by name match (${Math.round(suggestion.confidence_score ?? 0)}% confidence) — a guess, not a confirmed binding. Review before confirming, or change it above.`}
         </p>
       )}
       {error && <p className="w-full text-xs text-red-600">{error}</p>}
@@ -236,7 +267,13 @@ export function RequiredTablesChecklist({
                       <span className="text-xs text-ink-soft">Not applicable — {binding.not_applicable_reason}</span>
                     )
                   ) : (
-                    <span className="text-xs text-red-600">Not mapped{suggestion ? ' — suggestion available' : ''}</span>
+                    <span className="text-xs text-red-600">
+                      Not mapped
+                      {suggestion &&
+                        (suggestion.source === 'reused'
+                          ? ' — suggestion available (reused from another control)'
+                          : ` — recommended: ${suggestion.entity_name} (${Math.round(suggestion.confidence_score ?? 0)}% name match)`)}
+                    </span>
                   )}
                   {canManage && binding && (
                     <button onClick={() => setEditingTable(table)} className="text-xs font-medium text-accent-ink hover:underline">

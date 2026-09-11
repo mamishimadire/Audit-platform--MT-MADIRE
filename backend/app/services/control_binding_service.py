@@ -8,11 +8,66 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.canonical_model import TABLE_SUGGESTION_MIN_SCORE, score_table_name_match
 from app.models.control_library import ControlLibraryEntry, ControlTableBinding
 from app.models.data_source import DataEntity, DataSource
 from app.models.risk_control import Control
-from app.schemas.control_binding import ControlTableBindingCreate, ControlTableNotApplicable, TableBindingProgressOut
+from app.schemas.control_binding import (
+    ControlTableBindingCreate,
+    ControlTableNotApplicable,
+    TableBindingProgressOut,
+    TableBindingSuggestionOut,
+)
 from app.services.audit_log_service import log_action
+
+# Enough to give an auditor a real choice without drowning a 130-collection
+# data source's worth of near-misses under one required table.
+_MAX_SUGGESTIONS_PER_TABLE = 3
+
+
+def _suggest_bindings(
+    db: Session, *, organization_id: uuid.UUID, unbound_tables: list[str]
+) -> dict[str, list[TableBindingSuggestionOut]]:
+    """For each still-unmapped required table, rank every discovered table
+    across the organization's data sources by name similarity — so the
+    picker can default to a likely match instead of an auditor manually
+    scanning every connection's discovered tables by hand (the exact pain
+    point behind e.g. the 130-collection MongoDB demo data source)."""
+    if not unbound_tables:
+        return {}
+
+    rows = db.execute(
+        select(DataEntity, DataSource.source_name)
+        .join(DataSource, DataSource.data_source_id == DataEntity.data_source_id)
+        .where(DataSource.organization_id == organization_id, DataEntity.is_hidden.is_(False))
+    ).all()
+    if not rows:
+        return {}
+
+    suggestions: dict[str, list[TableBindingSuggestionOut]] = {}
+    for table in unbound_tables:
+        scored = sorted(
+            (
+                (score_table_name_match(table, entity.entity_name), entity, source_name)
+                for entity, source_name in rows
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        candidates = [
+            TableBindingSuggestionOut(
+                entity_id=entity.entity_id,
+                entity_name=entity.entity_name,
+                data_source_id=entity.data_source_id,
+                source_name=source_name,
+                confidence_score=score,
+            )
+            for score, entity, source_name in scored[:_MAX_SUGGESTIONS_PER_TABLE]
+            if score >= TABLE_SUGGESTION_MIN_SCORE
+        ]
+        if candidates:
+            suggestions[table] = candidates
+    return suggestions
 
 
 def _required_tables_for(db: Session, control: Control) -> list[str]:
@@ -68,12 +123,15 @@ def get_binding_progress(db: Session, *, control: Control) -> TableBindingProgre
         )
 
     satisfied = sum(1 for t in required if t in by_table)
+    unbound = [t for t in required if t not in by_table]
+    suggestions = _suggest_bindings(db, organization_id=control.organization_id, unbound_tables=unbound)
     return TableBindingProgressOut(
         required_tables=required,
         bindings=out_bindings,
         total=len(required),
         satisfied=satisfied,
         ready=satisfied == len(required),
+        suggestions=suggestions,
     )
 
 
