@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base, TimestampMixin, uuid_pk
@@ -55,6 +55,16 @@ class DataConnection(Base, TimestampMixin):
     gateway_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("gateways.gateway_id", ondelete="SET NULL")
     )
+    # User-facing label distinct from host/db/username — lets someone tell
+    # apart several connection attempts against the same data source (see
+    # the Data Sources page). Purely cosmetic, so renaming it still goes
+    # through the same maker-checker path as every other edit below rather
+    # than getting a silent-write exception carved out just for this field.
+    connection_name: Mapped[str | None] = mapped_column(String(150))
+    # Display-only declutter, not a state change — toggled directly with no
+    # approval (see DevicePolicyPanel-style maker-checker below, which is
+    # reserved for changes that affect what the connection actually does).
+    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     secret_reference: Mapped[str | None] = mapped_column(String(255))
     # 'gateway' (default, existing behavior): credential never reaches this
     # database, only a label the Gateway resolves against its own local
@@ -101,6 +111,44 @@ class DataConnection(Base, TimestampMixin):
     )
 
 
+class DataConnectionChange(Base):
+    """A proposed edit to, or disconnection of, a live DataConnection.
+
+    Renaming/editing a connection's host, credentials, etc. — or taking it
+    out of service — changes what the platform actually connects to and
+    monitors, so (unlike DataConnection.is_hidden / DataEntity.is_hidden,
+    which are pure display toggles) these go through independent approval,
+    the same maker-checker shape used for device policy changes
+    (device_policy_service.DevicePolicyChange). proposed_changes is stored
+    using the DataConnection column names directly (encrypted_password, not
+    password) so a pending secret is never sitting in this table in
+    plaintext, and approval can apply it with a plain setattr loop.
+    """
+
+    __tablename__ = "data_connection_changes"
+
+    change_id: Mapped[uuid.UUID] = uuid_pk("change_id")
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_connections.connection_id", ondelete="CASCADE"), nullable=False
+    )
+    change_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    proposed_changes: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    approval_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending_approval")
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_reason: Mapped[str | None] = mapped_column(Text)
+
+
 class OAuthConnection(Base, TimestampMixin):
     """
     An OAuth-based API connection (HubSpot first) — deliberately a separate
@@ -142,6 +190,10 @@ class DataEntity(Base, TimestampMixin):
     entity_name: Mapped[str] = mapped_column(String(150), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(30), nullable=False, server_default="table")
     description: Mapped[str | None] = mapped_column(Text)
+    # Display-only declutter (see DataConnection.is_hidden) — a hidden table
+    # is still fully discovered/mapped-eligible, just collapsed out of the
+    # default list. No approval needed to toggle this.
+    is_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
 
 class DataField(Base):

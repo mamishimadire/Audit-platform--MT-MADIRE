@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, delete, insert, inspect, select
+from sqlalchemy import create_engine, delete, insert, inspect, select, update
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
@@ -424,6 +424,97 @@ def list_connections_for_organization(db: Session, *, organization_id: uuid.UUID
             .where(DataSource.organization_id == organization_id)
         )
     )
+
+
+def set_entity_hidden(db: Session, *, entity: DataEntity, hidden: bool, organization_id: uuid.UUID, updated_by_user_id: uuid.UUID) -> DataEntity:
+    """Pure display declutter — see DataEntity.is_hidden. No approval: it
+    doesn't change what's discovered or mappable, only what the default
+    table list shows."""
+    entity.is_hidden = hidden
+    log_action(
+        db,
+        action=f"{'Hid' if hidden else 'Unhid'} discovered table '{entity.entity_name}'",
+        organization_id=organization_id,
+        user_id=updated_by_user_id,
+        entity_type="data_entities",
+        entity_id=entity.entity_id,
+        new_value={"is_hidden": hidden},
+    )
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def set_connection_hidden(
+    db: Session, *, connection: DataConnection, hidden: bool, organization_id: uuid.UUID, updated_by_user_id: uuid.UUID
+) -> DataConnection:
+    """Same display-only toggle as set_entity_hidden, for decluttering a
+    connection list full of old failed attempts. Never touches
+    connection_status — a hidden connection is unaffected otherwise."""
+    connection.is_hidden = hidden
+    log_action(
+        db,
+        action=f"{'Hid' if hidden else 'Unhid'} data connection",
+        organization_id=organization_id,
+        user_id=updated_by_user_id,
+        entity_type="data_connections",
+        entity_id=connection.connection_id,
+        new_value={"is_hidden": hidden},
+    )
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def set_all_entities_hidden(
+    db: Session, *, data_source_id: uuid.UUID, hidden: bool, organization_id: uuid.UUID, updated_by_user_id: uuid.UUID
+) -> int:
+    """Bulk version of set_entity_hidden — one UPDATE statement rather than
+    one round trip per table, since a data source can have well over a
+    hundred discovered tables (see the control-library demo dataset)."""
+    ids = list(
+        db.scalars(
+            select(DataEntity.entity_id).where(DataEntity.data_source_id == data_source_id, DataEntity.is_hidden != hidden)
+        )
+    )
+    if not ids:
+        return 0
+    db.execute(update(DataEntity).where(DataEntity.entity_id.in_(ids)).values(is_hidden=hidden))
+    log_action(
+        db,
+        action=f"{'Hid' if hidden else 'Unhid'} all discovered tables ({len(ids)})",
+        organization_id=organization_id,
+        user_id=updated_by_user_id,
+        entity_type="data_entities",
+        new_value={"is_hidden": hidden, "count": len(ids)},
+    )
+    db.commit()
+    return len(ids)
+
+
+def set_all_connections_hidden(
+    db: Session, *, data_source_id: uuid.UUID, hidden: bool, organization_id: uuid.UUID, updated_by_user_id: uuid.UUID
+) -> int:
+    ids = list(
+        db.scalars(
+            select(DataConnection.connection_id).where(
+                DataConnection.data_source_id == data_source_id, DataConnection.is_hidden != hidden
+            )
+        )
+    )
+    if not ids:
+        return 0
+    db.execute(update(DataConnection).where(DataConnection.connection_id.in_(ids)).values(is_hidden=hidden))
+    log_action(
+        db,
+        action=f"{'Hid' if hidden else 'Unhid'} all connections ({len(ids)})",
+        organization_id=organization_id,
+        user_id=updated_by_user_id,
+        entity_type="data_connections",
+        new_value={"is_hidden": hidden, "count": len(ids)},
+    )
+    db.commit()
+    return len(ids)
 
 
 def list_entities_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[DataEntity]:

@@ -153,12 +153,21 @@ export interface ControlTableBindingOut {
   bound_at: string
 }
 
+export interface TableBindingSuggestionOut {
+  entity_id: string
+  entity_name: string
+  data_source_id: string
+  source_name: string | null
+  confidence_score: number
+}
+
 export interface TableBindingProgressOut {
   required_tables: string[]
   bindings: ControlTableBindingOut[]
   total: number
   satisfied: number
   ready: boolean
+  suggestions: Record<string, TableBindingSuggestionOut[]>
 }
 
 export interface ControlLibraryOut {
@@ -260,6 +269,7 @@ export interface DataConnectionOut {
   connection_id: string
   data_source_id: string
   gateway_id: string | null
+  connection_name: string | null
   connection_mode: 'gateway' | 'direct'
   db_type: DirectDbType | null
   host: string | null
@@ -275,6 +285,42 @@ export interface DataConnectionOut {
   mongodb_srv: boolean
   connection_status: string
   last_tested_at: string | null
+  is_hidden: boolean
+}
+
+export type DataConnectionChangeType = 'update' | 'disconnect' | 'delete'
+export type DataConnectionChangeApprovalStatus = 'pending_approval' | 'approved' | 'rejected'
+
+export interface DataConnectionChangeOut {
+  change_id: string
+  connection_id: string
+  change_type: DataConnectionChangeType
+  proposed_changes: Record<string, unknown>
+  approval_status: DataConnectionChangeApprovalStatus
+  requested_by: string | null
+  requested_at: string
+  approved_by: string | null
+  approved_at: string | null
+  rejected_by: string | null
+  rejected_at: string | null
+  rejected_reason: string | null
+}
+
+export interface DataConnectionUpdateRequest {
+  connection_name?: string
+  host?: string
+  port?: number
+  database_name?: string
+  username?: string
+  password?: string
+  oracle_connection_type?: OracleConnectionType
+  sap_hana_encrypt?: boolean
+  snowflake_warehouse?: string
+  snowflake_schema?: string
+  snowflake_role?: string
+  snowflake_auth_method?: SnowflakeAuthMethod
+  snowflake_key_passphrase?: string
+  mongodb_srv?: boolean
 }
 
 export interface ConnectionTestResult {
@@ -357,6 +403,7 @@ export interface DataEntityOut {
   entity_name: string
   entity_type: string
   description: string | null
+  is_hidden: boolean
 }
 
 export interface DataFieldOut {

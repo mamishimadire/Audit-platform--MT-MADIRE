@@ -4,13 +4,16 @@ import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import type {
   ConnectionTestResult,
+  DataConnectionChangeOut,
   DataConnectionOut,
   DataEntityOut,
   DataFieldOut,
   DataSourceOut,
   DirectDbType,
+  EligibleApproverOut,
   GatewayOut,
   OracleConnectionType,
   SnowflakeAuthMethod,
@@ -122,7 +125,7 @@ const DB_TYPE_GUIDES: Partial<Record<DirectDbType, string[]>> = {
   ],
 }
 
-function EntityRow({ entity }: { entity: DataEntityOut }) {
+function EntityRow({ entity, onToggleHidden }: { entity: DataEntityOut; onToggleHidden: (entity: DataEntityOut) => void }) {
   const [open, setOpen] = useState(false)
   const [fields, setFields] = useState<DataFieldOut[] | null>(null)
 
@@ -134,11 +137,23 @@ function EntityRow({ entity }: { entity: DataEntityOut }) {
   }
 
   return (
-    <div className="border-t border-line first:border-t-0">
-      <button onClick={toggle} className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-bg">
-        <span className="font-mono">{entity.entity_name}</span>
-        <span className="text-xs text-ink-soft">{entity.entity_type}</span>
-      </button>
+    <div className={`border-t border-line first:border-t-0 ${entity.is_hidden ? 'opacity-50' : ''}`}>
+      <div className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-bg">
+        <button onClick={toggle} className="flex flex-1 items-center gap-2 text-left">
+          <span className="font-mono">{entity.entity_name}</span>
+          <span className="text-xs text-ink-soft">{entity.entity_type}</span>
+          {entity.is_hidden && <span className="text-[11px] text-ink-faint">(hidden)</span>}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleHidden(entity)
+          }}
+          className="ml-2 text-xs font-medium text-ink-soft hover:text-ink hover:underline"
+        >
+          {entity.is_hidden ? 'Unhide' : 'Hide'}
+        </button>
+      </div>
       {open && fields && (
         <div className="bg-bg px-3 py-2">
           {entity.entity_type === 'collection' && entity.description && (
@@ -160,11 +175,81 @@ function EntityRow({ entity }: { entity: DataEntityOut }) {
   )
 }
 
-function ConnectionRow({ connection, canManage, onDiscovered }: { connection: DataConnectionOut; canManage: boolean; onDiscovered: () => void }) {
+const CONNECTION_CHANGE_FIELD_LABELS: Record<string, string> = {
+  connection_name: 'name',
+  host: 'host',
+  port: 'port',
+  database_name: 'database',
+  username: 'username',
+  encrypted_password: 'password',
+  encrypted_snowflake_key_passphrase: 'Snowflake key passphrase',
+  oracle_connection_type: 'Oracle connection type',
+  sap_hana_encrypt: 'SAP HANA encryption',
+  snowflake_warehouse: 'Snowflake warehouse',
+  snowflake_schema: 'Snowflake schema',
+  snowflake_role: 'Snowflake role',
+  snowflake_auth_method: 'Snowflake auth method',
+  mongodb_srv: 'MongoDB SRV mode',
+}
+
+function describeConnectionChange(change: DataConnectionChangeOut): string {
+  if (change.change_type === 'disconnect') return 'Disconnect this connection'
+  if (change.change_type === 'delete') return 'Permanently delete this connection'
+  const parts = Object.keys(change.proposed_changes).map((k) => CONNECTION_CHANGE_FIELD_LABELS[k] ?? k)
+  return `Update ${parts.join(', ')}`
+}
+
+function ConnectionRow({
+  connection,
+  canManage,
+  canApproveChange,
+  eligibleApprovers,
+  onDiscovered,
+  onChanged,
+  onToggleHidden,
+}: {
+  connection: DataConnectionOut
+  canManage: boolean
+  canApproveChange: boolean
+  eligibleApprovers: EligibleApproverOut[]
+  onDiscovered: () => void
+  onChanged: () => void
+  onToggleHidden: (connection: DataConnectionOut) => void
+}) {
+  const { user } = useAuth()
   const [testing, setTesting] = useState(false)
   const [discovering, setDiscovering] = useState(false)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [changes, setChanges] = useState<DataConnectionChangeOut[]>([])
+  const [editing, setEditing] = useState(false)
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [busyChangeId, setBusyChangeId] = useState<string | null>(null)
+  const [rejectingChangeId, setRejectingChangeId] = useState<string | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+  const [editForm, setEditForm] = useState({
+    connection_name: connection.connection_name ?? '',
+    host: connection.host ?? '',
+    port: connection.port ?? 0,
+    database_name: connection.database_name ?? '',
+    username: connection.username ?? '',
+    password: '',
+  })
+
+  const loadChanges = () =>
+    apiClient.get<DataConnectionChangeOut[]>(`/connections/${connection.connection_id}/changes`).then((res) => setChanges(res.data))
+
+  useEffect(() => {
+    loadChanges()
+  }, [connection.connection_id])
+
+  const pending = changes.find((c) => c.approval_status === 'pending_approval') ?? null
+  const recentDecided = changes.filter((c) => c.approval_status !== 'pending_approval').slice(0, 3)
+  const approverNames = eligibleApprovers.length === 0 ? 'an authorized approver' : eligibleApprovers.map((a) => `${a.first_name} ${a.last_name}`).join(', ')
+  const showsPort = connection.db_type !== 'snowflake' && !(connection.db_type === 'mongodb' && connection.mongodb_srv)
+  const revoked = connection.connection_status === 'revoked'
 
   const runTest = async () => {
     setTesting(true)
@@ -193,10 +278,105 @@ function ConnectionRow({ connection, canManage, onDiscovered }: { connection: Da
     }
   }
 
+  const buildUpdatePayload = (): Record<string, unknown> => {
+    const payload: Record<string, unknown> = {}
+    if (editForm.connection_name !== (connection.connection_name ?? '')) payload.connection_name = editForm.connection_name
+    if (editForm.host !== (connection.host ?? '')) payload.host = editForm.host
+    if (showsPort && editForm.port !== connection.port) payload.port = editForm.port
+    if (editForm.database_name !== (connection.database_name ?? '')) payload.database_name = editForm.database_name
+    if (editForm.username !== (connection.username ?? '')) payload.username = editForm.username
+    if (editForm.password) payload.password = editForm.password
+    return payload
+  }
+  const editPayload = buildUpdatePayload()
+
+  const submitEdit = async () => {
+    if (Object.keys(editPayload).length === 0) {
+      setEditing(false)
+      return
+    }
+    setSubmitting(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/update`, editPayload)
+      setEditing(false)
+      setEditForm((f) => ({ ...f, password: '' }))
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not submit this change for approval.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const requestDisconnect = async () => {
+    setSubmitting(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/disconnect`)
+      setConfirmingDisconnect(false)
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not submit the disconnect request.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const requestDelete = async () => {
+    setSubmitting(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/delete`)
+      setConfirmingDelete(false)
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not submit the delete request.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const approveChange = async (changeId: string) => {
+    setBusyChangeId(changeId)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/${changeId}/approve`)
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not approve this change.')
+    } finally {
+      setBusyChangeId(null)
+    }
+  }
+
+  const submitReject = async () => {
+    if (!rejectingChangeId) return
+    const id = rejectingChangeId
+    setBusyChangeId(id)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/${id}/reject`, { reason: rejectReason })
+      setRejectingChangeId(null)
+      setRejectReason('')
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not reject this change.')
+    } finally {
+      setBusyChangeId(null)
+    }
+  }
+
   return (
-    <div className="mt-2 rounded-md border border-line px-3 py-2">
+    <div className={`mt-2 rounded-md border border-line px-3 py-2 ${connection.is_hidden ? 'opacity-50' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm">
+          {connection.connection_name && <div className="text-sm font-medium text-ink">{connection.connection_name}</div>}
           {connection.connection_mode === 'direct' ? (
             <span className="font-mono text-xs text-ink">
               {connection.db_type === 'snowflake' ? (
@@ -220,17 +400,45 @@ function ConnectionRow({ connection, canManage, onDiscovered }: { connection: Da
             <span className="font-mono text-xs text-ink-soft">Gateway connection · {connection.connection_id.slice(0, 8)}</span>
           )}
         </div>
-        <span className="text-xs text-ink-soft">
-          {connection.connection_status}
-          {connection.last_tested_at ? ` · tested ${new Date(connection.last_tested_at).toLocaleString()}` : ''}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs ${revoked ? 'font-medium text-red-600' : 'text-ink-soft'}`}>
+            {connection.connection_status}
+            {connection.last_tested_at ? ` · tested ${new Date(connection.last_tested_at).toLocaleString()}` : ''}
+          </span>
+          <button onClick={() => onToggleHidden(connection)} className="text-xs font-medium text-ink-soft hover:text-ink hover:underline">
+            {connection.is_hidden ? 'Unhide' : 'Hide'}
+          </button>
+        </div>
       </div>
       {connection.connection_mode === 'direct' && connection.db_type === 'snowflake' && (
         <p className="mt-2 text-xs text-amber-700">
           Snowflake cost notice: testing or discovering schema here may consume Snowflake compute credits.
         </p>
       )}
-      {connection.connection_mode === 'direct' && canManage && (
+
+      {pending && (
+        <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <div className="font-semibold">{describeConnectionChange(pending)} — awaiting approval from {approverNames}</div>
+          {canApproveChange && pending.requested_by !== user?.user_id ? (
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => approveChange(pending.change_id)} disabled={busyChangeId === pending.change_id} className="rounded-md border border-transparent bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-ink disabled:opacity-60">
+                {busyChangeId === pending.change_id ? 'Approving…' : 'Approve'}
+              </button>
+              <button onClick={() => setRejectingChangeId(pending.change_id)} disabled={busyChangeId === pending.change_id} className="rounded-md border border-line bg-white px-2.5 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60">
+                Reject
+              </button>
+            </div>
+          ) : (
+            <p className="mt-1 text-amber-700">
+              {pending.requested_by === user?.user_id
+                ? 'You submitted this change — a different authorized approver must approve or reject it.'
+                : 'Awaiting review by an authorized approver.'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {connection.connection_mode === 'direct' && canManage && !revoked && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
             onClick={runTest}
@@ -246,6 +454,28 @@ function ConnectionRow({ connection, canManage, onDiscovered }: { connection: Da
           >
             {discovering ? 'Reading schema…' : 'Discover schema'}
           </button>
+          {!pending && (
+            <>
+              <button
+                onClick={() => setEditing((v) => !v)}
+                className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+              >
+                {editing ? 'Cancel edit' : 'Rename / edit'}
+              </button>
+              <button
+                onClick={() => setConfirmingDisconnect(true)}
+                className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+              >
+                Disconnect
+              </button>
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                className="rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+              >
+                Delete
+              </button>
+            </>
+          )}
           {testResult && (
             <span className={`text-xs ${testResult.success ? 'text-accent-ink' : 'text-red-600'}`}>
               {testResult.success ? '✓' : '✗'} {testResult.detail}
@@ -254,6 +484,114 @@ function ConnectionRow({ connection, canManage, onDiscovered }: { connection: Da
           {actionError && <span className="text-xs text-red-600">{actionError}</span>}
         </div>
       )}
+      {revoked && <p className="mt-2 text-xs text-ink-soft">Disconnected — kept for history, no longer tested or used.</p>}
+
+      {editing && (
+        <div className="mt-2 space-y-2 rounded-md border border-line bg-bg p-2">
+          <input
+            placeholder="Connection name (optional label)"
+            value={editForm.connection_name}
+            onChange={(e) => setEditForm({ ...editForm, connection_name: e.target.value })}
+            className="w-full rounded-md border border-line px-2 py-1 text-xs"
+          />
+          <div className="flex gap-2">
+            <input
+              placeholder="Host"
+              value={editForm.host}
+              onChange={(e) => setEditForm({ ...editForm, host: e.target.value })}
+              className="flex-1 rounded-md border border-line px-2 py-1 text-xs"
+            />
+            {showsPort && (
+              <input
+                type="number"
+                placeholder="Port"
+                value={editForm.port}
+                onChange={(e) => setEditForm({ ...editForm, port: Number(e.target.value) })}
+                className="w-24 rounded-md border border-line px-2 py-1 text-xs"
+              />
+            )}
+          </div>
+          <div className="flex gap-2">
+            <input
+              placeholder="Database name"
+              value={editForm.database_name}
+              onChange={(e) => setEditForm({ ...editForm, database_name: e.target.value })}
+              className="flex-1 rounded-md border border-line px-2 py-1 text-xs"
+            />
+            <input
+              placeholder="Username"
+              value={editForm.username}
+              onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+              className="flex-1 rounded-md border border-line px-2 py-1 text-xs"
+            />
+          </div>
+          <input
+            type="password"
+            placeholder="New password (leave blank to keep current)"
+            value={editForm.password}
+            onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+            className="w-full rounded-md border border-line px-2 py-1 text-xs"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={submitEdit}
+              disabled={submitting || Object.keys(editPayload).length === 0}
+              className="rounded-md border border-transparent bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-ink disabled:cursor-not-allowed disabled:bg-bg disabled:text-ink-faint"
+            >
+              {submitting ? 'Submitting…' : 'Submit for approval'}
+            </button>
+            <span className="text-[11px] text-ink-soft">Goes to {approverNames} — you can't approve your own change.</span>
+          </div>
+        </div>
+      )}
+
+      {recentDecided.length > 0 && (
+        <div className="mt-2 space-y-0.5">
+          {recentDecided.map((c) => (
+            <div key={c.change_id} className="text-[11px] text-ink-soft">
+              {new Date(c.requested_at).toLocaleDateString()} — {describeConnectionChange(c)}:{' '}
+              <span className={c.approval_status === 'approved' ? 'font-medium text-accent-ink' : 'font-medium text-red-600'}>
+                {c.approval_status === 'approved' ? 'approved' : 'rejected'}
+              </span>
+              {c.approval_status === 'rejected' && c.rejected_reason ? ` (${c.rejected_reason})` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={confirmingDisconnect}
+        title="Disconnect this connection"
+        message={`Request disconnecting this connection? It goes to ${approverNames} for approval — you won't be able to approve your own request. Once approved, this connection stops being tested and its data is no longer discovered, but its history is kept.`}
+        confirmLabel="Request disconnect"
+        danger
+        onConfirm={requestDisconnect}
+        onCancel={() => setConfirmingDisconnect(false)}
+      />
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Permanently delete this connection"
+        message={`Request permanently deleting this connection? It goes to ${approverNames} for approval — you won't be able to approve your own request. Once approved this cannot be undone: the connection and its own change history are removed for good (discovered tables and control mappings that came from it are not affected). Prefer "Disconnect" if you just want to stop using it while keeping the record.`}
+        confirmLabel="Request deletion"
+        danger
+        onConfirm={requestDelete}
+        onCancel={() => setConfirmingDelete(false)}
+      />
+      <ConfirmDialog
+        open={rejectingChangeId !== null}
+        title="Reject this change"
+        message="Reject this connection change? It will never take effect — the person who submitted it can see why and resubmit if appropriate."
+        confirmLabel="Reject"
+        reasonRequired
+        reasonValue={rejectReason}
+        onReasonChange={setRejectReason}
+        reasonPlaceholder="Why is this change being rejected?"
+        onConfirm={submitReject}
+        onCancel={() => {
+          setRejectingChangeId(null)
+          setRejectReason('')
+        }}
+      />
     </div>
   )
 }
@@ -373,9 +711,22 @@ function HubSpotConnectionPanel({ source, canManage }: { source: DataSourceOut; 
   )
 }
 
-function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut; gateways: GatewayOut[]; canManage: boolean }) {
+function DataSourceCard({
+  source,
+  gateways,
+  canManage,
+  canApproveChange,
+}: {
+  source: DataSourceOut
+  gateways: GatewayOut[]
+  canManage: boolean
+  canApproveChange: boolean
+}) {
   const [connections, setConnections] = useState<DataConnectionOut[]>([])
   const [entities, setEntities] = useState<DataEntityOut[]>([])
+  const [eligibleApprovers, setEligibleApprovers] = useState<EligibleApproverOut[]>([])
+  const [showHiddenConnections, setShowHiddenConnections] = useState(false)
+  const [showHiddenEntities, setShowHiddenEntities] = useState(false)
   const [mode, setMode] = useState<'gateway' | 'direct'>('gateway')
   const [selectedGatewayId, setSelectedGatewayId] = useState('')
   const [provider, setProvider] = useState<Provider | ''>('')
@@ -401,9 +752,47 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
   const load = () => {
     apiClient.get<DataConnectionOut[]>(`/data-sources/${source.data_source_id}/connections`).then((res) => setConnections(res.data))
     apiClient.get<DataEntityOut[]>(`/data-sources/${source.data_source_id}/entities`).then((res) => setEntities(res.data))
+    apiClient
+      .get<EligibleApproverOut[]>(`/organizations/${source.organization_id}/data-sources/eligible-approvers`)
+      .then((res) => setEligibleApprovers(res.data))
   }
 
   useEffect(load, [source.data_source_id])
+
+  const toggleConnectionHidden = async (connection: DataConnectionOut) => {
+    await apiClient.patch(`/connections/${connection.connection_id}/hidden`, { hidden: !connection.is_hidden })
+    load()
+  }
+
+  const toggleEntityHidden = async (entity: DataEntityOut) => {
+    await apiClient.patch(`/data-sources/${source.data_source_id}/entities/${entity.entity_id}/hidden`, { hidden: !entity.is_hidden })
+    load()
+  }
+
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const setAllConnectionsHidden = async (hidden: boolean) => {
+    setBulkBusy(true)
+    try {
+      await apiClient.patch(`/data-sources/${source.data_source_id}/connections/hidden`, { hidden })
+      load()
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+  const setAllEntitiesHidden = async (hidden: boolean) => {
+    setBulkBusy(true)
+    try {
+      await apiClient.patch(`/data-sources/${source.data_source_id}/entities/hidden`, { hidden })
+      load()
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const visibleConnections = connections.filter((c) => showHiddenConnections || !c.is_hidden)
+  const hiddenConnectionCount = connections.length - visibleConnections.length
+  const visibleEntities = entities.filter((e) => showHiddenEntities || !e.is_hidden)
+  const hiddenEntityCount = entities.length - visibleEntities.length
 
   const createConnection = async () => {
     if (isAddingConnection) return // already in flight — ignore extra clicks instead of firing again
@@ -468,11 +857,50 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
         <HubSpotConnectionPanel source={source} canManage={canManage} />
       ) : (
       <div className="border-t border-line px-4 py-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Connections</div>
-        {connections.map((c) => (
-          <ConnectionRow key={c.connection_id} connection={c} canManage={canManage} onDiscovered={load} />
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Connections</div>
+          <div className="flex items-center gap-2">
+            {visibleConnections.length > 0 && (
+              <button
+                onClick={() => setAllConnectionsHidden(true)}
+                disabled={bulkBusy}
+                className="text-xs font-medium text-ink-soft hover:text-ink hover:underline disabled:opacity-60"
+              >
+                Hide all
+              </button>
+            )}
+            {hiddenConnectionCount > 0 && (
+              <>
+                <button
+                  onClick={() => setAllConnectionsHidden(false)}
+                  disabled={bulkBusy}
+                  className="text-xs font-medium text-ink-soft hover:text-ink hover:underline disabled:opacity-60"
+                >
+                  Unhide all
+                </button>
+                <button
+                  onClick={() => setShowHiddenConnections((v) => !v)}
+                  className="text-xs font-medium text-ink-soft hover:text-ink hover:underline"
+                >
+                  {showHiddenConnections ? 'Hide hidden' : `Show ${hiddenConnectionCount} hidden`}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+        {visibleConnections.map((c) => (
+          <ConnectionRow
+            key={c.connection_id}
+            connection={c}
+            canManage={canManage}
+            canApproveChange={canApproveChange}
+            eligibleApprovers={eligibleApprovers}
+            onDiscovered={load}
+            onChanged={load}
+            onToggleHidden={toggleConnectionHidden}
+          />
         ))}
-        {connections.length === 0 && <div className="mt-1 text-sm text-ink-soft">No connection yet.</div>}
+        {visibleConnections.length === 0 && <div className="mt-1 text-sm text-ink-soft">No connection yet.</div>}
 
         {canManage && (
           <div className="mt-3 rounded-md border border-line p-3">
@@ -774,11 +1202,41 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
 
       {entities.length > 0 && (
         <div className="border-t border-line">
-          <div className="px-4 pt-3 text-xs font-medium uppercase tracking-wide text-ink-soft">
-            Discovered tables ({entities.length})
+          <div className="flex items-center justify-between px-4 pt-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">
+              Discovered tables ({visibleEntities.length})
+            </div>
+            <div className="flex items-center gap-2">
+              {visibleEntities.length > 0 && (
+                <button
+                  onClick={() => setAllEntitiesHidden(true)}
+                  disabled={bulkBusy}
+                  className="text-xs font-medium text-ink-soft hover:text-ink hover:underline disabled:opacity-60"
+                >
+                  Hide all
+                </button>
+              )}
+              {hiddenEntityCount > 0 && (
+                <>
+                  <button
+                    onClick={() => setAllEntitiesHidden(false)}
+                    disabled={bulkBusy}
+                    className="text-xs font-medium text-ink-soft hover:text-ink hover:underline disabled:opacity-60"
+                  >
+                    Unhide all
+                  </button>
+                  <button
+                    onClick={() => setShowHiddenEntities((v) => !v)}
+                    className="text-xs font-medium text-ink-soft hover:text-ink hover:underline"
+                  >
+                    {showHiddenEntities ? 'Hide hidden' : `Show ${hiddenEntityCount} hidden`}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
-          {entities.map((e) => (
-            <EntityRow key={e.entity_id} entity={e} />
+          {visibleEntities.map((e) => (
+            <EntityRow key={e.entity_id} entity={e} onToggleHidden={toggleEntityHidden} />
           ))}
         </div>
       )}
@@ -796,6 +1254,7 @@ export function DataSourcesPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const canManage = hasRole('Platform Super Admin', 'Audit Manager', 'IT/Audit Technical User', 'Client IT Admin')
+  const canApproveChange = hasRole('Platform Super Admin', 'Audit Manager')
 
   const load = (orgId: string) => {
     apiClient.get<DataSourceOut[]>(`/organizations/${orgId}/data-sources`).then((res) => setSources(res.data))
@@ -833,7 +1292,7 @@ export function DataSourcesPage() {
 
       <div className="mt-4 space-y-4">
         {sources.map((s) => (
-          <DataSourceCard key={s.data_source_id} source={s} gateways={gateways} canManage={canManage} />
+          <DataSourceCard key={s.data_source_id} source={s} gateways={gateways} canManage={canManage} canApproveChange={canApproveChange} />
         ))}
         {sources.length === 0 && (
           <div className="rounded-lg border border-line bg-surface px-4 py-6 text-center text-sm text-ink-soft">

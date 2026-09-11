@@ -5,18 +5,31 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import enforce_same_organization, get_current_gateway, get_current_user, require_permissions
 from app.db.session import get_db
-from app.models.data_source import DataConnection, DataEntity, DataSource, Gateway
+from app.models.data_source import DataConnection, DataConnectionChange, DataEntity, DataSource, Gateway
 from app.models.rbac import User
 from app.schemas.data_source import (
     ConnectionTestResult,
+    DataConnectionChangeOut,
     DataConnectionCreate,
     DataConnectionOut,
+    DataConnectionRejectRequest,
+    DataConnectionUpdateRequest,
     DataEntityOut,
     DataFieldOut,
     DataSourceCreate,
     DataSourceOut,
     DirectConnectionCreate,
     DiscoveryPayload,
+    HiddenToggleRequest,
+)
+from app.schemas.user import EligibleApproverOut
+from app.services.data_connection_change_service import (
+    approve_connection_change,
+    list_changes_for_connection,
+    reject_connection_change,
+    request_connection_delete,
+    request_connection_disconnect,
+    request_connection_update,
 )
 from app.services.data_source_service import (
     create_connection,
@@ -31,8 +44,13 @@ from app.services.data_source_service import (
     list_fields,
     record_connection_test_result,
     replace_discovery,
+    set_all_connections_hidden,
+    set_all_entities_hidden,
+    set_connection_hidden,
+    set_entity_hidden,
     test_direct_connection,
 )
+from app.services.user_service import list_users_with_permission_for_organization
 
 router = APIRouter(tags=["data-sources"])
 
@@ -163,11 +181,191 @@ def discover_connection_route(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not read the schema from this database. Test the connection first.") from exc
 
 
+@router.patch("/data-sources/{data_source_id}/connections/hidden")
+def set_all_connections_hidden_route(
+    data_source_id: uuid.UUID,
+    payload: HiddenToggleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    count = set_all_connections_hidden(
+        db, data_source_id=data_source_id, hidden=payload.hidden, organization_id=source.organization_id, updated_by_user_id=user.user_id
+    )
+    return {"updated": count}
+
+
+@router.patch("/connections/{connection_id}/hidden", response_model=DataConnectionOut)
+def set_connection_hidden_route(
+    connection_id: uuid.UUID,
+    payload: HiddenToggleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Any org member can declutter their own view of a connection list —
+    this never changes what the connection actually does, so it doesn't
+    need data_sources:manage, only membership in the same organization."""
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    return set_connection_hidden(
+        db, connection=connection, hidden=payload.hidden, organization_id=source.organization_id, updated_by_user_id=user.user_id
+    )
+
+
+def _get_pending_change_or_404(db: Session, connection_id: uuid.UUID, change_id: uuid.UUID) -> DataConnectionChange:
+    change = db.get(DataConnectionChange, change_id)
+    if change is None or change.connection_id != connection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Data connection change not found")
+    return change
+
+
+@router.get("/connections/{connection_id}/changes", response_model=list[DataConnectionChangeOut])
+def list_connection_changes_route(
+    connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    _get_connection_in_organization(db, connection_id, user)
+    return list_changes_for_connection(db, connection_id=connection_id)
+
+
+@router.post(
+    "/connections/{connection_id}/changes/update", response_model=DataConnectionChangeOut, status_code=status.HTTP_202_ACCEPTED
+)
+def request_connection_update_route(
+    connection_id: uuid.UUID,
+    payload: DataConnectionUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    try:
+        return request_connection_update(
+            db, connection=connection, payload=payload, requested_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/connections/{connection_id}/changes/disconnect", response_model=DataConnectionChangeOut, status_code=status.HTTP_202_ACCEPTED
+)
+def request_connection_disconnect_route(
+    connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    try:
+        return request_connection_disconnect(
+            db, connection=connection, requested_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/connections/{connection_id}/changes/delete", response_model=DataConnectionChangeOut, status_code=status.HTTP_202_ACCEPTED
+)
+def request_connection_delete_route(
+    connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    try:
+        return request_connection_delete(
+            db, connection=connection, requested_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/connections/{connection_id}/changes/{change_id}/approve", response_model=DataConnectionChangeOut)
+def approve_connection_change_route(
+    connection_id: uuid.UUID,
+    change_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:approve_change")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    change = _get_pending_change_or_404(db, connection_id, change_id)
+    try:
+        return approve_connection_change(
+            db, change=change, connection=connection, approved_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.post("/connections/{connection_id}/changes/{change_id}/reject", response_model=DataConnectionChangeOut)
+def reject_connection_change_route(
+    connection_id: uuid.UUID,
+    change_id: uuid.UUID,
+    payload: DataConnectionRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:approve_change")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    change = _get_pending_change_or_404(db, connection_id, change_id)
+    try:
+        return reject_connection_change(
+            db, change=change, reason=payload.reason, rejected_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.get("/organizations/{organization_id}/data-sources/eligible-approvers", response_model=list[EligibleApproverOut])
+def list_eligible_connection_change_approvers(
+    organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> list[User]:
+    enforce_same_organization(organization_id, user, db)
+    return list_users_with_permission_for_organization(db, organization_id=organization_id, permission_name="data_sources:approve_change")
+
+
 @router.get("/data-sources/{data_source_id}/entities", response_model=list[DataEntityOut])
 def list_entities_route(data_source_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     source = _get_source_or_404(db, data_source_id)
     enforce_same_organization(source.organization_id, user, db)
     return list_entities(db, data_source_id=data_source_id)
+
+
+@router.patch("/data-sources/{data_source_id}/entities/hidden")
+def set_all_entities_hidden_route(
+    data_source_id: uuid.UUID,
+    payload: HiddenToggleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    count = set_all_entities_hidden(
+        db, data_source_id=data_source_id, hidden=payload.hidden, organization_id=source.organization_id, updated_by_user_id=user.user_id
+    )
+    return {"updated": count}
+
+
+@router.patch("/data-sources/{data_source_id}/entities/{entity_id}/hidden", response_model=DataEntityOut)
+def set_entity_hidden_route(
+    data_source_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    payload: HiddenToggleRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    entity = db.get(DataEntity, entity_id)
+    if entity is None or entity.data_source_id != data_source_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+    return set_entity_hidden(
+        db, entity=entity, hidden=payload.hidden, organization_id=source.organization_id, updated_by_user_id=user.user_id
+    )
 
 
 @router.get("/entities/{entity_id}/fields", response_model=list[DataFieldOut])

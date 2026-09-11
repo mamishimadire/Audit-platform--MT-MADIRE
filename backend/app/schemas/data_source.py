@@ -107,6 +107,7 @@ class DataConnectionOut(OrmModel):
     connection_id: uuid.UUID
     data_source_id: uuid.UUID
     gateway_id: uuid.UUID | None
+    connection_name: str | None = None
     connection_mode: str
     db_type: str | None = None
     host: str | None = None
@@ -122,6 +123,66 @@ class DataConnectionOut(OrmModel):
     mongodb_srv: bool = True
     connection_status: str
     last_tested_at: datetime | None
+    is_hidden: bool = False
+
+
+ChangeType = Literal["update", "disconnect", "delete"]
+ChangeApprovalStatus = Literal["pending_approval", "approved", "rejected"]
+
+
+class DataConnectionUpdateRequest(OrmModel):
+    """Every field is optional — only the ones actually being changed need
+    be sent. At least one must be set (see the model_validator below);
+    an empty request is never a valid "change" for a reviewer to weigh."""
+
+    connection_name: str | None = None
+    host: str | None = None
+    port: int | None = None
+    database_name: str | None = None
+    username: str | None = None
+    # Write-only, like DirectConnectionCreate.password — never round-tripped
+    # back out of any response. Omit to leave the current credential as is.
+    password: str | None = None
+    oracle_connection_type: OracleConnectionType | None = None
+    sap_hana_encrypt: bool | None = None
+    snowflake_warehouse: str | None = None
+    snowflake_schema: str | None = None
+    snowflake_role: str | None = None
+    snowflake_auth_method: SnowflakeAuthMethod | None = None
+    snowflake_key_passphrase: str | None = None
+    mongodb_srv: bool | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "DataConnectionUpdateRequest":
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("At least one field must be set to propose a connection change.")
+        return self
+
+
+class DataConnectionChangeOut(OrmModel):
+    change_id: uuid.UUID
+    connection_id: uuid.UUID
+    change_type: ChangeType
+    # Never echoes a raw password/passphrase back — see
+    # data_connection_change_service for how those are stored pre-encrypted
+    # under their live column names instead.
+    proposed_changes: dict
+    approval_status: ChangeApprovalStatus
+    requested_by: uuid.UUID | None = None
+    requested_at: datetime
+    approved_by: uuid.UUID | None = None
+    approved_at: datetime | None = None
+    rejected_by: uuid.UUID | None = None
+    rejected_at: datetime | None = None
+    rejected_reason: str | None = None
+
+
+class DataConnectionRejectRequest(OrmModel):
+    reason: str
+
+
+class HiddenToggleRequest(OrmModel):
+    hidden: bool
 
 
 class ConnectionTestResult(OrmModel):
@@ -156,6 +217,7 @@ class DataEntityOut(OrmModel):
     entity_name: str
     entity_type: str
     description: str | None
+    is_hidden: bool = False
 
 
 class DataFieldOut(OrmModel):
