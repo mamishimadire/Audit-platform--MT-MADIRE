@@ -473,7 +473,7 @@ function DeviceRow({
               )}
               <div className="flex items-center justify-end gap-2">
                 {device.status === 'pending_revocation' ? (
-                  canApproveRevoke ? (
+                  canApproveRevoke && device.revocation_requested_by !== currentUserId ? (
                     <>
                       <button onClick={approveRevocation} disabled={actionBusy} className={BTN_PRIMARY}>
                         Approve revocation
@@ -483,10 +483,12 @@ function DeviceRow({
                       </button>
                     </>
                   ) : (
-                    <span className="text-xs text-ink-faint">Awaiting approval</span>
+                    <span className="text-xs text-ink-faint">
+                      {canApproveRevoke ? 'You requested this — a different approver is needed' : 'Awaiting approval'}
+                    </span>
                   )
                 ) : device.status === 'pending_deletion' ? (
-                  canApproveDelete ? (
+                  canApproveDelete && device.deletion_requested_by !== currentUserId ? (
                     <>
                       <button onClick={approveDeletion} disabled={actionBusy} className={BTN_PRIMARY}>
                         Approve deletion
@@ -496,7 +498,9 @@ function DeviceRow({
                       </button>
                     </>
                   ) : (
-                    <span className="text-xs text-ink-faint">Awaiting approval</span>
+                    <span className="text-xs text-ink-faint">
+                      {canApproveDelete ? 'You requested this — a different approver is needed' : 'Awaiting approval'}
+                    </span>
                   )
                 ) : (
                   <>
