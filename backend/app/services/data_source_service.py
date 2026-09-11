@@ -231,6 +231,7 @@ def create_direct_connection(
         encrypted_snowflake_key_passphrase=(
             encrypt_secret(payload.snowflake_key_passphrase) if payload.snowflake_key_passphrase else None
         ),
+        mongodb_srv=payload.mongodb_srv,
         connection_status="pending",
         created_by=created_by_user_id,
     )
@@ -254,6 +255,15 @@ def create_direct_connection(
 def test_direct_connection(db: Session, *, connection: DataConnection) -> tuple[bool, str]:
     """Actually connects to the target database — the only way to know a
     direct (non-Gateway) connection works, since there's no Gateway to ask."""
+    if connection.db_type == "mongodb":
+        # Not a SQLAlchemy engine — MongoDB has its own driver/connector
+        # module entirely (see mongo_connector.py's docstring for why).
+        from app.services.mongo_connector import test_mongo_connection
+
+        success, detail = test_mongo_connection(connection)
+        record_connection_test_result(db, connection=connection, success=success)
+        return success, detail
+
     try:
         engine = _build_direct_engine(connection)
         with engine.connect():
@@ -270,6 +280,12 @@ def test_direct_connection(db: Session, *, connection: DataConnection) -> tuple[
 
 
 def discover_direct_connection_schema(db: Session, *, connection: DataConnection) -> list[DataEntity]:
+    if connection.db_type == "mongodb":
+        from app.services.mongo_connector import discover_mongo_schema
+
+        entities = discover_mongo_schema(connection)
+        return replace_discovery(db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities))
+
     engine = _build_direct_engine(connection)
     try:
         inspector = inspect(engine)

@@ -86,6 +86,14 @@ class DataConnection(Base, TimestampMixin):
     snowflake_role: Mapped[str | None] = mapped_column(String(150))
     snowflake_auth_method: Mapped[str] = mapped_column(String(20), nullable=False, server_default="password")
     encrypted_snowflake_key_passphrase: Mapped[str | None] = mapped_column(Text)
+    # MongoDB-only — host holds the cluster address, database_name the
+    # target database, username/encrypted_password reused as-is (all
+    # already generic enough). mongodb_srv selects the connection string
+    # scheme: True for `mongodb+srv://` (Atlas and most managed clusters —
+    # a DNS SRV lookup resolves the real hosts/ports, so `port` is unused),
+    # False for a plain `mongodb://host:port/` self-hosted/replica-set
+    # deployment. See migration 0040.
+    mongodb_srv: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     connection_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending")
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column(

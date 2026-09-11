@@ -252,7 +252,7 @@ export interface DataSourceOut {
   status: string
 }
 
-export type DirectDbType = 'postgresql' | 'mysql' | 'mssql' | 'oracle' | 'sap_hana' | 'snowflake'
+export type DirectDbType = 'postgresql' | 'mysql' | 'mssql' | 'oracle' | 'sap_hana' | 'snowflake' | 'mongodb'
 export type OracleConnectionType = 'service_name' | 'sid'
 export type SnowflakeAuthMethod = 'password' | 'key_pair'
 
@@ -272,6 +272,7 @@ export interface DataConnectionOut {
   snowflake_schema: string | null
   snowflake_role: string | null
   snowflake_auth_method: SnowflakeAuthMethod
+  mongodb_srv: boolean
   connection_status: string
   last_tested_at: string | null
 }

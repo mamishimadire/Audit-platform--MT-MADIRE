@@ -24,7 +24,7 @@ class DataSourceOut(OrmModel):
     status: str
 
 
-DirectDbType = Literal["postgresql", "mysql", "mssql", "oracle", "sap_hana", "snowflake"]
+DirectDbType = Literal["postgresql", "mysql", "mssql", "oracle", "sap_hana", "snowflake", "mongodb"]
 OracleConnectionType = Literal["service_name", "sid"]
 SnowflakeAuthMethod = Literal["password", "key_pair"]
 
@@ -67,6 +67,12 @@ class DirectConnectionCreate(OrmModel):
     # Only used when snowflake_auth_method == 'key_pair' and the private
     # key itself is passphrase-protected.
     snowflake_key_passphrase: str | None = None
+    # MongoDB-only. True (default) = `mongodb+srv://` — a DNS SRV lookup
+    # resolves the real hosts/ports, so `port` is not needed (this is what
+    # every MongoDB Atlas cluster uses, e.g. host="mamishi.xxxxx.mongodb.net").
+    # False = a plain `mongodb://host:port/` self-hosted/replica-set
+    # deployment, where port is then required like every other engine.
+    mongodb_srv: bool = True
 
     @model_validator(mode="after")
     def _oracle_needs_a_connection_type(self) -> "DirectConnectionCreate":
@@ -82,7 +88,11 @@ class DirectConnectionCreate(OrmModel):
 
     @model_validator(mode="after")
     def _non_snowflake_needs_a_port(self) -> "DirectConnectionCreate":
-        if self.db_type != "snowflake" and self.port is None:
+        # MongoDB needs a port only outside SRV mode — SRV resolves it via DNS.
+        if self.db_type == "mongodb":
+            if not self.mongodb_srv and self.port is None:
+                raise ValueError("port is required for a MongoDB connection that isn't using mongodb+srv://.")
+        elif self.db_type != "snowflake" and self.port is None:
             raise ValueError("port is required for this connection type.")
         return self
 
@@ -109,6 +119,7 @@ class DataConnectionOut(OrmModel):
     snowflake_schema: str | None = None
     snowflake_role: str | None = None
     snowflake_auth_method: str = "password"
+    mongodb_srv: bool = True
     connection_status: str
     last_tested_at: datetime | None
 
@@ -127,7 +138,10 @@ class DiscoveredField(OrmModel):
 
 class DiscoveredEntity(OrmModel):
     entity_name: str
-    entity_type: Literal["table", "view", "api", "file"] = "table"
+    # 'collection' — MongoDB: never labeled 'table', since it genuinely
+    # isn't one (no fixed columns, no schema enforcement at the database
+    # level) — see mongo_connector.py.
+    entity_type: Literal["table", "view", "api", "file", "collection"] = "table"
     description: str | None = None
     fields: list[DiscoveredField] = []
 

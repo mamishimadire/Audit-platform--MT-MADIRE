@@ -20,7 +20,10 @@ import type {
 // starting-point suggestion, not a real default; the field stays editable.
 // Snowflake has no port field at all (its dialect resolves one internally) —
 // this entry is never shown or used, just present so the Record stays total.
-const DEFAULT_PORT: Record<DirectDbType, number> = { postgresql: 5432, mysql: 3306, mssql: 1433, oracle: 1521, sap_hana: 30013, snowflake: 443 }
+// MongoDB's default (27017) only applies outside SRV mode — an Atlas/SRV
+// connection resolves its real hosts+ports via DNS, so the port field is
+// hidden entirely for the (default) SRV case; see direct.mongodb_srv below.
+const DEFAULT_PORT: Record<DirectDbType, number> = { postgresql: 5432, mysql: 3306, mssql: 1433, oracle: 1521, sap_hana: 30013, snowflake: 443, mongodb: 27017 }
 const DB_TYPE_LABELS: Record<DirectDbType, string> = {
   postgresql: 'PostgreSQL',
   mysql: 'MySQL',
@@ -28,6 +31,7 @@ const DB_TYPE_LABELS: Record<DirectDbType, string> = {
   oracle: 'Oracle Database',
   sap_hana: 'SAP HANA',
   snowflake: 'Snowflake',
+  mongodb: 'MongoDB',
 }
 
 type Provider = 'neon' | 'supabase' | 'aws_rds' | 'azure_sql' | 'gcp_sql' | 'other'
@@ -99,6 +103,11 @@ function EntityRow({ entity }: { entity: DataEntityOut }) {
       </button>
       {open && fields && (
         <div className="bg-bg px-3 py-2">
+          {entity.entity_type === 'collection' && entity.description && (
+            <p className="mb-1.5 text-[11px] italic text-ink-soft">
+              Inferred schema: {entity.description}
+            </p>
+          )}
           {fields.map((f) => (
             <div key={f.field_id} className="flex items-center gap-2 py-0.5 font-mono text-xs">
               {f.is_primary_key && <span className="rounded bg-accent-soft px-1 text-accent-ink">PK</span>}
@@ -156,6 +165,11 @@ function ConnectionRow({ connection, canManage, onDiscovered }: { connection: Da
                 <>
                   snowflake · {connection.host}/{connection.database_name}/{connection.snowflake_schema}
                   {connection.snowflake_warehouse && ` (warehouse: ${connection.snowflake_warehouse})`}
+                </>
+              ) : connection.db_type === 'mongodb' ? (
+                <>
+                  mongodb{connection.mongodb_srv ? '+srv' : ''} · {connection.host}
+                  {!connection.mongodb_srv && `:${connection.port}`}/{connection.database_name}
                 </>
               ) : (
                 <>
@@ -340,6 +354,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
     snowflake_role: '',
     snowflake_auth_method: 'password' as SnowflakeAuthMethod,
     snowflake_key_passphrase: '',
+    mongodb_srv: true,
   })
   const [isAddingConnection, setIsAddingConnection] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -374,6 +389,7 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
           snowflake_role: '',
           snowflake_auth_method: 'password',
           snowflake_key_passphrase: '',
+          mongodb_srv: true,
         })
       }
       load()
@@ -386,11 +402,13 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
 
   // SAP HANA needs no database/tenant name for a normal tenant-DB connection.
   // Snowflake needs no port, but does need a warehouse + schema instead.
+  // MongoDB needs no port only while using mongodb+srv:// (the default —
+  // DNS resolves the real hosts/ports, same reason Snowflake has no port).
   const directFormValid =
     direct.host &&
     direct.username &&
     direct.password &&
-    (direct.db_type === 'snowflake' || direct.port) &&
+    (direct.db_type === 'snowflake' || (direct.db_type === 'mongodb' && direct.mongodb_srv) || direct.port) &&
     (direct.db_type === 'sap_hana' || direct.database_name) &&
     (direct.db_type !== 'snowflake' || (direct.snowflake_warehouse && direct.snowflake_schema))
 
@@ -467,6 +485,14 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                     Snowflake compute credits. Configure execution frequency appropriately.
                   </p>
                 )}
+                {direct.db_type === 'mongodb' && (
+                  <p className="rounded-md border border-line bg-bg px-2 py-1.5 text-xs text-ink-soft">
+                    MongoDB has no fixed tables/columns — schema discovery samples up to 100 documents per collection
+                    and infers field names/types from what's actually there. Nested objects appear as dotted paths
+                    (e.g. <span className="font-mono">employee.department.name</span>); this is always an inferred
+                    structure, never a guaranteed one.
+                  </p>
+                )}
                 <div className="flex gap-2">
                   <select
                     value={direct.db_type}
@@ -483,12 +509,18 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                     ))}
                   </select>
                   <input
-                    placeholder={direct.db_type === 'snowflake' ? 'Account identifier (e.g. xy12345.us-east-1)' : 'Host (e.g. db.example.com)'}
+                    placeholder={
+                      direct.db_type === 'snowflake'
+                        ? 'Account identifier (e.g. xy12345.us-east-1)'
+                        : direct.db_type === 'mongodb'
+                          ? 'Cluster address (e.g. mamishi.xxxxx.mongodb.net)'
+                          : 'Host (e.g. db.example.com)'
+                    }
                     value={direct.host}
                     onChange={(e) => setDirect({ ...direct, host: e.target.value })}
                     className="flex-1 rounded-md border border-line px-2 py-1 text-sm"
                   />
-                  {direct.db_type !== 'snowflake' && (
+                  {direct.db_type !== 'snowflake' && !(direct.db_type === 'mongodb' && direct.mongodb_srv) && (
                     <input
                       type="number"
                       placeholder="Port"
@@ -498,6 +530,17 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                     />
                   )}
                 </div>
+                {direct.db_type === 'mongodb' && (
+                  <label className="flex items-center gap-2 text-xs text-ink">
+                    <input
+                      type="checkbox"
+                      checked={direct.mongodb_srv}
+                      onChange={(e) => setDirect({ ...direct, mongodb_srv: e.target.checked })}
+                    />
+                    Use SRV connection (mongodb+srv://) — standard for MongoDB Atlas. Uncheck only for a self-hosted
+                    deployment connected by host and port.
+                  </label>
+                )}
                 {direct.db_type === 'oracle' && (
                   <div className="flex gap-2 text-xs font-medium">
                     <button
@@ -525,7 +568,9 @@ function DataSourceCard({ source, gateways, canManage }: { source: DataSourceOut
                           : 'Service Name (e.g. ORCLPDB1)'
                         : direct.db_type === 'snowflake'
                           ? 'Database'
-                          : 'Database name'
+                          : direct.db_type === 'mongodb'
+                            ? 'Database name (the target database within this cluster)'
+                            : 'Database name'
                     }
                     value={direct.database_name}
                     onChange={(e) => setDirect({ ...direct, database_name: e.target.value })}
