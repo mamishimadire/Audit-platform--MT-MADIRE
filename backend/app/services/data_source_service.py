@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, delete, insert, inspect, select, update
+from sqlalchemy import MetaData, Table, create_engine, delete, distinct, insert, inspect, select, update
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
@@ -515,6 +515,58 @@ def set_all_connections_hidden(
     )
     db.commit()
     return len(ids)
+
+
+def _sample_distinct_sql_values(connection: DataConnection, *, table_name: str, column_name: str, limit: int) -> set[str] | None:
+    """Table/column reflection (not raw string interpolation) so identifier
+    quoting is handled correctly per-dialect — table_name/column_name come
+    from our own discovery metadata (the target database's real catalog),
+    never end-user input, but reflecting through SQLAlchemy Core is still
+    the right way to build this query rather than hand-quoting per engine."""
+    engine = _build_direct_engine(connection)
+    try:
+        metadata = MetaData()
+        table = Table(table_name, metadata, autoload_with=engine)
+        if column_name not in table.c:
+            return None
+        with engine.connect() as conn:
+            rows = conn.execute(select(distinct(table.c[column_name])).limit(limit))
+            return {str(row[0]) for row in rows if row[0] is not None}
+    finally:
+        engine.dispose()
+
+
+def sample_distinct_values(db: Session, *, data_source_id: uuid.UUID, entity_name: str, field_name: str, limit: int = 500) -> set[str] | None:
+    """For relationship validation: the actual distinct values a mapped
+    field holds right now, sourced from whichever of this data source's
+    direct connections is currently connected. None means "couldn't check"
+    (no direct connection available — e.g. Gateway-only, or the query
+    itself failed), never an empty set standing in for "we don't know."
+    A data source can have several direct connections (see the Data
+    Sources page); entities/fields aren't tied to a specific one of them
+    (replace_discovery pools them under the data source), so this tries
+    each connected direct connection in turn rather than assuming a single
+    owner.
+    """
+    connections = db.scalars(
+        select(DataConnection).where(
+            DataConnection.data_source_id == data_source_id,
+            DataConnection.connection_mode == "direct",
+            DataConnection.connection_status == "connected",
+        )
+    ).all()
+    for connection in connections:
+        try:
+            if connection.db_type == "mongodb":
+                from app.services.mongo_connector import sample_distinct_field_values
+
+                return sample_distinct_field_values(connection, collection_name=entity_name, field_name=field_name, limit=limit)
+            values = _sample_distinct_sql_values(connection, table_name=entity_name, column_name=field_name, limit=limit)
+            if values is not None:
+                return values
+        except Exception:  # noqa: BLE001 — try the next connection rather than fail the whole check over one bad/unreachable one
+            continue
+    return None
 
 
 def list_entities_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[DataEntity]:

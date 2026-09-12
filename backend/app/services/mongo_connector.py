@@ -167,6 +167,23 @@ def _discover_collection(name: str, sampled_docs: list[dict]) -> DiscoveredEntit
     return DiscoveredEntity(entity_name=name, entity_type="collection", description=description, fields=fields)
 
 
+def sample_distinct_field_values(connection: DataConnection, *, collection_name: str, field_name: str, limit: int = 500) -> set[str]:
+    """Used for relationship validation (does a mapped join field on this
+    side actually share values with the other side?), not discovery.
+    `.distinct()` has no server-side LIMIT of its own — capped after
+    fetching, which is fine at audit-data scale but would need a real
+    aggregation-pipeline $group+$limit approach against a collection with
+    an enormous number of distinct values."""
+    password = decrypt_secret(connection.encrypted_password)
+    client = _build_mongo_client(connection, password=password)
+    try:
+        database = client[connection.database_name]
+        values = database[collection_name].distinct(field_name)
+        return {str(v) for v in values[:limit] if v is not None}
+    finally:
+        client.close()
+
+
 def discover_mongo_schema(connection: DataConnection) -> list[DiscoveredEntity]:
     password = decrypt_secret(connection.encrypted_password)
     client = _build_mongo_client(connection, password=password)

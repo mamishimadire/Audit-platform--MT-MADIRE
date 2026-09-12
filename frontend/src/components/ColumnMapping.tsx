@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { ConfirmDialog } from './ConfirmDialog'
-import type { MappingSuggestion, TestDataMappingOut } from '../types/api'
+import type { MappingReadinessOut, MappingSuggestion, TestDataMappingOut } from '../types/api'
 
 const THRESHOLD_PRESETS = [90, 80]
 
@@ -55,12 +55,27 @@ export function ColumnMappingGrid({
   const [bulkApproving, setBulkApproving] = useState(false)
   const [bulkRejecting, setBulkRejecting] = useState(false)
   const [bulkRejectReason, setBulkRejectReason] = useState('')
+  // Which canonical fields ("object.field") this control's own rule
+  // template actually reads, for whichever object is bound to THIS table —
+  // null means no template exists for this control at all (137 of 157
+  // controls today), so there's no contract to narrow the grid down to and
+  // every discovered column stays visible, same as before this existed.
+  const [requiredFields, setRequiredFields] = useState<Set<string> | null>(null)
+  const [showOptional, setShowOptional] = useState(false)
 
   const load = () => {
     apiClient.get<MappingSuggestion[]>(`/data-sources/entities/${entityId}/mapping-suggestions`).then((res) => setSuggestions(res.data))
     apiClient
       .get<TestDataMappingOut[]>(`/organizations/${organizationId}/audit-tests/${auditTestId}/data-mappings`)
       .then((res) => setMappings(res.data.filter((m) => m.entity_id === entityId)))
+    apiClient
+      .get<MappingReadinessOut>(`/organizations/${organizationId}/audit-tests/${auditTestId}/template-requirements`)
+      .then((res) => {
+        const boundObject = res.data.objects.find((o) => o.entity_id === entityId)
+        setRequiredFields(
+          boundObject ? new Set(boundObject.required_fields.map((f) => `${boundObject.canonical_object}.${f.canonical_field}`)) : null,
+        )
+      })
   }
 
   useEffect(load, [entityId, auditTestId])
@@ -173,6 +188,64 @@ export function ColumnMappingGrid({
 
   const eligibleCount = suggestions.filter((s) => s.confidence_score >= threshold && !mappingFor(s.field_id)).length
 
+  const canonicalFieldFor = (s: MappingSuggestion) => mappingFor(s.field_id)?.canonical_field ?? s.suggested_canonical_field
+  const isRequired = (s: MappingSuggestion) => requiredFields !== null && requiredFields.has(canonicalFieldFor(s))
+  const requiredSuggestions = requiredFields !== null ? suggestions.filter(isRequired) : suggestions
+  const optionalSuggestions = requiredFields !== null ? suggestions.filter((s) => !isRequired(s)) : []
+
+  const renderRow = (s: MappingSuggestion) => {
+    const existing = mappingFor(s.field_id)
+    return (
+      <tr key={s.field_id} className="border-t border-line">
+        <td className="px-3 py-1.5 font-mono text-xs">{s.field_name}</td>
+        <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">{existing?.canonical_field ?? s.suggested_canonical_field}</td>
+        <td className="px-3 py-1.5">
+          <ConfidenceBar value={s.confidence_score} />
+        </td>
+        <td className="px-3 py-1.5">
+          {existing ? (
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[existing.mapping_status] ?? ''}`}>
+              {existing.mapping_status === 'approved' ? '✓ Approved' : existing.mapping_status}
+            </span>
+          ) : (
+            <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">Needs review</span>
+          )}
+        </td>
+        <td className="px-3 py-1.5 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {existing && existing.mapping_status !== 'approved' && (
+              <>
+                <button
+                  onClick={() => approve(existing.mapping_id)}
+                  disabled={approvingId === existing.mapping_id}
+                  className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60"
+                >
+                  {approvingId === existing.mapping_id ? 'Approving…' : 'Approve'}
+                </button>
+                <button onClick={() => setRejectingId(existing.mapping_id)} className="text-xs font-medium text-red-600 hover:underline">
+                  Reject
+                </button>
+              </>
+            )}
+            {existing ? (
+              <button onClick={() => setUnmappingId(existing.mapping_id)} className="text-xs font-medium text-red-600 hover:underline">
+                Unmap
+              </button>
+            ) : (
+              <button
+                onClick={() => accept(s)}
+                disabled={mappingId === s.field_id}
+                className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60"
+              >
+                {mappingId === s.field_id ? 'Mapping…' : 'Accept'}
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
   return (
     <div className="mt-2">
       <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
@@ -224,6 +297,13 @@ export function ColumnMappingGrid({
           </span>
         )}
       </div>
+      {requiredFields !== null && (
+        <div className="mb-1.5 text-[11px] text-ink-soft">
+          {requiredFields.size > 0
+            ? "Only the columns this control's test actually reads are shown by default — everything else this table has is still available below."
+            : "This control has a rule template, but it doesn't read any columns from this particular table."}
+        </div>
+      )}
       <div className="overflow-hidden rounded-lg border border-line bg-surface">
         <table className="w-full text-sm">
           <thead>
@@ -236,60 +316,32 @@ export function ColumnMappingGrid({
             </tr>
           </thead>
           <tbody>
-            {suggestions.map((s) => {
-              const existing = mappingFor(s.field_id)
-              return (
-                <tr key={s.field_id} className="border-t border-line">
-                  <td className="px-3 py-1.5 font-mono text-xs">{s.field_name}</td>
-                  <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">{existing?.canonical_field ?? s.suggested_canonical_field}</td>
-                  <td className="px-3 py-1.5">
-                    <ConfidenceBar value={s.confidence_score} />
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {existing ? (
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[existing.mapping_status] ?? ''}`}>
-                        {existing.mapping_status === 'approved' ? '✓ Approved' : existing.mapping_status}
-                      </span>
-                    ) : (
-                      <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">Needs review</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {existing && existing.mapping_status !== 'approved' && (
-                        <>
-                          <button
-                            onClick={() => approve(existing.mapping_id)}
-                            disabled={approvingId === existing.mapping_id}
-                            className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60"
-                          >
-                            {approvingId === existing.mapping_id ? 'Approving…' : 'Approve'}
-                          </button>
-                          <button onClick={() => setRejectingId(existing.mapping_id)} className="text-xs font-medium text-red-600 hover:underline">
-                            Reject
-                          </button>
-                        </>
-                      )}
-                      {existing ? (
-                        <button onClick={() => setUnmappingId(existing.mapping_id)} className="text-xs font-medium text-red-600 hover:underline">
-                          Unmap
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => accept(s)}
-                          disabled={mappingId === s.field_id}
-                          className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60"
-                        >
-                          {mappingId === s.field_id ? 'Mapping…' : 'Accept'}
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              )
-            })}
+            {requiredSuggestions.map(renderRow)}
+            {requiredSuggestions.length === 0 && requiredFields !== null && (
+              <tr>
+                <td colSpan={5} className="px-3 py-2 text-center text-xs text-ink-soft">
+                  No required columns mapped yet — see "other discovered columns" below.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
+        {optionalSuggestions.length > 0 && (
+          <>
+            <button
+              onClick={() => setShowOptional((v) => !v)}
+              className="flex w-full items-center justify-between border-t border-line bg-bg px-3 py-1.5 text-xs font-medium text-ink-soft hover:text-ink"
+            >
+              <span>{optionalSuggestions.length} other discovered column{optionalSuggestions.length === 1 ? '' : 's'} (not required for this control's test)</span>
+              <span>{showOptional ? 'Hide ▴' : 'Show ▾'}</span>
+            </button>
+            {showOptional && (
+              <table className="w-full text-sm">
+                <tbody>{optionalSuggestions.map(renderRow)}</tbody>
+              </table>
+            )}
+          </>
+        )}
       </div>
       {approveError && <p className="mt-1 text-xs text-red-600">{approveError}</p>}
       <ConfirmDialog

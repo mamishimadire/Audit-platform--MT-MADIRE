@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from app.schemas.common import OrmModel
 
@@ -73,3 +74,26 @@ class MappingReadinessOut(OrmModel):
     has_rule: bool
     ready: bool
     objects: list[RequiredObjectStatus]
+
+
+RelationshipCheckStatus = Literal["validated", "weak", "not_available"]
+
+
+class RelationshipCheckOut(OrmModel):
+    """A field mapped correctly by NAME doesn't guarantee the two sides
+    actually share the same values — this queries each side's live data
+    (direct connections only; a Gateway-based one can't be queried on
+    demand) and reports how much the two value sets genuinely overlap.
+    Advisory, not a hard gate: real client data is often legitimately
+    messy (soft-deleted rows, partial exports), so a low match rate is
+    surfaced prominently rather than blocking activation outright."""
+
+    primary_object: str
+    secondary_object: str
+    join_field: str
+    primary_sample_count: int
+    secondary_sample_count: int
+    overlap_count: int
+    match_rate: float
+    status: RelationshipCheckStatus
+    detail: str

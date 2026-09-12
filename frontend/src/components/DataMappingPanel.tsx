@@ -5,6 +5,7 @@ import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { ConfirmDialog } from './ConfirmDialog'
 import { ConfidenceBar } from './ColumnMapping'
 import { RequiredTablesChecklist, suggestionsFromProgress } from './TableBinding'
+import { RelationshipValidationPanel } from './RelationshipValidation'
 import type { DataEntityOut, DataSourceOut, MappingReadinessOut, MappingSuggestion, TableBindingProgressOut, TestDataMappingOut } from '../types/api'
 
 const STATUS_STYLES: Record<string, string> = {
@@ -164,6 +165,7 @@ export function DataMappingPanel({ organizationId, auditTestId, controlId, requi
             onRefreshProgress={loadTableProgress}
             canManage={canManage}
           />
+          <RelationshipValidationPanel organizationId={organizationId} auditTestId={auditTestId} />
         </div>
       )}
       {!hasControlChecklist && readiness && !readiness.has_rule && (

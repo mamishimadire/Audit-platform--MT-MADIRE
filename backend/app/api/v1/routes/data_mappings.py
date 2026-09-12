@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,6 +13,7 @@ from app.schemas.data_mapping import (
     MappingReadinessOut,
     MappingRejectRequest,
     MappingSuggestion,
+    RelationshipCheckOut,
     TestDataMappingCreate,
     TestDataMappingOut,
     TestDataMappingUpdate,
@@ -21,11 +23,14 @@ from app.services.mapping_service import (
     create_mapping,
     delete_mapping,
     get_mapping_readiness,
+    get_template_requirements,
     list_mappings,
     reject_mapping,
     suggest_mappings_for_entity,
     update_mapping_field,
 )
+from app.services.relationship_validation_service import validate_relationships
+from app.services.test_rule_service import get_control_rule_template, list_test_rules
 
 router = APIRouter(tags=["data-mappings"])
 
@@ -91,6 +96,53 @@ def readiness(
     if test.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
     return get_mapping_readiness(db, audit_test_id=audit_test_id)
+
+
+@router.get(
+    "/organizations/{organization_id}/audit-tests/{audit_test_id}/template-requirements", response_model=MappingReadinessOut
+)
+def template_requirements(
+    organization_id: uuid.UUID, audit_test_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> MappingReadinessOut:
+    """What this control's rule template actually needs, independent of
+    whether a rule has been generated yet — lets the mapping screen show
+    "required for this test" before Generate from control template is
+    even clicked. Empty objects (has_rule=False) means this control has no
+    template, so there's nothing to narrow the screen down to."""
+    enforce_same_organization(organization_id, user, db)
+    test = _get_test_or_404(db, audit_test_id)
+    if test.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
+    return get_template_requirements(db, audit_test_id=audit_test_id)
+
+
+@router.post(
+    "/organizations/{organization_id}/audit-tests/{audit_test_id}/relationship-validation",
+    response_model=list[RelationshipCheckOut],
+)
+def relationship_validation(
+    organization_id: uuid.UUID, audit_test_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> list[RelationshipCheckOut]:
+    """Live query against the client's own data (direct connections only)
+    to check whether a join_field mapped correctly by name actually shares
+    values across both sides — see relationship_validation_service. Uses
+    whichever rule already exists to test against: the active rule if one
+    has been approved, else the control's own template (so this can run
+    before a rule is even generated)."""
+    enforce_same_organization(organization_id, user, db)
+    test = _get_test_or_404(db, audit_test_id)
+    if test.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
+
+    active_rules = [r for r in list_test_rules(db, audit_test_id=audit_test_id) if r.status == "active"]
+    if active_rules:
+        rule_definition = json.loads(active_rules[0].rule_definition)
+    else:
+        _, template = get_control_rule_template(db, audit_test_id=audit_test_id)
+        if template is None:
+            return []
+        rule_definition = json.loads(template.rule_definition)
+    return validate_relationships(db, audit_test_id=audit_test_id, rule_definition=rule_definition)
 
 
 def _get_mapping_with_org(db: Session, mapping_id: uuid.UUID) -> tuple[TestDataMapping, uuid.UUID]:

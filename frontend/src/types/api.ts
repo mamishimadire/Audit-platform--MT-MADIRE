@@ -624,6 +624,20 @@ export interface MappingReadinessOut {
   objects: RequiredObjectStatus[]
 }
 
+export type RelationshipCheckStatus = 'validated' | 'weak' | 'not_available'
+
+export interface RelationshipCheckOut {
+  primary_object: string
+  secondary_object: string
+  join_field: string
+  primary_sample_count: number
+  secondary_sample_count: number
+  overlap_count: number
+  match_rate: number
+  status: RelationshipCheckStatus
+  detail: string
+}
+
 export interface AuditTestOut {
   audit_test_id: string
   organization_id: string

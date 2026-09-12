@@ -327,6 +327,24 @@ def get_readiness_against_template(db: Session, *, audit_test_id: uuid.UUID, rul
     return _readiness_for_definition(db, audit_test_id=audit_test_id, rule_definition=rule_definition)
 
 
+def get_template_requirements(db: Session, *, audit_test_id: uuid.UUID) -> MappingReadinessOut:
+    """What THIS control's rule template needs, independent of whether a
+    rule has actually been generated yet — lets the mapping screen show
+    "required for this test" vs. everything else discovered, before
+    "Generate from control template" is even clicked. A control with no
+    template (137 of 157 today — see migration 0027's own docstring on why
+    most controls deliberately have none yet) has no contract to narrow
+    the screen down to, so has_rule=False with no objects means exactly
+    that: every discovered column stays visible, same as before this
+    existed, rather than guessing which ones matter."""
+    from app.services.test_rule_service import get_control_rule_template
+
+    _, template = get_control_rule_template(db, audit_test_id=audit_test_id)
+    if template is None:
+        return MappingReadinessOut(has_rule=False, ready=False, objects=[])
+    return _readiness_for_definition(db, audit_test_id=audit_test_id, rule_definition=json.loads(template.rule_definition))
+
+
 def approve_mapping(db: Session, *, mapping: TestDataMapping, approved_by_user_id: uuid.UUID, organization_id: uuid.UUID) -> TestDataMapping:
     """
     The evidence-trail requirement from Section 12: mapping approval is
