@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { ColumnMappingGrid } from './ColumnMapping'
 import { ConfirmDialog } from './ConfirmDialog'
+import { SearchableSelect } from './SearchableSelect'
 import type { DataEntityOut, DataSourceOut, TableBindingProgressOut } from '../types/api'
 
 export interface BindingSuggestion {
@@ -162,14 +163,27 @@ export function TableBindingPicker({
           </option>
         ))}
       </select>
-      <select value={entityId} onChange={(e) => setEntityId(e.target.value)} disabled={!sourceId} className="rounded-md border border-line px-2 py-1 text-xs">
-        <option value="">Select table…</option>
-        {entities.map((e) => (
-          <option key={e.entity_id} value={e.entity_id}>
-            {e.entity_name}
-          </option>
-        ))}
-      </select>
+      <div className="min-w-[14rem]">
+        <SearchableSelect
+          value={entityId}
+          onChange={setEntityId}
+          disabled={!sourceId}
+          placeholder={sourceId ? 'Search tables…' : 'Select a data source first'}
+          options={[...entities]
+            .sort((a, b) => {
+              // The suggested table (if any) always floats to the top, same
+              // as it being pre-selected — searching shouldn't bury it.
+              if (a.entity_id === suggestion?.entity_id) return -1
+              if (b.entity_id === suggestion?.entity_id) return 1
+              return a.entity_name.localeCompare(b.entity_name)
+            })
+            .map((e) => ({
+              value: e.entity_id,
+              label: e.entity_name,
+              hint: e.entity_id === suggestion?.entity_id ? 'Suggested' : undefined,
+            }))}
+        />
+      </div>
       <button onClick={bind} disabled={saving || !sourceId || !entityId} className="whitespace-nowrap rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-60">
         {saving ? 'Binding…' : suggestion ? 'Confirm' : 'Bind'}
       </button>

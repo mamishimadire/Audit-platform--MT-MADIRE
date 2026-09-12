@@ -36,10 +36,16 @@ def _suggest_bindings(
     if not unbound_tables:
         return {}
 
+    # is_hidden is a pure Data Sources page display declutter (see its
+    # docstring on the model) — a hidden table is still fully discovered
+    # and bindable everywhere else (the picker's own table list never
+    # filters on it either), so excluding it here too would make hiding a
+    # table silently break its control-mapping suggestions as a surprising
+    # side effect of an unrelated "tidy up my view" action.
     rows = db.execute(
         select(DataEntity, DataSource.source_name)
         .join(DataSource, DataSource.data_source_id == DataEntity.data_source_id)
-        .where(DataSource.organization_id == organization_id, DataEntity.is_hidden.is_(False))
+        .where(DataSource.organization_id == organization_id)
     ).all()
     if not rows:
         return {}
