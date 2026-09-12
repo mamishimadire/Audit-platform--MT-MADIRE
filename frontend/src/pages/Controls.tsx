@@ -153,12 +153,16 @@ function ControlLifecycleActions({
 
 const CONTROL_STATUS_STYLES: Record<string, string> = {
   pending_mapping: 'bg-amber-100 text-amber-800',
-  pending_activation: 'bg-blue-50 text-blue-700',
+  pending_activation: 'bg-blue-100 text-blue-800 font-bold',
   active: 'bg-emerald-100 text-emerald-800',
-  pending_deactivation: 'bg-orange-50 text-orange-700',
+  pending_deactivation: 'bg-orange-100 text-orange-800 font-bold',
   inactive: 'bg-bg text-ink-soft',
   retired: 'bg-bg text-ink-soft',
 }
+// A control sitting in a maker-checker queue needs to stand out in the row
+// itself, not just its status pill — an approver scanning a long table
+// shouldn't have to read every status cell to find what's waiting on them.
+const NEEDS_APPROVAL_STATUSES = new Set(['pending_activation', 'pending_deactivation'])
 const CONTROL_STATUS_LABELS: Record<string, string> = {
   pending_mapping: 'Needs table/mapping setup',
   pending_activation: 'Pending activation approval',
@@ -195,8 +199,8 @@ function ControlRow({
 
   return (
     <Fragment>
-      <tr className="border-t border-line align-top">
-        <td className="px-4 py-2 font-medium text-ink">
+      <tr className={`border-t border-line align-top ${NEEDS_APPROVAL_STATUSES.has(c.status) ? 'bg-orange-50/40' : ''}`}>
+        <td className={`px-4 py-2 ${NEEDS_APPROVAL_STATUSES.has(c.status) ? 'font-bold text-ink' : 'font-medium text-ink'}`}>
           {c.control_code ? `${c.control_code} — ` : ''}
           {c.control_name}
         </td>

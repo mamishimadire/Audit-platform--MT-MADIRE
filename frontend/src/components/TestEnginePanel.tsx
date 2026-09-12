@@ -4,7 +4,6 @@ import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import type { MonitoringScheduleOut, TestExecutionOut, TestRuleOut } from '../types/api'
 
-const CANONICAL_OBJECTS = ['employee', 'user', 'role', 'privilege', 'system', 'login', 'transaction', 'change', 'vendor', 'department']
 const OPERATORS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null']
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -38,6 +37,11 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const [schedules, setSchedules] = useState<MonitoringScheduleOut[]>([])
   const [executions, setExecutions] = useState<TestExecutionOut[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [canonicalObjects, setCanonicalObjects] = useState<string[]>(['employee', 'user'])
+
+  useEffect(() => {
+    apiClient.get<string[]>('/canonical-model/objects').then((res) => setCanonicalObjects(res.data))
+  }, [])
 
   const [showRuleForm, setShowRuleForm] = useState(false)
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
@@ -195,7 +199,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
   const visibleRules = rules.filter((r) => r.status !== 'deleted')
   const STATUS_STYLES: Record<string, string> = {
-    pending_approval: 'bg-orange-50 text-orange-700',
+    pending_approval: 'bg-orange-100 text-orange-800 font-bold',
     active: 'bg-accent-soft text-accent-ink',
     rejected: 'bg-red-50 text-red-700',
   }
@@ -207,7 +211,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
   const objectSelect = (value: string, onChange: (v: string) => void) => (
     <select value={value} onChange={(e) => onChange(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs">
-      {CANONICAL_OBJECTS.map((o) => (
+      {canonicalObjects.map((o) => (
         <option key={o} value={o}>
           {o}
         </option>
@@ -223,10 +227,15 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
           {visibleRules.length > 0 && (
             <ul className="mt-2 space-y-2">
               {visibleRules.map((r) => (
-                <li key={r.rule_id} className="rounded-md border border-line px-2 py-1.5">
+                <li
+                  key={r.rule_id}
+                  className={`rounded-md border px-2 py-1.5 ${
+                    r.status === 'pending_approval' ? 'border-orange-300 bg-orange-50/60' : 'border-line'
+                  }`}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs">
-                      <span className="font-medium text-ink">{r.rule_name}</span>{' '}
+                      <span className={r.status === 'pending_approval' ? 'font-bold text-ink' : 'font-medium text-ink'}>{r.rule_name}</span>{' '}
                       <span className="font-mono text-ink-soft">({r.rule_type})</span>
                     </span>
                     {canManage && (

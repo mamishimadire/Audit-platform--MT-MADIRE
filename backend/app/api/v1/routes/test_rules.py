@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import enforce_same_organization, get_current_user, require_permissions
+from app.core.canonical_model import CANONICAL_MODEL
 from app.db.session import get_db
 from app.models.audit_test import AuditTest, TestRule
 from app.models.rbac import User
@@ -20,6 +21,16 @@ from app.services.test_rule_service import (
 )
 
 router = APIRouter(tags=["test-rules"])
+
+
+@router.get("/canonical-model/objects", response_model=list[str])
+def list_canonical_objects(user: User = Depends(get_current_user)) -> list[str]:
+    """Every canonical object a manually-written rule can reference — kept
+    live from app.core.canonical_model rather than a second, hand-maintained
+    list on the frontend, so the two can never drift out of sync the way
+    the frontend's old hardcoded 10-object list already had by the time the
+    model grew to cover the full 157-control library."""
+    return sorted(CANONICAL_MODEL.keys())
 
 
 def _get_test_or_404(db: Session, audit_test_id: uuid.UUID) -> AuditTest:

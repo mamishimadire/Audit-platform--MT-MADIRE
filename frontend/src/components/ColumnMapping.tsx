@@ -52,6 +52,9 @@ export function ColumnMappingGrid({
   const [approveError, setApproveError] = useState<string | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [bulkApproving, setBulkApproving] = useState(false)
+  const [bulkRejecting, setBulkRejecting] = useState(false)
+  const [bulkRejectReason, setBulkRejectReason] = useState('')
 
   const load = () => {
     apiClient.get<MappingSuggestion[]>(`/data-sources/entities/${entityId}/mapping-suggestions`).then((res) => setSuggestions(res.data))
@@ -129,6 +132,41 @@ export function ColumnMappingGrid({
     load()
   }
 
+  // Not just "the ones already visible" — a mapping only shows up once
+  // it's been accepted from a suggestion, so this is every mapping row on
+  // this table not yet approved, same set the per-row Approve button acts on.
+  const pendingMappings = mappings.filter((m) => m.mapping_status !== 'approved')
+
+  const approveAll = async () => {
+    setBulkApproving(true)
+    setApproveError(null)
+    try {
+      for (const m of pendingMappings) {
+        await apiClient.post(`/data-mappings/${m.mapping_id}/approve`)
+      }
+      load()
+    } catch (err: any) {
+      setApproveError(err?.response?.data?.detail ?? 'Could not approve every mapping — some may need a different approver.')
+    } finally {
+      setBulkApproving(false)
+    }
+  }
+
+  const confirmRejectAll = async () => {
+    if (!bulkRejectReason.trim()) return
+    setBulkApproving(true)
+    try {
+      for (const m of pendingMappings) {
+        await apiClient.post(`/data-mappings/${m.mapping_id}/reject`, { reason: bulkRejectReason })
+      }
+      setBulkRejecting(false)
+      setBulkRejectReason('')
+      load()
+    } finally {
+      setBulkApproving(false)
+    }
+  }
+
   if (suggestions.length === 0) {
     return <p className="mt-2 px-3 text-xs text-ink-soft">No columns discovered for this table yet.</p>
   }
@@ -167,6 +205,24 @@ export function ColumnMappingGrid({
         >
           {autoMapping ? 'Mapping…' : `Accept all (${eligibleCount})`}
         </button>
+        {pendingMappings.length > 0 && (
+          <span className="ml-auto flex items-center gap-2">
+            <button
+              onClick={approveAll}
+              disabled={bulkApproving}
+              className="rounded-md border border-transparent bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-ink disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {bulkApproving ? 'Working…' : `Approve all (${pendingMappings.length})`}
+            </button>
+            <button
+              onClick={() => setBulkRejecting(true)}
+              disabled={bulkApproving}
+              className="rounded-md border border-line bg-white px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Reject all ({pendingMappings.length})
+            </button>
+          </span>
+        )}
       </div>
       <div className="overflow-hidden rounded-lg border border-line bg-surface">
         <table className="w-full text-sm">
@@ -245,6 +301,37 @@ export function ColumnMappingGrid({
         onConfirm={confirmUnmap}
         onCancel={() => setUnmappingId(null)}
       />
+      {bulkRejecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setBulkRejecting(false)}>
+          <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold text-ink">Reject all pending mappings ({pendingMappings.length})</div>
+            <p className="mt-2 text-sm text-ink-soft">A reason is required — it applies to every pending mapping on this table and goes back to the mapper to fix and resubmit.</p>
+            <textarea
+              autoFocus
+              placeholder="e.g. Wrong table entirely — this should map against the archive schema, not the live one."
+              value={bulkRejectReason}
+              onChange={(e) => setBulkRejectReason(e.target.value)}
+              className="mt-2 w-full rounded-md border border-line px-2 py-1 text-sm"
+              rows={3}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => { setBulkRejecting(false); setBulkRejectReason('') }}
+                className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-bg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmRejectAll}
+                disabled={!bulkRejectReason.trim() || bulkApproving}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                {bulkApproving ? 'Working…' : 'Reject all'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {rejectingId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setRejectingId(null)}>
           <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>

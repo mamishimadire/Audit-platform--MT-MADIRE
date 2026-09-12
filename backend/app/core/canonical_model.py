@@ -23,16 +23,24 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     # rule template (AC-002, migration 0027) reads employee.employee_id,
     # employee.employment_status, user.employee_id and user.status by exact
     # name; renaming any of those silently breaks the only control in the
-    # 157-control library with an actual executing test today. "name" and
-    # "status" are added as extra employee fields (not replacements) purely
-    # so a client's literal "name"/"status" columns still score an exact
-    # match without disturbing employment_status.
+    # 157-control library with an actual executing test today. "name" is
+    # added as an extra employee field (not a replacement) so a client's
+    # literal "name" column still scores an exact match. "status" is
+    # deliberately NOT added here even though it's a very common real
+    # column name — a real hr_employees.status field must still lose to
+    # employment_status on confidence (a real, if imperfect, ~75-85%
+    # fuzzy/boosted match) rather than win outright at 100% on an
+    # unrelated exact-name alias, which would make AC-002 auto-suggest the
+    # wrong canonical field for the one column its rule actually reads.
+    # "status" as its own concept already exists generically wherever a
+    # newer table-specific object needs it (e.g. hr_employees's actual
+    # data still maps to employee.employment_status via fuzzy match, not
+    # a same-named but wrong sibling field).
     "employee": [
         "employee_id",
         "full_name",
         "name",
         "employment_status",
-        "status",
         "termination_date",
         "hire_date",
         "department_id",
@@ -262,6 +270,20 @@ _ABBREVIATIONS = {
 
 _ID_LIKE_TOKENS = {"number", "id", "code"}
 
+# MongoDB's synthetic per-document key. It genuinely IS a collection's
+# primary key (the discovery connector correctly reports is_primary_key for
+# it), but it is a technical row identifier, never the client's own
+# business identifier — a real employee_id/user_id/cert_id column always
+# exists as its own separate field wherever one matters (see every
+# collection in scripts/seed_mongo_demo.py). Boosting it toward
+# "employee.employee_id" or "system.system_id" just because it ends in
+# "_id" and is flagged as a key produced exactly the false positives an
+# auditor caught by hand: _id confidently "matching" a business key it has
+# no real relationship to, once even accepted alongside the column that
+# actually is that key. No real RDBMS column is ever named this either
+# (leading underscore), so excluding it by exact name is safe.
+_SYNTHETIC_ID_FIELD_NAMES = {"_id"}
+
 
 def _tokens(name: str) -> list[str]:
     raw = re.split(r"[^a-zA-Z0-9]+", name)
@@ -312,45 +334,75 @@ def infer_object_for_entity(entity_name: str) -> str | None:
     return best_object
 
 
+# Below this, a same-object match is too weak to trust over a plain
+# global search — e.g. a genuinely unrelated field name shouldn't get
+# force-mapped into the preferred object just because it's *technically*
+# the least-bad candidate there. Chosen well below AUTO_ACCEPT_THRESHOLD:
+# this only decides which SEARCH SPACE wins, not whether a match is good
+# enough to auto-accept (mapping_status_for_confidence still applies to
+# the final score either way).
+_PREFERRED_OBJECT_MIN_SCORE = 35.0
+
+
 def suggest_canonical_field(
     source_field_name: str, *, is_primary_key: bool = False, preferred_object: str | None = None
 ) -> tuple[str, float]:
-    """Returns (best "object.field" match, confidence 0-100)."""
+    """Returns (best "object.field" match, confidence 0-100).
+
+    When preferred_object is known (the table this field came from strongly
+    implies one canonical object — see infer_object_for_entity), a
+    plausible match *within that object* wins outright over a numerically
+    higher-scoring match on a completely unrelated object. This matters
+    because CANONICAL_MODEL is large enough now (130+ objects covering the
+    full control library) that generic column names like "status" or
+    "created_at" are exact matches on dozens of unrelated objects — without
+    this, "this table is clearly about employees" loses to "some unrelated
+    object also happens to have a field called status," which is exactly
+    backwards. A flat scoring bonus can't fix this on its own: it needs to
+    beat every possible exact match anywhere else in the model, not just
+    nudge past one particular competitor.
+    """
     source_tokens = set(_tokens(source_field_name))
     normalized_source = "".join(sorted(source_tokens))
+    # See _SYNTHETIC_ID_FIELD_NAMES — a technical row key never gets the
+    # primary-key business-identifier boost, no matter what the connector
+    # reported for is_primary_key.
+    treat_as_primary_key = is_primary_key and source_field_name not in _SYNTHETIC_ID_FIELD_NAMES
 
-    best_field = ""
-    best_score = 0.0
+    def _score_field(field_name: str, obj_name: str) -> float:
+        target_tokens = set(_tokens(field_name))
+        score = _token_overlap_score(source_tokens, target_tokens)
+        normalized_target = "".join(sorted(target_tokens))
+        seq_ratio = difflib.SequenceMatcher(None, normalized_source, normalized_target).ratio() * 100
+        score = max(score, seq_ratio)
+        # A primary-key column with an id-like token (NO/CODE/NUM) mapping to
+        # this object's own "_id" field is the single strongest real-world signal.
+        if treat_as_primary_key and field_name.endswith("_id") and (source_tokens & _ID_LIKE_TOKENS):
+            candidate = 96.0 if obj_name == preferred_object else 75.0
+            score = max(score, candidate)
+        return score
+
+    if preferred_object is not None and preferred_object in CANONICAL_MODEL:
+        best_in_object, best_in_object_score = "", 0.0
+        for field_name in CANONICAL_MODEL[preferred_object]:
+            score = _score_field(field_name, preferred_object)
+            if score > best_in_object_score:
+                best_in_object_score, best_in_object = score, field_name
+        if best_in_object_score >= _PREFERRED_OBJECT_MIN_SCORE:
+            # A visible, if modest, confidence boost for having the right
+            # table-name signal — capped at 100 since there's no cross-object
+            # tie to out-score within this branch, only other fields on the
+            # SAME object, which the loop above already picked the best of.
+            return f"{preferred_object}.{best_in_object}", round(min(best_in_object_score + 25, 100.0), 2)
+
+    best_field, best_score = "", 0.0
     for obj_name, fields in CANONICAL_MODEL.items():
         for field_name in fields:
-            target_tokens = set(_tokens(field_name))
-            score = _token_overlap_score(source_tokens, target_tokens)
-
-            normalized_target = "".join(sorted(target_tokens))
-            seq_ratio = difflib.SequenceMatcher(None, normalized_source, normalized_target).ratio() * 100
-            score = max(score, seq_ratio)
-
-            # A table clearly named after this object gives every field in it a
-            # meaningful head start when scoring against that object's fields.
-            # Deliberately left uncapped here (only clamped to 100 on return,
-            # below) — a field name shared verbatim by two objects (e.g.
-            # "status" or "expires_at" both being exact matches) would
-            # otherwise tie at 100 with no way to prefer the object the table
-            # name actually points at.
-            if preferred_object == obj_name:
-                score += 25
-
-            # A primary-key column with an id-like token (NO/CODE/NUM) mapping to
-            # this object's own "_id" field is the single strongest real-world signal.
-            if is_primary_key and field_name.endswith("_id") and (source_tokens & _ID_LIKE_TOKENS):
-                candidate = 96.0 if preferred_object == obj_name else 75.0
-                score = max(score, candidate)
-
+            score = _score_field(field_name, obj_name)
             if score > best_score:
-                best_score = score
-                best_field = f"{obj_name}.{field_name}"
+                best_score, best_field = score, f"{obj_name}.{field_name}"
 
-    return best_field, round(min(best_score, 100.0), 2)
+    return best_field, round(best_score, 2)
 
 
 def mapping_status_for_confidence(confidence: float) -> str:
