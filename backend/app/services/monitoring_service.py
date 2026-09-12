@@ -25,6 +25,24 @@ def next_run_after(frequency: str, from_time: datetime) -> datetime:
 def create_schedule(
     db: Session, *, audit_test_id: uuid.UUID, payload: MonitoringScheduleCreate, organization_id: uuid.UUID, created_by_user_id: uuid.UUID
 ) -> MonitoringSchedule:
+    """Idempotent by design: a test only ever needs one active schedule.
+    Re-submitting (double-click, re-opening the mapping panel, retrying
+    after a slow response) updates the existing one instead of inserting a
+    duplicate — see migration 0045, which also adds a DB-level unique index
+    as a backstop in case two requests ever race past this check."""
+    existing = db.scalar(
+        select(MonitoringSchedule).where(
+            MonitoringSchedule.audit_test_id == audit_test_id, MonitoringSchedule.is_active.is_(True)
+        )
+    )
+    if existing is not None:
+        if existing.frequency != payload.frequency:
+            existing.frequency = payload.frequency
+            existing.next_run = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(existing)
+        return existing
+
     now = datetime.now(timezone.utc)
     schedule = MonitoringSchedule(
         audit_test_id=audit_test_id,

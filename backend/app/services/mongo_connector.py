@@ -184,6 +184,25 @@ def sample_distinct_field_values(connection: DataConnection, *, collection_name:
         client.close()
 
 
+def fetch_records(connection: DataConnection, *, collection_name: str, field_paths: list[str], limit: int) -> list[dict]:
+    """Full documents (not a distinct-value sample) for direct-connection
+    rule execution — see direct_execution_service. Projects only the fields
+    the rule actually needs and flattens with the same dotted-path
+    convention _discover_collection/_flatten use, so a mapped canonical
+    field resolves to the same key here as it did during discovery."""
+    password = decrypt_secret(connection.encrypted_password)
+    client = _build_mongo_client(connection, password=password)
+    try:
+        database = client[connection.database_name]
+        projection = {path: 1 for path in field_paths}
+        if "_id" not in field_paths:
+            projection["_id"] = 0
+        cursor = database[collection_name].find({}, projection).limit(limit)
+        return [_flatten(doc) for doc in cursor]
+    finally:
+        client.close()
+
+
 def discover_mongo_schema(connection: DataConnection) -> list[DiscoveredEntity]:
     password = decrypt_secret(connection.encrypted_password)
     client = _build_mongo_client(connection, password=password)

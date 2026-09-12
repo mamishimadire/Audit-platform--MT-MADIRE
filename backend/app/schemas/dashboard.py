@@ -19,6 +19,7 @@ class DashboardStats(OrmModel):
     active_monitoring_tests: int
     tests_executed_total: int
     tests_executed_today: int
+    tests_passed: int  # completed executions that found zero exceptions — the control held
     failed_tests: int
     exceptions_open: int
     exceptions_high_risk: int

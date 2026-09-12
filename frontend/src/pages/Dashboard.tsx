@@ -102,6 +102,7 @@ export function DashboardPage() {
           <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <StatTile label="Active Monitoring Tests" value={stats.active_monitoring_tests} />
             <StatTile label="Tests Executed Today" value={stats.tests_executed_today} />
+            <StatTile label="Tests Passed" value={stats.tests_passed} tone={stats.tests_passed > 0 ? 'good' : 'default'} />
             <StatTile label="Failed Tests" value={stats.failed_tests} tone={stats.failed_tests > 0 ? 'critical' : 'default'} />
             <StatTile label="Open Exceptions" value={stats.exceptions_open} tone={stats.exceptions_open > 0 ? 'warning' : 'good'} />
             <StatTile label="High-Risk Exceptions" value={stats.exceptions_high_risk} tone={stats.exceptions_high_risk > 0 ? 'critical' : 'good'} />

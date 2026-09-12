@@ -73,6 +73,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
     condSecondaryValue: 'active',
   })
   const [frequency, setFrequency] = useState('daily')
+  const [schedulingSubmitting, setSchedulingSubmitting] = useState(false)
 
   const load = () => {
     apiClient.get<TestRuleOut[]>(`/organizations/${organizationId}/audit-tests/${auditTestId}/test-rules`).then((res) => setRules(res.data))
@@ -193,8 +194,14 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   }
 
   const createSchedule = async () => {
-    await apiClient.post(`/organizations/${organizationId}/audit-tests/${auditTestId}/schedules`, { frequency, is_active: true })
-    load()
+    if (schedulingSubmitting) return
+    setSchedulingSubmitting(true)
+    try {
+      await apiClient.post(`/organizations/${organizationId}/audit-tests/${auditTestId}/schedules`, { frequency, is_active: true })
+      await load()
+    } finally {
+      setSchedulingSubmitting(false)
+    }
   }
 
   const visibleRules = rules.filter((r) => r.status !== 'deleted')
@@ -415,8 +422,12 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                 <option value="weekly">Weekly</option>
                 <option value="monthly">Monthly</option>
               </select>
-              <button onClick={createSchedule} className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white">
-                Schedule
+              <button
+                onClick={createSchedule}
+                disabled={schedulingSubmitting}
+                className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-60"
+              >
+                {schedulingSubmitting ? 'Scheduling…' : 'Schedule'}
               </button>
             </div>
           ) : (

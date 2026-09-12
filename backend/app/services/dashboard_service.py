@@ -48,6 +48,11 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
     failed_tests = db.scalar(
         select(func.count()).select_from(execution_join).where(execution_where, TestExecution.status == "failed")
     ) or 0
+    tests_passed = db.scalar(
+        select(func.count()).select_from(execution_join).where(
+            execution_where, TestExecution.status == "completed", TestExecution.exceptions_found == 0
+        )
+    ) or 0
 
     exception_join = (
         Exception_.__table__.join(TestExecution.__table__, TestExecution.execution_id == Exception_.execution_id)
@@ -107,6 +112,7 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         active_monitoring_tests=active_monitoring_tests,
         tests_executed_total=tests_executed_total,
         tests_executed_today=tests_executed_today,
+        tests_passed=tests_passed,
         failed_tests=failed_tests,
         exceptions_open=exceptions_open,
         exceptions_high_risk=exceptions_high_risk,

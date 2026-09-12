@@ -569,6 +569,35 @@ def sample_distinct_values(db: Session, *, data_source_id: uuid.UUID, entity_nam
     return None
 
 
+def _fetch_sql_records(connection: DataConnection, *, table_name: str, column_names: list[str], limit: int) -> list[dict]:
+    """Reflection-based select (see _sample_distinct_sql_values above for
+    why not raw SQL) of just the columns a rule needs, for direct-connection
+    execution — see direct_execution_service."""
+    engine = _build_direct_engine(connection)
+    try:
+        metadata = MetaData()
+        table = Table(table_name, metadata, autoload_with=engine)
+        columns = [table.c[name] for name in column_names if name in table.c]
+        if not columns:
+            return []
+        with engine.connect() as conn:
+            rows = conn.execute(select(*columns).limit(limit))
+            return [dict(row._mapping) for row in rows]
+    finally:
+        engine.dispose()
+
+
+def fetch_direct_records(connection: DataConnection, *, entity_name: str, field_names: list[str], limit: int) -> list[dict]:
+    """Dispatches to the right connector for a direct (non-Gateway)
+    connection — the one place direct_execution_service needs to know
+    MongoDB isn't reached the same way the SQL engines are."""
+    if connection.db_type == "mongodb":
+        from app.services.mongo_connector import fetch_records as fetch_mongo_records
+
+        return fetch_mongo_records(connection, collection_name=entity_name, field_paths=field_names, limit=limit)
+    return _fetch_sql_records(connection, table_name=entity_name, column_names=field_names, limit=limit)
+
+
 def list_entities_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[DataEntity]:
     return list(
         db.scalars(

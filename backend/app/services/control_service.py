@@ -148,6 +148,16 @@ def request_activation(db: Session, *, control: Control, requested_by_user_id: u
     return control
 
 
+def _linked_audit_tests(db: Session, *, control: Control) -> list[AuditTest]:
+    return list(
+        db.scalars(
+            select(AuditTest)
+            .join(ControlAuditTest, ControlAuditTest.audit_test_id == AuditTest.audit_test_id)
+            .where(ControlAuditTest.control_id == control.control_id)
+        )
+    )
+
+
 def approve_activation(db: Session, *, control: Control, approved_by_user_id: uuid.UUID) -> Control:
     if control.status != "pending_activation":
         raise ValueError(f"Cannot approve — control is '{control.status}', not pending activation.")
@@ -156,6 +166,12 @@ def approve_activation(db: Session, *, control: Control, approved_by_user_id: uu
 
     control.status = "active"
     control.activation_approved_by = approved_by_user_id
+    # The auto-created audit test was left at its creation-time 'draft'
+    # status forever — nothing else in the codebase ever advanced it, so
+    # the mapping screen kept showing "draft" even for a fully active,
+    # executing control. It should track the control it belongs to.
+    for test in _linked_audit_tests(db, control=control):
+        test.status = "active"
     log_action(
         db,
         action=f"Approved activation of control '{control.control_code} — {control.control_name}'",
@@ -227,6 +243,8 @@ def approve_deactivation(db: Session, *, control: Control, approved_by_user_id: 
 
     control.status = "inactive"
     control.deactivation_approved_by = approved_by_user_id
+    for test in _linked_audit_tests(db, control=control):
+        test.status = "disabled"
     log_action(
         db,
         action=f"Approved deactivation of control '{control.control_code} — {control.control_name}'",

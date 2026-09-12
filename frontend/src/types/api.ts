@@ -443,6 +443,7 @@ export interface DashboardStats {
   active_monitoring_tests: number
   tests_executed_total: number
   tests_executed_today: number
+  tests_passed: number
   failed_tests: number
   exceptions_open: number
   exceptions_high_risk: number

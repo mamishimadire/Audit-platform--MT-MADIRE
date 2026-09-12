@@ -20,6 +20,12 @@ export function MonitoringPage() {
     return t ? (t.test_code ? `${t.test_code} — ${t.test_name}` : t.test_name) : id
   }
 
+  // A test only ever needs one live schedule; anything else here is a
+  // superseded duplicate (see migration 0045) kept only for its audit
+  // trail — showing it here would just be clutter, not a real schedule.
+  const activeSchedules = schedules.filter((s) => s.is_active)
+  const pausedCount = schedules.length - activeSchedules.length
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-ink">Monitoring</h1>
@@ -41,7 +47,7 @@ export function MonitoringPage() {
             </tr>
           </thead>
           <tbody>
-            {schedules.map((s) => (
+            {activeSchedules.map((s) => (
               <tr key={s.schedule_id} className="border-t border-line">
                 <td className="px-4 py-2 font-medium text-ink">{testLabel(s.audit_test_id)}</td>
                 <td className="px-4 py-2 text-ink-soft">{s.frequency}</td>
@@ -58,7 +64,7 @@ export function MonitoringPage() {
                 </td>
               </tr>
             ))}
-            {schedules.length === 0 && (
+            {activeSchedules.length === 0 && (
               <tr>
                 <td colSpan={5} className="px-4 py-6 text-center text-ink-soft">
                   No monitoring schedules yet.
@@ -68,6 +74,11 @@ export function MonitoringPage() {
           </tbody>
         </table>
       </div>
+      {pausedCount > 0 && (
+        <p className="mt-2 text-xs text-ink-soft">
+          {pausedCount} superseded schedule{pausedCount === 1 ? '' : 's'} hidden (kept for history only).
+        </p>
+      )}
     </div>
   )
 }
