@@ -72,6 +72,21 @@ def get_latest_telemetry(db: Session, *, device_id: uuid.UUID) -> DeviceTelemetr
     )
 
 
+def get_latest_telemetry_bulk(db: Session, *, device_ids: list[uuid.UUID]) -> dict[uuid.UUID, DeviceTelemetry]:
+    """Batched equivalent of calling get_latest_telemetry once per device —
+    one DISTINCT ON query instead of one query per device, so an N-device
+    fleet list doesn't pay N round trips just for the compliance columns."""
+    if not device_ids:
+        return {}
+    rows = db.scalars(
+        select(DeviceTelemetry)
+        .distinct(DeviceTelemetry.device_id)
+        .where(DeviceTelemetry.device_id.in_(device_ids))
+        .order_by(DeviceTelemetry.device_id, DeviceTelemetry.collected_at.desc())
+    )
+    return {t.device_id: t for t in rows}
+
+
 _POLICY_KEY_BY_FIELD = {
     "antivirus_enabled": "require_antivirus",
     "firewall_enabled": "require_firewall",

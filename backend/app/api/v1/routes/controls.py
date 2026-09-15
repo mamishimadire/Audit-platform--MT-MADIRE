@@ -19,6 +19,7 @@ from app.services.control_service import (
     activate_control,
     approve_activation,
     approve_deactivation,
+    describe_controls,
     get_domain_and_tables,
     get_risk_ids_for_control,
     list_controls,
@@ -70,7 +71,14 @@ def list_all(
     organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[ControlOut]:
     enforce_same_organization(organization_id, user, db)
-    return [_to_out(db, c) for c in list_controls(db, organization_id=organization_id)]
+    controls = list_controls(db, organization_id=organization_id)
+    described = describe_controls(db, controls=controls)
+    out = []
+    for control in controls:
+        risk_ids, domain, required_tables = described.get(control.control_id, ([], None, []))
+        row = ControlOut.model_validate(control)
+        out.append(row.model_copy(update={"risk_ids": risk_ids, "domain": domain, "required_tables": required_tables}))
+    return out
 
 
 @router.post("/{control_id}/activation/request", response_model=ControlOut)

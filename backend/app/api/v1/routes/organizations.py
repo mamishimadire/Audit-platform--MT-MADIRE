@@ -10,7 +10,7 @@ from app.db.session import get_db
 from app.models.organization import Organization
 from app.models.rbac import User
 from app.schemas.organization import OrganizationCreate, OrganizationCreatedOut, OrganizationOut
-from app.services.industry_service import get_industry_names_for_organization
+from app.services.industry_service import get_industry_names_bulk, get_industry_names_for_organization
 from app.services.organization_service import create_organization_with_admin
 from app.services.tenant_scope_service import PLATFORM_SUPER_ADMIN_ROLE, scoped_organization_ids, user_has_role
 
@@ -69,7 +69,12 @@ def list_organizations(db: Session = Depends(get_db), user: User = Depends(get_c
         # by default, however many thousands exist.
         org_ids = scoped_organization_ids(db, user.user_id)
         stmt = select(Organization).where(Organization.organization_id.in_(org_ids))
-    return [_to_out(db, org) for org in db.scalars(stmt)]
+    orgs = list(db.scalars(stmt))
+    industries_by_org = get_industry_names_bulk(db, [o.organization_id for o in orgs])
+    return [
+        OrganizationOut.model_validate(org).model_copy(update={"industries": industries_by_org.get(org.organization_id, [])})
+        for org in orgs
+    ]
 
 
 @router.get("/{organization_id}", response_model=OrganizationOut)

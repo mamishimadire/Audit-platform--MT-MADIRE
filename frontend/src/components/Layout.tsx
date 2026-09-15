@@ -1,5 +1,8 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { useActiveOrganization } from '../hooks/useActiveOrganization'
+import { NotificationBell } from './NotificationBell'
+import { SoundToggle } from './SoundToggle'
 
 interface NavItem {
   label: string
@@ -133,6 +136,7 @@ const NAV: NavGroup[] = [
 
 export function Layout() {
   const { user, logout, hasRole } = useAuth()
+  const { organizationId } = useActiveOrganization()
 
   const visibleGroups = NAV.map((group) => ({
     ...group,
@@ -185,8 +189,14 @@ export function Layout() {
           </button>
         </div>
       </aside>
-      <main className="flex-1 overflow-y-auto p-8">
-        <Outlet />
+      <main className="flex-1 overflow-y-auto">
+        <div className="flex justify-end gap-2 border-b border-line bg-surface px-8 py-2">
+          <SoundToggle />
+          <NotificationBell organizationId={organizationId} />
+        </div>
+        <div className="p-8">
+          <Outlet />
+        </div>
       </main>
     </div>
   )

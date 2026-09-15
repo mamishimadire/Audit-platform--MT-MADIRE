@@ -34,6 +34,51 @@ from app.services.execution_service import record_execution_report
 
 logger = logging.getLogger("app.direct_execution")
 
+
+def _describe_error(exc: Exception) -> str:
+    """A raw pymongo/SQLAlchemy exception is a wall of shard hostnames and
+    driver internals — exactly the kind of thing an auditor reading the
+    Executions log should never have to parse. This translates the common,
+    recognizable failure shapes into one plain sentence; anything
+    unrecognized still gets a short, readable summary rather than the full
+    traceback text. The raw exception is still captured by logger.exception
+    above for whoever needs to actually debug it."""
+    try:
+        from pymongo.errors import ConfigurationError, OperationFailure, PyMongoError, ServerSelectionTimeoutError
+    except ImportError:  # pragma: no cover — pymongo always installed here, but never let the import itself break error reporting
+        ConfigurationError = OperationFailure = PyMongoError = ServerSelectionTimeoutError = ()  # type: ignore[assignment]
+
+    text = str(exc)
+    if isinstance(exc, ServerSelectionTimeoutError):
+        if "SSL" in text or "TLS" in text:
+            return (
+                "Could not reach the database — the connection's TLS/SSL handshake failed. This usually means "
+                "the network this platform is running on is blocking or intercepting encrypted traffic to the "
+                "database's port, not a problem with the mapping or the rule itself."
+            )
+        return "Could not reach the database within the timeout — the host may be unreachable from this network."
+    if isinstance(exc, OperationFailure):
+        return "The database rejected the connection's credentials — check the username and password on this connection."
+    if isinstance(exc, ConfigurationError):
+        return "This connection is misconfigured — check the host, port, and database name."
+    if isinstance(exc, PyMongoError):
+        return "Could not connect to the database — check the connection's host, credentials, and network access."
+
+    try:
+        from sqlalchemy.exc import DBAPIError, OperationalError
+    except ImportError:  # pragma: no cover
+        DBAPIError = OperationalError = ()  # type: ignore[assignment]
+
+    if isinstance(exc, (OperationalError, DBAPIError)):
+        return "Could not connect to the database — check the connection's host, credentials, and network access."
+
+    if isinstance(exc, KeyError):
+        return f"The rule refers to a field or table ({exc}) that isn't mapped — re-check this control's field mapping."
+
+    # Truncated rather than dropped — an unrecognized error is still worth
+    # a short pointer, just not the full multi-hundred-line dump.
+    return f"Execution failed: {text[:200]}"
+
 # Bounded read per run — enough for a demo/mid-size collection or table
 # while keeping one execution cycle fast; a genuinely huge object would need
 # a real streaming/aggregation approach, not a flat fetch-everything.
@@ -181,7 +226,7 @@ def _run_one(due: _DueDirectTest) -> ExecutionReport:
             started_at=started_at,
             completed_at=datetime.now(timezone.utc),
             status="failed",
-            error_message=str(exc),
+            error_message=_describe_error(exc),
         )
 
 

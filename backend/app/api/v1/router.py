@@ -19,6 +19,7 @@ from app.api.v1.routes import (
     hubspot,
     industries,
     monitoring,
+    notifications,
     organizations,
     platform_users,
     risks,
@@ -55,3 +56,4 @@ api_router.include_router(dashboard.router)
 api_router.include_router(audit_logs.router)
 api_router.include_router(devices.router)
 api_router.include_router(hubspot.router)
+api_router.include_router(notifications.router)

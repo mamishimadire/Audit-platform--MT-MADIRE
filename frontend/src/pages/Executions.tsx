@@ -38,10 +38,11 @@ export function ExecutionsPage() {
     return t ? (t.test_code ? `${t.test_code} — ${t.test_name}` : t.test_name) : id
   }
 
-  // The reason a run failed is simply the exceptions it produced — every
-  // execution path (SQL-backed audit rule, endpoint check, software policy
-  // check) already creates real Exception rows linked by execution_id, so
-  // this reuses that instead of parsing each test type's own evidence shape.
+  // A run that completed but found violations has its "reason" as the
+  // exceptions it produced (every execution path already creates real
+  // Exception rows linked by execution_id). A run that never got to
+  // execute at all — a connection failure, for instance — has none of
+  // those; its reason is execution_log instead, rendered below.
   const reasonsFor = (executionId: string) => exceptions.filter((e) => e.execution_id === executionId).map((e) => e.exception_description).filter(Boolean) as string[]
 
   const sorted = [...executions].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
@@ -105,7 +106,7 @@ export function ExecutionsPage() {
                     <td className="px-4 py-2 text-ink-soft">{e.exceptions_found ?? '—'}</td>
                     <td className="px-4 py-2 text-ink-soft max-w-md">
                       {reasons.length === 0 ? (
-                        e.status === 'failed' ? 'No matching exception record found.' : '—'
+                        e.status === 'failed' ? e.execution_log || 'Failed, but no reason was recorded.' : '—'
                       ) : (
                         <>
                           {preview}

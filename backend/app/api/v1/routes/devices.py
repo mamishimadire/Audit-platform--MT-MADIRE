@@ -65,6 +65,7 @@ from app.services.device_service import (
     compliance_status_from_telemetry,
     create_device,
     get_latest_telemetry,
+    get_latest_telemetry_bulk,
     list_deleted_devices,
     list_devices,
     redeem_registration_code,
@@ -82,6 +83,10 @@ router = APIRouter(tags=["devices"])
 def _to_out(db: Session, device: Device, out_cls=DeviceOut):
     telemetry = get_latest_telemetry(db, device_id=device.device_id)
     policy = get_device_policy(db, organization_id=device.organization_id)
+    return _format_device_out(device, telemetry, policy, out_cls)
+
+
+def _format_device_out(device: Device, telemetry, policy: dict, out_cls=DeviceOut):
     out = out_cls.model_validate(device)
     return out.model_copy(
         update={
@@ -92,6 +97,18 @@ def _to_out(db: Session, device: Device, out_cls=DeviceOut):
             "compliance_status": compliance_status_from_telemetry(telemetry, policy),
         }
     )
+
+
+def _to_out_bulk(db: Session, devices: list[Device], out_cls=DeviceOut):
+    """Batched equivalent of calling _to_out once per device — the policy
+    is a single org-wide value (was being re-fetched identically for every
+    device) and telemetry is fetched in one query instead of one per
+    device, so an N-device fleet list doesn't pay 2N round trips."""
+    if not devices:
+        return []
+    policy = get_device_policy(db, organization_id=devices[0].organization_id)
+    telemetry_by_device = get_latest_telemetry_bulk(db, device_ids=[d.device_id for d in devices])
+    return [_format_device_out(d, telemetry_by_device.get(d.device_id), policy, out_cls) for d in devices]
 
 
 @router.get("/endpoint-agent/download/{platform}")
@@ -125,7 +142,7 @@ def create(
 @router.get("/organizations/{organization_id}/devices", response_model=list[DeviceOut])
 def list_all(organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[DeviceOut]:
     enforce_same_organization(organization_id, user, db)
-    return [_to_out(db, d) for d in list_devices(db, organization_id=organization_id)]
+    return _to_out_bulk(db, list_devices(db, organization_id=organization_id))
 
 
 @router.post("/devices/register", response_model=DeviceRegisterResponse)
@@ -512,7 +529,7 @@ def list_deleted_devices_route(
     organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[DeviceOut]:
     enforce_same_organization(organization_id, user, db)
-    return [_to_out(db, d) for d in list_deleted_devices(db, organization_id=organization_id)]
+    return _to_out_bulk(db, list_deleted_devices(db, organization_id=organization_id))
 
 
 _APPROVER_PERMISSION_BY_ACTION = {

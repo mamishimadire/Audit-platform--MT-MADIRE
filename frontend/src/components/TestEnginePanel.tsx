@@ -205,6 +205,11 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   }
 
   const visibleRules = rules.filter((r) => r.status !== 'deleted')
+  // A test only ever needs one live schedule; anything else is a
+  // superseded duplicate (see backend migration 0045) kept only for its
+  // audit trail — listing it here would just be clutter.
+  const activeSchedules = schedules.filter((s) => s.is_active)
+  const supersededScheduleCount = schedules.length - activeSchedules.length
   const STATUS_STYLES: Record<string, string> = {
     pending_approval: 'bg-orange-100 text-orange-800 font-bold',
     active: 'bg-accent-soft text-accent-ink',
@@ -404,15 +409,23 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
         <div className="rounded-lg border border-line bg-surface p-3">
           <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Monitoring schedule</div>
-          {schedules.length > 0 ? (
-            <ul className="mt-2 space-y-1">
-              {schedules.map((s) => (
-                <li key={s.schedule_id} className="text-xs">
-                  {s.frequency} · {s.is_active ? 'active' : 'inactive'} · next run{' '}
-                  {s.next_run ? new Date(s.next_run).toLocaleString() : '—'}
-                </li>
-              ))}
-            </ul>
+          {activeSchedules.length > 0 ? (
+            <>
+              <ul className="mt-2 space-y-1">
+                {activeSchedules.map((s) => (
+                  <li key={s.schedule_id} className="text-xs">
+                    {s.frequency} · active · next run{' '}
+                    {s.next_run ? new Date(s.next_run).toLocaleString() : '—'}
+                    {s.last_run && <> · last run {new Date(s.last_run).toLocaleString()}</>}
+                  </li>
+                ))}
+              </ul>
+              {supersededScheduleCount > 0 && (
+                <p className="mt-1 text-[10px] text-ink-soft">
+                  {supersededScheduleCount} superseded schedule{supersededScheduleCount === 1 ? '' : 's'} hidden (kept for history only).
+                </p>
+              )}
+            </>
           ) : canManage ? (
             <div className="mt-3 flex gap-2">
               <select value={frequency} onChange={(e) => setFrequency(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs">
@@ -460,7 +473,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                   </td>
                   <td className="px-3 py-2 text-xs tabular-nums">{e.records_analyzed ?? '—'}</td>
                   <td className="px-3 py-2 text-xs tabular-nums">{e.exceptions_found ?? '—'}</td>
-                  <td className="px-3 py-2 text-xs text-ink-soft">{e.execution_log ?? '—'}</td>
+                  <td className="max-w-md px-3 py-2 text-xs text-ink-soft">{e.execution_log ?? '—'}</td>
                 </tr>
               ))}
               {executions.length === 0 && (

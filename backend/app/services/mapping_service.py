@@ -374,7 +374,34 @@ def approve_mapping(db: Session, *, mapping: TestDataMapping, approved_by_user_i
     )
     db.commit()
     db.refresh(mapping)
+    _maybe_auto_generate_rule(db, audit_test_id=mapping.audit_test_id, organization_id=organization_id)
     return mapping
+
+
+def _maybe_auto_generate_rule(db: Session, *, audit_test_id: uuid.UUID, organization_id: uuid.UUID) -> None:
+    """Once mapping becomes fully ready against a control's rule template,
+    the rule is generated automatically instead of waiting for someone to
+    click "Generate from control template" — every field the template
+    needs is already approved the moment this runs, so there is nothing
+    left for a human to decide before the rule can exist. It still lands
+    as status='pending_approval' like every other path into
+    generate_rule_from_template: the platform writing the rule from a
+    template is not the same as an auditor reviewing it for this specific
+    client's mapping."""
+    from app.services.test_rule_service import generate_rule_from_template
+
+    readiness = get_template_requirements(db, audit_test_id=audit_test_id)
+    if not readiness.has_rule or not readiness.ready:
+        return
+    existing = db.scalar(
+        select(TestRule).where(TestRule.audit_test_id == audit_test_id, TestRule.status.in_(("pending_approval", "active")))
+    )
+    if existing is not None:
+        return
+    try:
+        generate_rule_from_template(db, audit_test_id=audit_test_id, organization_id=organization_id, created_by_user_id=None)
+    except ValueError:
+        pass  # a precondition generate_rule_from_template itself checks isn't met yet — stays a manual step
 
 
 def reject_mapping(db: Session, *, mapping: TestDataMapping, reason: str, rejected_by_user_id: uuid.UUID, organization_id: uuid.UUID) -> TestDataMapping:

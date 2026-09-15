@@ -1,3 +1,12 @@
+export interface PendingApprovalOut {
+  category: string
+  entity_id: string
+  label: string
+  detail: string | null
+  requested_at: string
+  link_path: string
+}
+
 export interface EligibleApproverOut {
   user_id: string
   first_name: string

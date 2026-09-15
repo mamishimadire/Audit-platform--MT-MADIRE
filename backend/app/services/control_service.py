@@ -290,6 +290,36 @@ def get_risk_ids_for_control(db: Session, *, control_id: uuid.UUID) -> list[uuid
     return list(db.scalars(select(RiskControl.risk_id).where(RiskControl.control_id == control_id)))
 
 
+def describe_controls(
+    db: Session, *, controls: list[Control]
+) -> dict[uuid.UUID, tuple[list[uuid.UUID], str | None, list[str]]]:
+    """Batched equivalent of calling get_risk_ids_for_control +
+    get_domain_and_tables once per control — 2 queries total regardless of
+    how many controls, instead of up to 2 per control. Each round trip to
+    the database costs real, fixed latency (network + Neon), so an N-control
+    list page doing 2N queries turns a sub-second load into a multi-second
+    one. Returns control_id -> (risk_ids, domain, required_tables)."""
+    if not controls:
+        return {}
+
+    control_ids = [c.control_id for c in controls]
+    risk_links = db.execute(select(RiskControl.control_id, RiskControl.risk_id).where(RiskControl.control_id.in_(control_ids)))
+    risk_ids_by_control: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for control_id, risk_id in risk_links:
+        risk_ids_by_control.setdefault(control_id, []).append(risk_id)
+
+    library_ids = {c.control_library_id for c in controls if c.control_library_id is not None}
+    entries = db.scalars(select(ControlLibraryEntry).where(ControlLibraryEntry.control_library_id.in_(library_ids))) if library_ids else []
+    entries_by_id = {e.control_library_id: e for e in entries}
+
+    result: dict[uuid.UUID, tuple[list[uuid.UUID], str | None, list[str]]] = {}
+    for control in controls:
+        entry = entries_by_id.get(control.control_library_id) if control.control_library_id else None
+        domain, required_tables = (entry.domain, list(entry.required_tables)) if entry is not None else (None, [])
+        result[control.control_id] = (risk_ids_by_control.get(control.control_id, []), domain, required_tables)
+    return result
+
+
 def get_domain_and_tables(db: Session, *, control_library_id: uuid.UUID | None) -> tuple[str | None, list[str]]:
     if control_library_id is None:
         return None, []

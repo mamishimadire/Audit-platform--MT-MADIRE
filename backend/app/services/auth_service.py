@@ -41,6 +41,23 @@ def get_user_role_names(db: Session, user_id: uuid.UUID) -> list[str]:
     return list(rows)
 
 
+def get_role_names_bulk(db: Session, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+    """Batched equivalent of calling get_user_role_names once per user —
+    one query total instead of one per user, so an N-user list page
+    doesn't pay N round trips just for the roles column."""
+    if not user_ids:
+        return {}
+    rows = db.execute(
+        select(UserRole.user_id, Role.role_name)
+        .join(Role, Role.role_id == UserRole.role_id)
+        .where(UserRole.user_id.in_(user_ids))
+    )
+    result: dict[uuid.UUID, list[str]] = {uid: [] for uid in user_ids}
+    for user_id, role_name in rows:
+        result[user_id].append(role_name)
+    return result
+
+
 def get_user_permission_names(db: Session, user_id: uuid.UUID) -> set[str]:
     rows = db.scalars(
         select(Permission.permission_name)

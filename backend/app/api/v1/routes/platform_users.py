@@ -5,7 +5,7 @@ from app.api.deps import require_permissions
 from app.db.session import get_db
 from app.models.rbac import User
 from app.schemas.user import PlatformUserCreate, UserOut
-from app.services.auth_service import get_user_role_names
+from app.services.auth_service import get_role_names_bulk, get_user_role_names
 from app.services.user_service import create_platform_user, list_platform_users
 
 router = APIRouter(prefix="/platform/users", tags=["platform-users"])
@@ -43,4 +43,14 @@ def list_all(
 ) -> list[UserOut]:
     if user.organization_id is not None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only internal (platform) users can view internal users")
-    return [_to_out(db, u) for u in list_platform_users(db)]
+    users = list_platform_users(db)
+    roles_by_user = get_role_names_bulk(db, [u.user_id for u in users])
+    out = []
+    for u in users:
+        row = UserOut.model_validate(u)
+        out.append(
+            row.model_copy(
+                update={"roles": roles_by_user.get(u.user_id, []), "temporary_password": u.temporary_password_plaintext}
+            )
+        )
+    return out

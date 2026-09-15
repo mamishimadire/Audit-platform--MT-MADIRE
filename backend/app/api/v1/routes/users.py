@@ -8,7 +8,7 @@ from app.api.deps import enforce_same_organization, get_current_user, require_pe
 from app.db.session import get_db
 from app.models.rbac import User
 from app.schemas.user import UserCreate, UserOut
-from app.services.auth_service import get_user_role_names
+from app.services.auth_service import get_role_names_bulk, get_user_role_names
 from app.services.user_service import create_user_in_organization
 
 router = APIRouter(prefix="/organizations/{organization_id}/users", tags=["users"])
@@ -47,4 +47,14 @@ def list_users(
 ) -> list[UserOut]:
     enforce_same_organization(organization_id, user, db)
     stmt = select(User).where(User.organization_id == organization_id)
-    return [_to_out(db, u) for u in db.scalars(stmt)]
+    users = list(db.scalars(stmt))
+    roles_by_user = get_role_names_bulk(db, [u.user_id for u in users])
+    out = []
+    for u in users:
+        row = UserOut.model_validate(u)
+        out.append(
+            row.model_copy(
+                update={"roles": roles_by_user.get(u.user_id, []), "temporary_password": u.temporary_password_plaintext}
+            )
+        )
+    return out
