@@ -478,6 +478,8 @@ export interface FindingOut {
   risk_rating: string | null
   status: string
   identified_at: string
+  control_code: string | null
+  control_name: string | null
 }
 
 export interface RootCauseOut {
@@ -585,6 +587,8 @@ export interface ExceptionOut {
   summary: string | null
   why_it_matters: string | null
   what_to_do: string | null
+  control_code: string | null
+  control_name: string | null
 }
 
 export interface ExceptionRecordOut {

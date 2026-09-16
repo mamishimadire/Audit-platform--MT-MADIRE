@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { RulePreview } from './RulePreview'
-import type { MonitoringScheduleOut, TestExecutionOut, TestRuleOut } from '../types/api'
+import { ExceptionExplanationBlock } from './ExceptionExplanation'
+import type { ExceptionOut, MonitoringScheduleOut, TestExecutionOut, TestRuleOut } from '../types/api'
 
 const OPERATORS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null']
 
@@ -39,6 +40,25 @@ const EXECUTION_LABELS: Record<string, string> = {
   error: 'Technical error',
   running: 'Running',
 }
+const NEEDS_ATTENTION_STATUSES = new Set(['mapping_required', 'not_testable', 'error'])
+const EXECUTION_STATUS_EXPLANATIONS: Record<string, string> = {
+  mapping_required: "This control has a rule, but not all of the information it needs has been approved and connected yet, so nothing could be checked.",
+  not_testable: "This control needs a table that hasn't been found or connected yet, so it can't be checked at all.",
+  insufficient_data: "The test ran, but there was no information to check — so there's nothing yet to judge this control by.",
+  error: "The test couldn't run because of a technical problem (like a connection dropping), not because of anything wrong with the control.",
+}
+const EXECUTION_STATUS_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'exception', label: 'Exceptions' },
+  { key: 'needs_attention', label: 'Needs attention' },
+  { key: 'pass', label: 'Passed' },
+  { key: 'error', label: 'Errors' },
+] as const
+type ExecutionFilterKey = (typeof EXECUTION_STATUS_FILTERS)[number]['key']
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
 
 type RuleType = 'threshold' | 'duplicate' | 'missing_match' | 'cross_match_condition'
 
@@ -53,7 +73,35 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const [rules, setRules] = useState<TestRuleOut[]>([])
   const [schedules, setSchedules] = useState<MonitoringScheduleOut[]>([])
   const [executions, setExecutions] = useState<TestExecutionOut[]>([])
+  const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [execView, setExecView] = useState<'current' | 'history'>('current')
+  const [execHistoryPreset, setExecHistoryPreset] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('today')
+  const [execFromDate, setExecFromDate] = useState(() => isoDate(new Date()))
+  const [execToDate, setExecToDate] = useState(() => isoDate(new Date()))
+  const [execFilter, setExecFilter] = useState<ExecutionFilterKey>('all')
+  const [expandedExecutionId, setExpandedExecutionId] = useState<string | null>(null)
+
+  const applyExecPreset = (preset: typeof execHistoryPreset) => {
+    setExecHistoryPreset(preset)
+    const now = new Date()
+    if (preset === 'today') {
+      setExecFromDate(isoDate(now))
+      setExecToDate(isoDate(now))
+    } else if (preset === 'week') {
+      const start = new Date(now)
+      start.setDate(start.getDate() - 6)
+      setExecFromDate(isoDate(start))
+      setExecToDate(isoDate(now))
+    } else if (preset === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1)
+      setExecFromDate(isoDate(start))
+      setExecToDate(isoDate(now))
+    } else if (preset === 'all') {
+      setExecFromDate('')
+      setExecToDate('')
+    }
+  }
   const [canonicalObjects, setCanonicalObjects] = useState<string[]>(['employee', 'user'])
 
   useEffect(() => {
@@ -100,6 +148,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
     apiClient
       .get<TestExecutionOut[]>(`/organizations/${organizationId}/audit-tests/${auditTestId}/executions`)
       .then((res) => setExecutions(res.data))
+    apiClient.get<ExceptionOut[]>(`/organizations/${organizationId}/exceptions`).then((res) => setExceptions(res.data))
   }
 
   useEffect(load, [organizationId, auditTestId])
@@ -470,41 +519,189 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
       <div>
         <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Executions</div>
-        <div className="mt-2 overflow-hidden rounded-lg border border-line bg-surface">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
-                <th className="px-3 py-2">Started</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Records</th>
-                <th className="px-3 py-2">Exceptions</th>
-                <th className="px-3 py-2">Log</th>
-              </tr>
-            </thead>
-            <tbody>
-              {executions.map((e) => (
-                <tr key={e.execution_id} className="border-t border-line">
-                  <td className="px-3 py-2 text-xs text-ink-soft">{new Date(e.started_at).toLocaleString()}</td>
-                  <td className="px-3 py-2">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${EXECUTION_STYLES[e.status] ?? ''}`}>
-                      {EXECUTION_LABELS[e.status] ?? e.status}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-xs tabular-nums">{e.records_analyzed ?? '—'}</td>
-                  <td className="px-3 py-2 text-xs tabular-nums">{e.exceptions_found ?? '—'}</td>
-                  <td className="max-w-md px-3 py-2 text-xs text-ink-soft">{e.execution_log ?? '—'}</td>
-                </tr>
-              ))}
-              {executions.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-xs text-ink-soft">
-                    Not run yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <p className="mt-1 text-xs text-ink-soft">
+          {execView === 'current'
+            ? 'The most recent run of this test — its status right now.'
+            : 'Every run of this test — pick a day, a week, a month, or any custom range.'}{' '}
+          A real problem is always recorded as an exception, never silently reinterpreted as a pass.
+        </p>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex gap-1 rounded-md bg-bg p-0.5 text-xs">
+            <button
+              onClick={() => setExecView('current')}
+              className={`rounded px-2.5 py-1 font-medium ${execView === 'current' ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+            >
+              Current
+            </button>
+            <button
+              onClick={() => setExecView('history')}
+              className={`rounded px-2.5 py-1 font-medium ${execView === 'history' ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+            >
+              History
+            </button>
+          </div>
+          {execView === 'history' && (
+            <>
+              <div className="flex gap-1 rounded-md bg-bg p-0.5 text-xs">
+                {(
+                  [
+                    { key: 'today', label: 'Today' },
+                    { key: 'week', label: 'This week' },
+                    { key: 'month', label: 'This month' },
+                    { key: 'all', label: 'All time' },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.key}
+                    onClick={() => applyExecPreset(p.key)}
+                    className={`rounded px-2.5 py-1 font-medium ${execHistoryPreset === p.key ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-1 text-xs text-ink-soft">
+                From
+                <input
+                  type="date"
+                  value={execFromDate}
+                  onChange={(e) => {
+                    setExecHistoryPreset('custom')
+                    setExecFromDate(e.target.value)
+                  }}
+                  className="rounded-md border border-line px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-xs text-ink-soft">
+                To
+                <input
+                  type="date"
+                  value={execToDate}
+                  onChange={(e) => {
+                    setExecHistoryPreset('custom')
+                    setExecToDate(e.target.value)
+                  }}
+                  className="rounded-md border border-line px-2 py-1 text-xs"
+                />
+              </label>
+            </>
+          )}
         </div>
+
+        {(() => {
+          const sortedExecutions = [...executions].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+          const base =
+            execView === 'current'
+              ? sortedExecutions.slice(0, 1)
+              : sortedExecutions.filter((e) => {
+                  const started = new Date(e.started_at)
+                  if (execFromDate && started < new Date(execFromDate)) return false
+                  if (execToDate && started > new Date(`${execToDate}T23:59:59`)) return false
+                  return true
+                })
+          const filterCounts = {
+            all: base.length,
+            exception: base.filter((e) => e.status === 'exception').length,
+            needs_attention: base.filter((e) => NEEDS_ATTENTION_STATUSES.has(e.status)).length,
+            pass: base.filter((e) => e.status === 'pass').length,
+            error: base.filter((e) => e.status === 'error').length,
+          }
+          const filteredExecutions = base.filter((e) => {
+            if (execFilter === 'all') return true
+            if (execFilter === 'needs_attention') return NEEDS_ATTENTION_STATUSES.has(e.status)
+            return e.status === execFilter
+          })
+
+          return (
+            <>
+              {execView === 'history' && (
+                <div className="mt-2 flex gap-1 rounded-md bg-bg p-0.5 text-xs w-fit">
+                  {EXECUTION_STATUS_FILTERS.map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => setExecFilter(f.key)}
+                      className={`rounded px-2.5 py-1 font-medium ${execFilter === f.key ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+                    >
+                      {f.label} <span className="text-ink-faint">{filterCounts[f.key]}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="mt-2 overflow-hidden rounded-lg border border-line bg-surface">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
+                      <th className="px-3 py-2">Started</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Records</th>
+                      <th className="px-3 py-2">Exceptions</th>
+                      <th className="px-3 py-2">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredExecutions.map((e) => {
+                      const rowExceptions = e.status === 'exception' ? exceptions.filter((x) => x.execution_id === e.execution_id) : []
+                      const isExpanded = expandedExecutionId === e.execution_id
+                      const preview = rowExceptions[0]?.summary ?? rowExceptions[0]?.exception_description ?? ''
+                      return (
+                        <Fragment key={e.execution_id}>
+                          <tr className="border-t border-line align-top">
+                            <td className="px-3 py-2 text-xs text-ink-soft whitespace-nowrap">{new Date(e.started_at).toLocaleString()}</td>
+                            <td className="px-3 py-2">
+                              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${EXECUTION_STYLES[e.status] ?? ''}`}>
+                                {EXECUTION_LABELS[e.status] ?? e.status}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-xs tabular-nums">{e.records_analyzed ?? '—'}</td>
+                            <td className="px-3 py-2 text-xs tabular-nums">{e.exceptions_found ?? '—'}</td>
+                            <td className="max-w-md px-3 py-2 text-xs text-ink-soft">
+                              {rowExceptions.length === 0 ? (
+                                e.execution_log || EXECUTION_STATUS_EXPLANATIONS[e.status] || '—'
+                              ) : (
+                                <>
+                                  {preview}
+                                  {rowExceptions.length > 1 && <span className="text-ink-faint"> (+{rowExceptions.length - 1} more)</span>}
+                                  <button
+                                    onClick={() => setExpandedExecutionId(isExpanded ? null : e.execution_id)}
+                                    className="ml-1 font-medium text-accent-ink hover:underline"
+                                  >
+                                    {isExpanded ? 'hide full explanation' : 'show full explanation'}
+                                  </button>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                          {isExpanded && rowExceptions.length > 0 && (
+                            <tr className="border-t border-line-soft bg-bg">
+                              <td colSpan={5} className="space-y-2 px-3 py-3">
+                                {rowExceptions.map((exc) => (
+                                  <ExceptionExplanationBlock
+                                    key={exc.exception_id}
+                                    summary={exc.summary ?? exc.exception_description ?? 'This record failed the check.'}
+                                    whyItMatters={exc.why_it_matters ?? 'This check exists to catch a real problem.'}
+                                    whatToDo={exc.what_to_do ?? 'Look into this record and decide what needs to change.'}
+                                  />
+                                ))}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
+                    })}
+                    {filteredExecutions.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-3 py-4 text-center text-xs text-ink-soft">
+                          {execView === 'current' ? 'Not run yet.' : 'No test executions in this range.'}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )
+        })()}
       </div>
 
       {deletingRuleId && (

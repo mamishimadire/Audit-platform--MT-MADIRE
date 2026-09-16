@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.execution_status import classify_completed_run
-from app.models.audit_test import AuditTest
+from app.models.audit_test import AuditTest, ControlAuditTest
+from app.models.control_library import ControlLibraryEntry
 from app.models.device import Device, DeviceSoftwareInventory, DeviceTelemetry
+from app.models.risk_control import Control
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.monitoring import TestExecution
 from app.schemas.device import ComplianceCheckDetail, TelemetryReport
@@ -132,23 +134,68 @@ def get_compliance_check_details(db: Session, *, device: Device) -> list[Complia
     return details
 
 
+def _ensure_control_link(db: Session, *, organization_id: uuid.UUID, test: AuditTest, control_code: str) -> None:
+    """This auto-created, always-on audit test was never linked to an
+    actual `controls` row for this org — unlike every one of the 157
+    catalog controls (see control_service.activate_control), which get
+    both a Control and a matching AuditTest together — so its exceptions/
+    findings had no control to show at all (Exceptions/Findings group by
+    control; see execution_service.list_exceptions_for_organization).
+
+    Auto-creates the missing Control the same way this test itself is
+    auto-created — no human decides to "turn on" endpoint/software
+    compliance checking, it starts the moment a device first reports in —
+    so gating it behind the normal activation/approval workflow would be
+    inconsistent with how it already behaves. Sourced from control_library
+    when a matching entry exists (AS-004); EP-001 isn't one of the 157
+    cataloged controls, so its name/description come from this test's own
+    fields instead — still enough to categorize by, just with no linked
+    risk (explain_exception's why_it_matters already falls back sensibly
+    when a control has no library entry or risk to draw from).
+
+    Self-heals on every call rather than a one-time migration, since this
+    runs on every device check-in anyway."""
+    already_linked = db.scalar(
+        select(ControlAuditTest).where(ControlAuditTest.audit_test_id == test.audit_test_id)
+    )
+    if already_linked is not None:
+        return
+    control = db.scalar(
+        select(Control).where(Control.organization_id == organization_id, Control.control_code == control_code)
+    )
+    if control is None:
+        library_entry = db.scalar(select(ControlLibraryEntry).where(ControlLibraryEntry.control_code == control_code))
+        control = Control(
+            organization_id=organization_id,
+            control_library_id=library_entry.control_library_id if library_entry else None,
+            control_code=control_code,
+            control_name=library_entry.control_name if library_entry else test.test_name,
+            control_description=library_entry.audit_procedure if library_entry else test.test_description,
+            status="active",
+        )
+        db.add(control)
+        db.flush()
+    db.add(ControlAuditTest(control_id=control.control_id, audit_test_id=test.audit_test_id))
+    db.flush()
+
+
 def _get_or_create_compliance_test(db: Session, *, organization_id: uuid.UUID) -> AuditTest:
     test = db.scalar(
         select(AuditTest).where(AuditTest.organization_id == organization_id, AuditTest.test_code == COMPLIANCE_TEST_CODE)
     )
-    if test is not None:
-        return test
-    test = AuditTest(
-        organization_id=organization_id,
-        test_code=COMPLIANCE_TEST_CODE,
-        test_name=COMPLIANCE_TEST_NAME,
-        test_description="Auto-created: evaluates endpoint security telemetry (AV, firewall, disk encryption, patch status) reported by the Madire Endpoint Agent.",
-        test_type="endpoint_compliance",
-        frequency="real_time",
-        status="active",
-    )
-    db.add(test)
-    db.flush()
+    if test is None:
+        test = AuditTest(
+            organization_id=organization_id,
+            test_code=COMPLIANCE_TEST_CODE,
+            test_name=COMPLIANCE_TEST_NAME,
+            test_description="Auto-created: evaluates endpoint security telemetry (AV, firewall, disk encryption, patch status) reported by the Madire Endpoint Agent.",
+            test_type="endpoint_compliance",
+            frequency="real_time",
+            status="active",
+        )
+        db.add(test)
+        db.flush()
+    _ensure_control_link(db, organization_id=organization_id, test=test, control_code=COMPLIANCE_TEST_CODE)
     return test
 
 

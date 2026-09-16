@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.models.evidence_exception import Exception_
 from app.models.finding import Finding, FindingRootCause, RemediationAction, Retest
+from app.models.monitoring import TestExecution
 from app.schemas.finding import FindingCreate, RemediationActionCreate, RootCauseCreate
 from app.services.audit_log_service import log_action
-from app.services.exception_service import sod_required
+from app.services.exception_service import get_control_for_audit_test, sod_required
 
 
 def create_finding(
@@ -40,7 +41,22 @@ def create_finding(
 
 
 def list_findings(db: Session, *, organization_id: uuid.UUID) -> list[Finding]:
-    return list(db.scalars(select(Finding).where(Finding.organization_id == organization_id)))
+    findings = list(db.scalars(select(Finding).where(Finding.organization_id == organization_id)))
+    for finding in findings:
+        # Lets the Findings page group by control instead of one flat,
+        # uncategorized list — same chain (exception -> execution ->
+        # audit_test -> control) list_exceptions_for_organization already
+        # walks for its own control_code/control_name attachment.
+        control_code = control_name = None
+        exception = db.get(Exception_, finding.exception_id)
+        execution = db.get(TestExecution, exception.execution_id) if exception else None
+        if execution is not None:
+            control = get_control_for_audit_test(db, audit_test_id=execution.audit_test_id)
+            if control is not None:
+                control_code, control_name = control.control_code, control.control_name
+        finding.control_code = control_code
+        finding.control_name = control_name
+    return findings
 
 
 def create_root_cause(db: Session, *, finding_id: uuid.UUID, payload: RootCauseCreate) -> FindingRootCause:

@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from sqlalchemy import select
@@ -85,6 +86,126 @@ def _humanize_field_name(key: str) -> str:
     return " ".join(word.upper() if word.lower() == "id" else word.capitalize() for word in words)
 
 
+_OPERATOR_WORDS = {
+    "eq": "is", "ne": "is not", "gt": "is greater than", "gte": "is at least",
+    "lt": "is less than", "lte": "is at most", "is_null": "is empty",
+    "is_not_null": "is not empty", "matches": "matches the pattern",
+    "in": "is one of", "not_in": "is none of",
+}
+
+
+def _humanize_object(name: str) -> str:
+    """Canonical object names are inconsistently already-plural (a
+    'certificates' collection vs. a singular 'employee') since they mirror
+    physical table/collection names — but a sentence describing ONE record
+    ("Certificate CRT002...") needs the singular either way. A trailing 's'
+    is stripped unless the word ends 'ss'/'us'/'is' (access, status,
+    analysis — words a naive strip would mangle into nonsense)."""
+    label = name.replace("_", " ")
+    if label.endswith("s") and not label.endswith(("ss", "us", "is")):
+        label = label[:-1]
+    return label
+
+
+def _fact_value(exception_data: dict, field: str, role: str | None):
+    """A cross_match_condition/three_way_match exception's data suffixes a
+    field with _primary/_secondary/_tertiary only when the SAME field name
+    exists on both sides of the join (see rule_evaluation.py's overlap_keys
+    logic) — never unconditionally. Try the role-suffixed key first, then
+    the bare field name, so a real value is found either way."""
+    if role and f"{field}_{role}" in exception_data:
+        return exception_data[f"{field}_{role}"]
+    return exception_data.get(field)
+
+
+def _describe_fact(exception_data: dict, field: str, role: str | None, operator: str, rule_value) -> str:
+    """'employment status is terminated' — the field's real value on this
+    specific record when it's actually present in the data (informative
+    for a range/date comparison, e.g. an exact last-login date rather than
+    just the 90-day threshold it failed), falling back to the rule's own
+    literal only when the field wasn't carried through to exception_data at
+    all (duplicate/missing_match's pre-filter conditions, which describe
+    the CANDIDATE set rather than a per-record fact)."""
+    label = _humanize_field_name(field).lower()
+    if operator in ("is_null", "is_not_null"):
+        return f"{label} {_OPERATOR_WORDS[operator]}"
+    actual = _fact_value(exception_data, field, role)
+    shown = actual if actual is not None else rule_value
+    return f"{label} {_OPERATOR_WORDS.get(operator, operator)} {shown}"
+
+
+def _natural_summary(rule_definition: dict | None, exception_data: dict, record_identifier: str | None, control_label: str) -> str | None:
+    """A rule-shape-aware sentence built from the SAME exception_data every
+    control already produces (never hand-written per control — there are
+    157 of them) — e.g. "Employee EMP007: employment status is terminated,
+    but its linked user still shows status as active" instead of the
+    generic "Record EMP007 did not pass the check." Returns None when the
+    rule can't be loaded or its shape isn't one of the five primitives, so
+    the caller falls back to the generic line rather than showing nothing."""
+    if not rule_definition or not exception_data:
+        return None
+    rule_type = rule_definition.get("rule_type")
+    ident = record_identifier or "This record"
+
+    if rule_type == "cross_match_condition":
+        primary_obj = _humanize_object(rule_definition["primary_object"])
+        secondary_obj = _humanize_object(rule_definition["secondary_object"])
+        cp, cs = rule_definition["condition_primary"], rule_definition["condition_secondary"]
+        primary_fact = _describe_fact(exception_data, cp["field"], "primary", cp["operator"], cp.get("value"))
+        secondary_fact = _describe_fact(exception_data, cs["field"], "secondary", cs["operator"], cs.get("value"))
+        return f"{primary_obj.capitalize()} {ident}: {primary_fact}, but its linked {secondary_obj}'s {secondary_fact}."
+
+    if rule_type == "threshold":
+        obj = _humanize_object(rule_definition["object"])
+        fact = _describe_fact(exception_data, rule_definition["field"], None, rule_definition["operator"], rule_definition.get("value"))
+        return f"{obj.capitalize()} {ident}: {fact}."
+
+    if rule_type == "missing_match":
+        primary_obj = _humanize_object(rule_definition["primary_object"])
+        secondary_obj = _humanize_object(rule_definition["secondary_object"])
+        return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record at all."
+
+    if rule_type == "duplicate":
+        obj = _humanize_object(rule_definition["object"])
+        group_by = ", ".join(_humanize_field_name(f).lower() for f in rule_definition["group_by"])
+        return f"This {obj} record ({ident}) shares the same {group_by} with at least one other {obj} record."
+
+    if rule_type == "three_way_match":
+        primary_obj = _humanize_object(rule_definition["primary_object"])
+        secondary_obj = _humanize_object(rule_definition["secondary_object"])
+        tertiary_obj = _humanize_object(rule_definition["tertiary_object"])
+        role_obj = {"primary": primary_obj, "secondary": secondary_obj, "tertiary": tertiary_obj}
+        parts = []
+        for role, obj_label in (("primary", primary_obj), ("secondary", secondary_obj), ("tertiary", tertiary_obj)):
+            cond = rule_definition.get(f"condition_{role}")
+            if cond:
+                parts.append(f"its {obj_label} {_describe_fact(exception_data, cond['field'], role, cond['operator'], cond.get('value'))}")
+        fc = rule_definition.get("field_comparison")
+        if fc is not None:
+            left_label = _humanize_field_name(fc["left_field"]).lower()
+            right_label = _humanize_field_name(fc["right_field"]).lower()
+            left_val = _fact_value(exception_data, fc["left_field"], fc["left_object"])
+            right_val = _fact_value(exception_data, fc["right_field"], fc["right_object"])
+            parts.append(
+                f"its {role_obj[fc['left_object']]}'s {left_label} ({left_val}) {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} "
+                f"its {role_obj[fc['right_object']]}'s {right_label} ({right_val})"
+            )
+        joined = "; ".join(parts) if parts else f"its linked {primary_obj}, {secondary_obj}, and {tertiary_obj} records don't reconcile"
+        return f"{ident}: {joined}."
+
+    return None
+
+
+def get_control_for_audit_test(db: Session, *, audit_test_id: uuid.UUID) -> Control | None:
+    """The control an audit test belongs to, if any — a manually-created
+    test with no control_audit_tests link (or no control_library entry)
+    returns None, same as explain_exception already tolerates."""
+    link = db.scalar(select(ControlAuditTest).where(ControlAuditTest.audit_test_id == audit_test_id))
+    if link is None:
+        return None
+    return db.get(Control, link.control_id)
+
+
 def explain_exception(db: Session, *, exception: Exception_) -> dict:
     """Everything a non-technical reader needs to understand one exception:
     what was actually found (the real field values from the record that
@@ -102,15 +223,13 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
     library_entry: ControlLibraryEntry | None = None
     risk: Risk | None = None
     if audit_test is not None:
-        link = db.scalar(select(ControlAuditTest).where(ControlAuditTest.audit_test_id == audit_test.audit_test_id))
-        if link is not None:
-            control = db.get(Control, link.control_id)
-            if control is not None:
-                if control.control_library_id is not None:
-                    library_entry = db.get(ControlLibraryEntry, control.control_library_id)
-                risk_link = db.scalar(select(RiskControl).where(RiskControl.control_id == control.control_id))
-                if risk_link is not None:
-                    risk = db.get(Risk, risk_link.risk_id)
+        control = get_control_for_audit_test(db, audit_test_id=audit_test.audit_test_id)
+        if control is not None:
+            if control.control_library_id is not None:
+                library_entry = db.get(ControlLibraryEntry, control.control_library_id)
+            risk_link = db.scalar(select(RiskControl).where(RiskControl.control_id == control.control_id))
+            if risk_link is not None:
+                risk = db.get(Risk, risk_link.risk_id)
 
     records = list(db.scalars(select(ExceptionRecord).where(ExceptionRecord.exception_id == exception.exception_id)))
     facts = [
@@ -122,12 +241,11 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
     # exception.exception_description is an internal grouping key ("{test
     # name}: exception on {record id}", set by execution_service so repeat
     # detections of the SAME record update one row instead of piling up
-    # duplicates) — not written to be read aloud. Restating it here used to
-    # make the summary say the control's name twice in one sentence; the
-    # record's own identifier plus the control's name says the same thing
-    # once, plainly.
+    # duplicates) — not written to be read aloud.
     record_id = records[0].record_identifier if records else None
-    summary = (
+    rule_definition = json.loads(rule.rule_definition) if rule else None
+    natural = _natural_summary(rule_definition, (records[0].exception_data or {}) if records else {}, record_id, control_label)
+    summary = natural or (
         f"Record {record_id} did not pass the \"{control_label}\" check."
         if record_id
         else f"A record did not pass the \"{control_label}\" check."
@@ -155,6 +273,8 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
         "seen_count": exception.occurrence_count,
         "first_seen": exception.detected_at,
         "last_seen": exception.last_detected_at,
+        "control_code": control.control_code if control else None,
+        "control_name": control.control_name if control else None,
     }
 
 

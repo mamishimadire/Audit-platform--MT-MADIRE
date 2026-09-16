@@ -278,6 +278,21 @@ export function ExceptionsPage() {
     setSearchParams(next, { replace: true })
   }
 
+  // Grouped by control so an auditor sees every open issue for ONE control
+  // together, instead of hunting through one flat list — "Uncategorized"
+  // is a real, rare case (a manually-created audit test with no control
+  // library link), surfaced honestly rather than hidden.
+  const groups = (() => {
+    const byLabel = new Map<string, { label: string; code: string; items: ExceptionOut[] }>()
+    for (const e of visible) {
+      const label = e.control_code ? `${e.control_code} — ${e.control_name}` : 'Uncategorized'
+      const key = e.control_code ?? '￿' // sorts after every real code
+      if (!byLabel.has(key)) byLabel.set(key, { label, code: key, items: [] })
+      byLabel.get(key)!.items.push(e)
+    }
+    return [...byLabel.values()].sort((a, b) => a.code.localeCompare(b.code))
+  })()
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-ink">Exceptions</h1>
@@ -359,13 +374,22 @@ export function ExceptionsPage() {
             </tr>
           </thead>
           <tbody>
-            {visible.map((e) => (
-              <ExceptionRow
-                key={e.exception_id}
-                exception={e}
-                canManage={canManage}
-                onChanged={() => organizationId && load(organizationId)}
-              />
+            {groups.map((group) => (
+              <Fragment key={group.code}>
+                <tr className="border-t border-line bg-bg">
+                  <td colSpan={6} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                    {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
+                  </td>
+                </tr>
+                {group.items.map((e) => (
+                  <ExceptionRow
+                    key={e.exception_id}
+                    exception={e}
+                    canManage={canManage}
+                    onChanged={() => organizationId && load(organizationId)}
+                  />
+                ))}
+              </Fragment>
             ))}
             {visible.length === 0 && (
               <tr>

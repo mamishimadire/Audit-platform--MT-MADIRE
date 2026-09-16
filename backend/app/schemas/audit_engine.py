@@ -106,6 +106,12 @@ class ExceptionOut(OrmModel):
     summary: str | None = None
     why_it_matters: str | None = None
     what_to_do: str | None = None
+    # Also only set by list_exceptions_for_organization — lets the
+    # Exceptions/Findings pages group by control instead of showing one
+    # flat, uncategorized list. None for a manually-created audit test with
+    # no control_library link (nothing to group it under).
+    control_code: str | None = None
+    control_name: str | None = None
 
 
 class ExceptionUpdate(OrmModel):

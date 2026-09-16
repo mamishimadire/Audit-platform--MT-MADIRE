@@ -23,10 +23,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.execution_status import classify_completed_run
-from app.models.audit_test import AuditTest
+from app.models.audit_test import AuditTest, ControlAuditTest
+from app.models.control_library import ControlLibraryEntry
 from app.models.device import ApprovedSoftware, Device, DeviceSoftwareInventory
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.monitoring import TestExecution
+from app.models.risk_control import Control
 from app.schemas.device import ApprovedSoftwareCreate, EnrichedSoftwareItem, InstalledSoftwareItem
 from app.services.audit_log_service import log_action
 from app.services.exception_service import OPEN_STATUSES, find_open_exception
@@ -339,23 +341,59 @@ def enrich_installed_software(
     return enriched
 
 
+def _ensure_control_link(db: Session, *, organization_id: uuid.UUID, test: AuditTest, control_code: str) -> None:
+    """This auto-created, always-on audit test was never linked to an
+    actual `controls` row for this org, unlike every one of the 157
+    catalog controls (see control_service.activate_control). Auto-creates
+    the missing Control the same way this test itself is auto-created — no
+    human decides to "turn on" software compliance checking, it starts the
+    moment a device first reports in — sourced from control_library (AS-004
+    has a real entry there). Self-heals on every call rather than a
+    one-time migration, since this runs on every device check-in anyway.
+    Deliberately duplicated from device_compliance_service's identical
+    helper rather than imported — that module already imports FROM this
+    one, so importing back would be circular."""
+    already_linked = db.scalar(
+        select(ControlAuditTest).where(ControlAuditTest.audit_test_id == test.audit_test_id)
+    )
+    if already_linked is not None:
+        return
+    control = db.scalar(
+        select(Control).where(Control.organization_id == organization_id, Control.control_code == control_code)
+    )
+    if control is None:
+        library_entry = db.scalar(select(ControlLibraryEntry).where(ControlLibraryEntry.control_code == control_code))
+        control = Control(
+            organization_id=organization_id,
+            control_library_id=library_entry.control_library_id if library_entry else None,
+            control_code=control_code,
+            control_name=library_entry.control_name if library_entry else test.test_name,
+            control_description=library_entry.audit_procedure if library_entry else test.test_description,
+            status="active",
+        )
+        db.add(control)
+        db.flush()
+    db.add(ControlAuditTest(control_id=control.control_id, audit_test_id=test.audit_test_id))
+    db.flush()
+
+
 def _get_or_create_software_test(db: Session, *, organization_id: uuid.UUID) -> AuditTest:
     test = db.scalar(
         select(AuditTest).where(AuditTest.organization_id == organization_id, AuditTest.test_code == SOFTWARE_TEST_CODE)
     )
-    if test is not None:
-        return test
-    test = AuditTest(
-        organization_id=organization_id,
-        test_code=SOFTWARE_TEST_CODE,
-        test_name=SOFTWARE_TEST_NAME,
-        test_description="Auto-created: evaluates each device's reported software inventory against the organization's software policy (approved/required/restricted/system component/ignored/review required).",
-        test_type="endpoint_compliance",
-        frequency="real_time",
-        status="active",
-    )
-    db.add(test)
-    db.flush()
+    if test is None:
+        test = AuditTest(
+            organization_id=organization_id,
+            test_code=SOFTWARE_TEST_CODE,
+            test_name=SOFTWARE_TEST_NAME,
+            test_description="Auto-created: evaluates each device's reported software inventory against the organization's software policy (approved/required/restricted/system component/ignored/review required).",
+            test_type="endpoint_compliance",
+            frequency="real_time",
+            status="active",
+        )
+        db.add(test)
+        db.flush()
+    _ensure_control_link(db, organization_id=organization_id, test=test, control_code=SOFTWARE_TEST_CODE)
     return test
 
 

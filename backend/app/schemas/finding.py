@@ -23,6 +23,11 @@ class FindingOut(OrmModel):
     risk_rating: str | None
     status: str
     identified_at: datetime
+    # Only set by list_findings — lets the Findings page group by control
+    # instead of one flat, uncategorized list. None when the underlying
+    # audit test has no control_library link.
+    control_code: str | None = None
+    control_name: str | None = None
 
 
 class RootCauseCreate(OrmModel):
