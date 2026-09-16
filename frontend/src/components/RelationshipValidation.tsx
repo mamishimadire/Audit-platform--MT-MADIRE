@@ -70,7 +70,7 @@ export function RelationshipValidationPanel({ organizationId, auditTestId }: { o
       {checks?.map((c, i) => (
         <div key={i} className={`mt-1 rounded-md px-2 py-1.5 text-xs ${STATUS_STYLES[c.status]}`}>
           <div className="font-mono text-ink">
-            {c.primary_object}.{c.join_field} <span className="text-ink-soft">↔</span> {c.secondary_object}.{c.join_field}
+            {c.primary_object}.{c.join_field} <span className="text-ink-soft">↔</span> {c.secondary_object}.{c.secondary_join_field}
           </div>
           <div className={DETAIL_STYLES[c.status]}>
             {c.status === 'not_available' ? c.detail : `${c.match_rate}% match — ${c.detail}`}

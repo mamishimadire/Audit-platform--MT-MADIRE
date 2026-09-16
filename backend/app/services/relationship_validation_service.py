@@ -27,24 +27,28 @@ from app.services.mapping_service import list_mappings
 _MIN_HEALTHY_MATCH_RATE = 50.0
 
 
-def required_joins_for(rule_definition: dict) -> list[tuple[str, str, str]]:
-    """(primary_object, secondary_object, join_field) — only missing_match
-    and cross_match_condition actually join two objects; threshold/
-    duplicate operate on a single object, nothing to validate here. A
-    self-join (e.g. OP-006's "critical AND unresolved" trick — the same
-    object used as both sides to express a compound condition on one
-    table) has nothing meaningful to check either: a set always overlaps
-    itself completely, so that case is excluded rather than reported as a
-    trivial 100%."""
+def required_joins_for(rule_definition: dict) -> list[tuple[str, str, str, str]]:
+    """(primary_object, secondary_object, join_field, secondary_join_field)
+    — only missing_match and cross_match_condition actually join two
+    objects; threshold/duplicate operate on a single object, nothing to
+    validate here. A self-join (e.g. OP-006's "critical AND unresolved"
+    trick — the same object used as both sides to express a compound
+    condition on one table) has nothing meaningful to check either: a set
+    always overlaps itself completely, so that case is excluded rather
+    than reported as a trivial 100%. secondary_join_field defaults to
+    join_field when the two sides share a canonical field name (the
+    common case, and the only shape that existed before that became
+    optional)."""
     rule_type = rule_definition.get("rule_type")
     if rule_type not in ("missing_match", "cross_match_condition"):
         return []
     primary = rule_definition.get("primary_object")
     secondary = rule_definition.get("secondary_object")
     join_field = rule_definition.get("join_field")
+    secondary_join_field = rule_definition.get("secondary_join_field") or join_field
     if not primary or not secondary or not join_field or primary == secondary:
         return []
-    return [(primary, secondary, join_field)]
+    return [(primary, secondary, join_field, secondary_join_field)]
 
 
 def _mapped_physical_field(mappings: list[TestDataMapping], canonical_field: str) -> TestDataMapping | None:
@@ -73,21 +77,22 @@ def validate_relationships(db: Session, *, audit_test_id: uuid.UUID, rule_defini
 
     mappings = list_mappings(db, audit_test_id=audit_test_id)
     results: list[RelationshipCheckOut] = []
-    for primary_object, secondary_object, join_field in joins:
+    for primary_object, secondary_object, join_field, secondary_join_field in joins:
         primary_mapping = _mapped_physical_field(mappings, f"{primary_object}.{join_field}")
-        secondary_mapping = _mapped_physical_field(mappings, f"{secondary_object}.{join_field}")
+        secondary_mapping = _mapped_physical_field(mappings, f"{secondary_object}.{secondary_join_field}")
         if primary_mapping is None or secondary_mapping is None:
             results.append(
                 RelationshipCheckOut(
                     primary_object=primary_object,
                     secondary_object=secondary_object,
                     join_field=join_field,
+                    secondary_join_field=secondary_join_field,
                     primary_sample_count=0,
                     secondary_sample_count=0,
                     overlap_count=0,
                     match_rate=0.0,
                     status="not_available",
-                    detail=f"Map both {primary_object}.{join_field} and {secondary_object}.{join_field} first.",
+                    detail=f"Map both {primary_object}.{join_field} and {secondary_object}.{secondary_join_field} first.",
                 )
             )
             continue
@@ -100,6 +105,7 @@ def validate_relationships(db: Session, *, audit_test_id: uuid.UUID, rule_defini
                     primary_object=primary_object,
                     secondary_object=secondary_object,
                     join_field=join_field,
+                    secondary_join_field=secondary_join_field,
                     primary_sample_count=0,
                     secondary_sample_count=0,
                     overlap_count=0,
@@ -119,6 +125,7 @@ def validate_relationships(db: Session, *, audit_test_id: uuid.UUID, rule_defini
                 primary_object=primary_object,
                 secondary_object=secondary_object,
                 join_field=join_field,
+                secondary_join_field=secondary_join_field,
                 primary_sample_count=len(primary_values),
                 secondary_sample_count=len(secondary_values),
                 overlap_count=overlap,

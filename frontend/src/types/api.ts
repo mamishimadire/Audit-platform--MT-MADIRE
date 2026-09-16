@@ -640,6 +640,7 @@ export interface RelationshipCheckOut {
   primary_object: string
   secondary_object: string
   join_field: string
+  secondary_join_field: string
   primary_sample_count: number
   secondary_sample_count: number
   overlap_count: number

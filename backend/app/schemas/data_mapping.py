@@ -91,6 +91,7 @@ class RelationshipCheckOut(OrmModel):
     primary_object: str
     secondary_object: str
     join_field: str
+    secondary_join_field: str  # equal to join_field unless the rule's two sides use different canonical field names
     primary_sample_count: int
     secondary_sample_count: int
     overlap_count: int
