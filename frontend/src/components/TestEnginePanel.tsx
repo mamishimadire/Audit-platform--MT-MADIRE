@@ -18,10 +18,26 @@ const ORIGIN_STYLES: Record<string, string> = {
   auto_generated_edited: 'bg-blue-50 text-blue-700',
 }
 
+// Mirrors app.core.execution_status on the backend (and Executions.tsx's
+// own copy of this map) — see that module's docstring for what each status
+// means.
 const EXECUTION_STYLES: Record<string, string> = {
-  completed: 'bg-accent-soft text-accent-ink',
+  pass: 'bg-accent-soft text-accent-ink',
+  exception: 'bg-red-50 text-red-700',
+  mapping_required: 'bg-orange-50 text-orange-700',
+  not_testable: 'bg-orange-50 text-orange-700',
+  insufficient_data: 'bg-bg text-ink-soft',
+  error: 'bg-red-50 text-red-700',
   running: 'bg-bg text-ink-soft',
-  failed: 'bg-red-50 text-red-700',
+}
+const EXECUTION_LABELS: Record<string, string> = {
+  pass: 'Passed',
+  exception: 'Exception found',
+  mapping_required: 'Mapping needed',
+  not_testable: 'Not testable yet',
+  insufficient_data: 'No data yet',
+  error: 'Technical error',
+  running: 'Running',
 }
 
 type RuleType = 'threshold' | 'duplicate' | 'missing_match' | 'cross_match_condition'
@@ -471,7 +487,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                   <td className="px-3 py-2 text-xs text-ink-soft">{new Date(e.started_at).toLocaleString()}</td>
                   <td className="px-3 py-2">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${EXECUTION_STYLES[e.status] ?? ''}`}>
-                      {e.status.toUpperCase()}
+                      {EXECUTION_LABELS[e.status] ?? e.status}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-xs tabular-nums">{e.records_analyzed ?? '—'}</td>

@@ -119,9 +119,18 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
     ] if records else []
 
     control_label = f"{control.control_code} — {control.control_name}" if control else (audit_test.test_name if audit_test else "This control")
+    # exception.exception_description is an internal grouping key ("{test
+    # name}: exception on {record id}", set by execution_service so repeat
+    # detections of the SAME record update one row instead of piling up
+    # duplicates) — not written to be read aloud. Restating it here used to
+    # make the summary say the control's name twice in one sentence; the
+    # record's own identifier plus the control's name says the same thing
+    # once, plainly.
+    record_id = records[0].record_identifier if records else None
     summary = (
-        f"We checked \"{control_label}\" and found a record that fails the check: "
-        f"{exception.exception_description or 'one record did not pass.'}"
+        f"Record {record_id} did not pass the \"{control_label}\" check."
+        if record_id
+        else f"A record did not pass the \"{control_label}\" check."
     )
 
     why_it_matters = (

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import cast, Date, func, select
 from sqlalchemy.orm import Session
 
+from app.core.execution_status import EXCEPTION, NEEDS_ATTENTION, PASS
 from app.models.audit_test import AuditTest
 from app.models.data_source import Gateway
 from app.models.evidence_exception import Exception_
@@ -46,12 +47,13 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         select(func.count()).select_from(execution_join).where(execution_where, cast(TestExecution.started_at, Date) == today)
     ) or 0
     failed_tests = db.scalar(
-        select(func.count()).select_from(execution_join).where(execution_where, TestExecution.status == "failed")
+        select(func.count()).select_from(execution_join).where(execution_where, TestExecution.status == EXCEPTION)
     ) or 0
     tests_passed = db.scalar(
-        select(func.count()).select_from(execution_join).where(
-            execution_where, TestExecution.status == "completed", TestExecution.exceptions_found == 0
-        )
+        select(func.count()).select_from(execution_join).where(execution_where, TestExecution.status == PASS)
+    ) or 0
+    tests_blocked_total = db.scalar(
+        select(func.count()).select_from(execution_join).where(execution_where, TestExecution.status.in_(NEEDS_ATTENTION))
     ) or 0
 
     # "Currently passing/failing" is a genuinely different question from
@@ -68,15 +70,13 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
     ).subquery()
 
     controls_currently_passing = db.scalar(
-        select(func.count()).select_from(latest_execution).where(
-            latest_execution.c.status == "completed", latest_execution.c.exceptions_found == 0
-        )
+        select(func.count()).select_from(latest_execution).where(latest_execution.c.status == PASS)
     ) or 0
     controls_currently_failing = db.scalar(
-        select(func.count()).select_from(latest_execution).where(
-            (latest_execution.c.status == "failed")
-            | ((latest_execution.c.status == "completed") & (latest_execution.c.exceptions_found > 0))
-        )
+        select(func.count()).select_from(latest_execution).where(latest_execution.c.status == EXCEPTION)
+    ) or 0
+    controls_needs_attention = db.scalar(
+        select(func.count()).select_from(latest_execution).where(latest_execution.c.status.in_(NEEDS_ATTENTION))
     ) or 0
 
     exception_join = (
@@ -139,8 +139,10 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         tests_executed_today=tests_executed_today,
         tests_passed=tests_passed,
         failed_tests=failed_tests,
+        tests_blocked_total=tests_blocked_total,
         controls_currently_passing=controls_currently_passing,
         controls_currently_failing=controls_currently_failing,
+        controls_needs_attention=controls_needs_attention,
         exceptions_open=exceptions_open,
         exceptions_high_risk=exceptions_high_risk,
         open_findings=open_findings,

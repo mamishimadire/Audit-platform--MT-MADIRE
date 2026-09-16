@@ -103,7 +103,7 @@ export function DashboardPage() {
             <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">
               Current status — right now, not history
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-5">
               <StatTile
                 label="Controls Passing Now"
                 value={stats.controls_currently_passing}
@@ -114,9 +114,25 @@ export function DashboardPage() {
                 value={stats.controls_currently_failing}
                 tone={stats.controls_currently_failing > 0 ? 'critical' : 'default'}
               />
+              <StatTile
+                label="Needs Attention"
+                value={stats.controls_needs_attention}
+                tone={stats.controls_needs_attention > 0 ? 'warning' : 'default'}
+              />
               <StatTile label="Open Exceptions" value={stats.exceptions_open} tone={stats.exceptions_open > 0 ? 'warning' : 'good'} />
               <StatTile label="High-Risk Exceptions" value={stats.exceptions_high_risk} tone={stats.exceptions_high_risk > 0 ? 'critical' : 'good'} />
             </div>
+            {stats.controls_needs_attention > 0 && (
+              <p className="mt-2 text-xs text-ink-soft">
+                "Needs Attention" means a control couldn't actually be checked — its data isn't mapped yet, a required table
+                hasn't been connected, or a technical problem stopped the test from running. It is not the same as a control
+                failing its test; see the{' '}
+                <a href="/executions" className="font-medium text-accent-ink hover:underline">
+                  Executions
+                </a>{' '}
+                page for the specific reason on each one.
+              </p>
+            )}
           </div>
 
           <div className="mt-6">
@@ -128,6 +144,7 @@ export function DashboardPage() {
               <StatTile label="Tests Executed Today" value={stats.tests_executed_today} />
               <StatTile label="Tests Passed (all-time)" value={stats.tests_passed} tone={stats.tests_passed > 0 ? 'good' : 'default'} />
               <StatTile label="Failed Tests (all-time)" value={stats.failed_tests} tone={stats.failed_tests > 0 ? 'critical' : 'default'} />
+              <StatTile label="Blocked Runs (all-time)" value={stats.tests_blocked_total} />
               <StatTile label="Open Findings" value={stats.open_findings} tone={stats.open_findings > 0 ? 'warning' : 'good'} />
               <StatTile label="Overdue Findings" value={stats.overdue_findings} tone={stats.overdue_findings > 0 ? 'critical' : 'good'} />
               <StatTile label="Remediation Rate" value={`${stats.remediation_rate}%`} tone="good" />

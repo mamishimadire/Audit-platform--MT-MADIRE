@@ -61,7 +61,7 @@ class TestExecutionOut(OrmModel):
     audit_test_id: uuid.UUID
     started_at: datetime
     completed_at: datetime | None
-    status: str  # running | completed | failed
+    status: str  # see app.core.execution_status — pass | exception | mapping_required | not_testable | insufficient_data | error
     records_analyzed: int | None
     exceptions_found: int | None
     execution_log: str | None
@@ -156,7 +156,7 @@ class ExecutionReport(OrmModel):
     rule_id: uuid.UUID | None = None
     started_at: datetime
     completed_at: datetime
-    status: str  # completed | failed
+    status: str  # see app.core.execution_status — pass | exception | mapping_required | insufficient_data | error (a Gateway never reports not_testable — see that module's docstring)
     records_analyzed: int | None = None
     exceptions: list[ExceptionReport] = []
     error_message: str | None = None

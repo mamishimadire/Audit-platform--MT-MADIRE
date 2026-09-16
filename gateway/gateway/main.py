@@ -27,6 +27,24 @@ from gateway.register import GATEWAY_VERSION
 logging_setup.configure()
 logger = logging.getLogger("gateway")
 
+# Mirrors app.core.execution_status on the platform side (see that module's
+# docstring for the full vocabulary and why each status is distinct) — kept
+# as a small local copy rather than a shared import since this package is
+# deployed independently of the backend and cannot import from it.
+_STATUS_PASS = "pass"
+_STATUS_EXCEPTION = "exception"
+_STATUS_MAPPING_REQUIRED = "mapping_required"
+_STATUS_ERROR = "error"
+_STATUS_INSUFFICIENT_DATA = "insufficient_data"
+
+
+def _classify_completed_run(records_analyzed: int | None, exceptions_found: int) -> str:
+    if not records_analyzed:
+        return _STATUS_INSUFFICIENT_DATA
+    if exceptions_found > 0:
+        return _STATUS_EXCEPTION
+    return _STATUS_PASS
+
 
 def run_once(settings: GatewaySettings, client: PlatformClient) -> None:
     connection_by_id: dict[str, ConnectionEntry] = {c.connection_id: c for c in settings.connections}
@@ -86,7 +104,7 @@ def run_due_tests(settings: GatewaySettings, client: PlatformClient, connection_
                     "schedule_id": due["schedule_id"],
                     "started_at": started_at.isoformat(),
                     "completed_at": completed_at.isoformat(),
-                    "status": "completed",
+                    "status": _classify_completed_run(result.records_analyzed, len(result.exceptions)),
                     "records_analyzed": result.records_analyzed,
                     "exceptions": result.exceptions,
                 }
@@ -97,7 +115,26 @@ def run_due_tests(settings: GatewaySettings, client: PlatformClient, connection_
                 result.records_analyzed,
                 len(result.exceptions),
             )
-        except Exception as exc:  # noqa: BLE001 — a failed test must be reported as FAILED, never silently dropped
+        except KeyError as exc:
+            # A field the rule needs wasn't actually present in the fetched
+            # data — a mapping gap, not a technical failure (see
+            # app.core.execution_status.MAPPING_REQUIRED on the platform).
+            completed_at = datetime.now(timezone.utc)
+            logger.exception("Audit test %s is missing a mapped field", due["audit_test_id"])
+            try:
+                client.report_execution(
+                    {
+                        "audit_test_id": due["audit_test_id"],
+                        "schedule_id": due["schedule_id"],
+                        "started_at": started_at.isoformat(),
+                        "completed_at": completed_at.isoformat(),
+                        "status": _STATUS_MAPPING_REQUIRED,
+                        "error_message": f"A field this rule needs ({exc}) isn't mapped — re-check this control's field mapping.",
+                    }
+                )
+            except Exception:
+                logger.exception("Could not even report the mapping gap for audit test %s", due["audit_test_id"])
+        except Exception as exc:  # noqa: BLE001 — a failed test must be reported as ERROR, never silently dropped
             completed_at = datetime.now(timezone.utc)
             logger.exception("Audit test %s failed", due["audit_test_id"])
             try:
@@ -107,7 +144,7 @@ def run_due_tests(settings: GatewaySettings, client: PlatformClient, connection_
                         "schedule_id": due["schedule_id"],
                         "started_at": started_at.isoformat(),
                         "completed_at": completed_at.isoformat(),
-                        "status": "failed",
+                        "status": _STATUS_ERROR,
                         "error_message": str(exc),
                     }
                 )

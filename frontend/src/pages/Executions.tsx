@@ -4,19 +4,53 @@ import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import type { AuditTestOut, ExceptionOut, TestExecutionOut } from '../types/api'
 
+// Mirrors app.core.execution_status on the backend — six statuses instead
+// of the old binary completed/failed, so a blocked/unmapped control never
+// reads the same as a genuine finding, and a run with nothing to check
+// never quietly reads as a clean pass.
 const STATUS_STYLES: Record<string, string> = {
-  completed: 'bg-accent-soft text-accent-ink',
+  pass: 'bg-accent-soft text-accent-ink',
+  exception: 'bg-red-50 text-red-700',
+  mapping_required: 'bg-orange-50 text-orange-700',
+  not_testable: 'bg-orange-50 text-orange-700',
+  insufficient_data: 'bg-bg text-ink-soft',
+  error: 'bg-red-50 text-red-700',
   running: 'bg-bg text-ink-soft',
-  failed: 'bg-red-50 text-red-700',
+}
+const STATUS_LABELS: Record<string, string> = {
+  pass: 'Passed',
+  exception: 'Exception found',
+  mapping_required: 'Mapping needed',
+  not_testable: 'Not testable yet',
+  insufficient_data: 'No data yet',
+  error: 'Technical error',
+  running: 'Running',
+}
+// Plain-English, "explained to a 5 year old" version of each status — shown
+// whenever a row doesn't already have its own specific reason text.
+const STATUS_EXPLANATIONS: Record<string, string> = {
+  mapping_required: "This control has a rule, but not all of the information it needs has been approved and connected yet, so nothing could be checked.",
+  not_testable: "This control needs a table that hasn't been found or connected yet, so it can't be checked at all.",
+  insufficient_data: "The test ran, but there was no information to check — so there's nothing yet to judge this control by.",
+  error: "The test couldn't run because of a technical problem (like a connection dropping), not because of anything wrong with the control.",
 }
 
 const STATUS_FILTERS = [
   { key: 'all', label: 'All' },
-  { key: 'failed', label: 'Failed' },
-  { key: 'completed', label: 'Completed' },
-  { key: 'running', label: 'Running' },
+  { key: 'exception', label: 'Exceptions' },
+  { key: 'pass', label: 'Passed' },
+  { key: 'mapping_required', label: 'Mapping needed' },
+  { key: 'not_testable', label: 'Not testable' },
+  { key: 'insufficient_data', label: 'No data' },
+  { key: 'error', label: 'Errors' },
 ] as const
 type StatusFilterKey = (typeof STATUS_FILTERS)[number]['key']
+
+type HistoryPreset = 'today' | 'week' | 'month' | 'all' | 'custom'
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
 
 export function ExecutionsPage() {
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
@@ -31,8 +65,31 @@ export function ExecutionsPage() {
   // range to narrow it down — nothing is hidden there, just not the
   // default view, so a demo/test cycle's noise doesn't read as today's status.
   const [view, setView] = useState<'current' | 'history'>('current')
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
+  const [historyPreset, setHistoryPreset] = useState<HistoryPreset>('today')
+  const [fromDate, setFromDate] = useState(() => isoDate(new Date()))
+  const [toDate, setToDate] = useState(() => isoDate(new Date()))
+
+  const applyPreset = (preset: HistoryPreset) => {
+    setHistoryPreset(preset)
+    const now = new Date()
+    if (preset === 'today') {
+      setFromDate(isoDate(now))
+      setToDate(isoDate(now))
+    } else if (preset === 'week') {
+      const start = new Date(now)
+      start.setDate(start.getDate() - 6)
+      setFromDate(isoDate(start))
+      setToDate(isoDate(now))
+    } else if (preset === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1)
+      setFromDate(isoDate(start))
+      setToDate(isoDate(now))
+    } else if (preset === 'all') {
+      setFromDate('')
+      setToDate('')
+    }
+    // 'custom' leaves whatever the user has typed in the date fields alone.
+  }
 
   useEffect(() => {
     if (!organizationId) return
@@ -75,9 +132,12 @@ export function ExecutionsPage() {
 
   const counts = {
     all: base.length,
-    failed: base.filter((e) => e.status === 'failed').length,
-    completed: base.filter((e) => e.status === 'completed').length,
-    running: base.filter((e) => e.status === 'running').length,
+    exception: base.filter((e) => e.status === 'exception').length,
+    pass: base.filter((e) => e.status === 'pass').length,
+    mapping_required: base.filter((e) => e.status === 'mapping_required').length,
+    not_testable: base.filter((e) => e.status === 'not_testable').length,
+    insufficient_data: base.filter((e) => e.status === 'insufficient_data').length,
+    error: base.filter((e) => e.status === 'error').length,
   }
 
   const filtered = base.filter((e) => filter === 'all' || e.status === filter)
@@ -88,8 +148,8 @@ export function ExecutionsPage() {
       <p className="mt-1 text-sm text-ink-soft">
         {view === 'current'
           ? "The most recent run of each test — this is the control's status right now."
-          : 'Every run of every audit test in this organization, newest first.'}{' '}
-        A failed test is always recorded as failed, never silently reinterpreted as a pass.
+          : 'Every run of every audit test in this organization — pick a day, a week, a month, or any custom range.'}{' '}
+        A real problem is always recorded as an exception, never silently reinterpreted as a pass.
       </p>
       {needsPicker && <OrganizationPicker organizations={organizations} value={organizationId} onChange={setOrganizationId} />}
 
@@ -110,25 +170,48 @@ export function ExecutionsPage() {
         </div>
         {view === 'history' && (
           <>
+            <div className="flex gap-1 rounded-md bg-bg p-0.5 text-xs">
+              {(
+                [
+                  { key: 'today', label: 'Today' },
+                  { key: 'week', label: 'This week' },
+                  { key: 'month', label: 'This month' },
+                  { key: 'all', label: 'All time' },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.key}
+                  onClick={() => applyPreset(p.key)}
+                  className={`rounded px-3 py-1.5 font-medium ${historyPreset === p.key ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
             <label className="flex items-center gap-1 text-xs text-ink-soft">
               From
-              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs" />
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => {
+                  setHistoryPreset('custom')
+                  setFromDate(e.target.value)
+                }}
+                className="rounded-md border border-line px-2 py-1 text-xs"
+              />
             </label>
             <label className="flex items-center gap-1 text-xs text-ink-soft">
               To
-              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs" />
-            </label>
-            {(fromDate || toDate) && (
-              <button
-                onClick={() => {
-                  setFromDate('')
-                  setToDate('')
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => {
+                  setHistoryPreset('custom')
+                  setToDate(e.target.value)
                 }}
-                className="text-xs font-medium text-accent-ink hover:underline"
-              >
-                Clear dates
-              </button>
-            )}
+                className="rounded-md border border-line px-2 py-1 text-xs"
+              />
+            </label>
           </>
         )}
       </div>
@@ -154,12 +237,12 @@ export function ExecutionsPage() {
               <th className="px-4 py-2">Status</th>
               <th className="px-4 py-2">Records analyzed</th>
               <th className="px-4 py-2">Exceptions</th>
-              <th className="px-4 py-2">Reason for failure</th>
+              <th className="px-4 py-2">Details</th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((e) => {
-              const reasons = e.status === 'failed' ? reasonsFor(e.execution_id) : []
+              const reasons = e.status === 'exception' ? reasonsFor(e.execution_id) : []
               const isExpanded = expandedId === e.execution_id
               const preview = reasons.slice(0, 2).join('; ')
               return (
@@ -168,13 +251,15 @@ export function ExecutionsPage() {
                     <td className="px-4 py-2 font-medium text-ink">{testLabel(e.audit_test_id)}</td>
                     <td className="px-4 py-2 text-ink-soft whitespace-nowrap">{new Date(e.started_at).toLocaleString()}</td>
                     <td className="px-4 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[e.status] ?? ''}`}>{e.status}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[e.status] ?? ''}`}>
+                        {STATUS_LABELS[e.status] ?? e.status}
+                      </span>
                     </td>
                     <td className="px-4 py-2 text-ink-soft">{e.records_analyzed ?? '—'}</td>
                     <td className="px-4 py-2 text-ink-soft">{e.exceptions_found ?? '—'}</td>
                     <td className="px-4 py-2 text-ink-soft max-w-md">
                       {reasons.length === 0 ? (
-                        e.status === 'failed' ? e.execution_log || 'Failed, but no reason was recorded.' : '—'
+                        e.execution_log || STATUS_EXPLANATIONS[e.status] || '—'
                       ) : (
                         <>
                           {preview}

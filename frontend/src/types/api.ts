@@ -454,8 +454,10 @@ export interface DashboardStats {
   tests_executed_today: number
   tests_passed: number
   failed_tests: number
+  tests_blocked_total: number
   controls_currently_passing: number
   controls_currently_failing: number
+  controls_needs_attention: number
   exceptions_open: number
   exceptions_high_risk: number
   open_findings: number

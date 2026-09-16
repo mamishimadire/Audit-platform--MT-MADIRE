@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.execution_status import ERROR, MAPPING_REQUIRED, classify_completed_run
 from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.monitoring import MonitoringSchedule
@@ -221,11 +222,29 @@ def _run_one(due: _DueDirectTest) -> ExecutionReport:
             rule_id=due.rule_id,
             started_at=started_at,
             completed_at=completed_at,
-            status="completed",
+            status=classify_completed_run(records_analyzed=result.records_analyzed, exceptions_found=len(result.exceptions)),
             records_analyzed=result.records_analyzed,
             exceptions=[ExceptionReport(**e) for e in result.exceptions],
         )
-    except Exception as exc:  # noqa: BLE001 — a failed test must be reported as FAILED, never silently dropped
+    except KeyError as exc:
+        # The rule references a canonical field that wasn't actually present
+        # in the fetched rows — a genuine mapping gap that slipped past the
+        # coarse "object mapped" check in _resolve_due_direct_tests (e.g. an
+        # approved mapping whose physical column has since been renamed or
+        # dropped). Distinct from a technical ERROR: nothing about the
+        # platform's ability to reach the data is broken, the data this
+        # control needs just isn't correctly mapped.
+        logger.exception("Direct execution for audit test %s is missing a mapped field", due.audit_test_id)
+        return ExecutionReport(
+            audit_test_id=due.audit_test_id,
+            schedule_id=due.schedule_id,
+            rule_id=due.rule_id,
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc),
+            status=MAPPING_REQUIRED,
+            error_message=_describe_error(exc),
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed test must be reported as ERROR, never silently dropped
         logger.exception("Direct execution failed for audit test %s", due.audit_test_id)
         return ExecutionReport(
             audit_test_id=due.audit_test_id,
@@ -233,7 +252,7 @@ def _run_one(due: _DueDirectTest) -> ExecutionReport:
             rule_id=due.rule_id,
             started_at=started_at,
             completed_at=datetime.now(timezone.utc),
-            status="failed",
+            status=ERROR,
             error_message=_describe_error(exc),
         )
 
