@@ -1,4 +1,5 @@
 from gateway.connectors.base import ConnectorConfig
+from gateway.connectors.mongodb import MongoConnector
 from gateway.connectors.mysql import MySqlConnector
 from gateway.connectors.postgres import PostgresConnector
 from gateway.connectors.sqlserver import SqlServerConnector
@@ -7,6 +8,7 @@ _REGISTRY = {
     "postgresql": PostgresConnector,
     "mysql": MySqlConnector,
     "sql_server": SqlServerConnector,
+    "mongodb": MongoConnector,
 }
 
 

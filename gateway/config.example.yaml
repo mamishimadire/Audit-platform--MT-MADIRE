@@ -8,7 +8,7 @@ heartbeat_interval_seconds: 300
 
 connections:
   - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
-    type: postgresql # postgresql | mysql | sql_server
+    type: postgresql # postgresql | mysql | sql_server | mongodb
     host: "192.168.1.10"
     port: 5432
     database: "FinanceDB"
@@ -17,3 +17,17 @@ connections:
     password_env: "FINANCE_DB_PASSWORD"
     # password: "only-if-you-must — password_env is strongly preferred"
     schema: null # optional; defaults to the database's default schema
+
+  # MongoDB example — self-hosted, on a private network with no public
+  # address at all. This is exactly the case a direct connection can never
+  # reach; the Gateway can, because it runs INSIDE that same network and
+  # only ever calls OUT to the platform (no inbound firewall rule, no IP
+  # to allowlist on the MongoDB side).
+  - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
+    type: mongodb
+    host: "10.0.4.22" # or a mongodb+srv hostname if mongodb_srv: true below
+    port: 27017 # ignored when mongodb_srv is true, but still required here
+    database: "hr_records"
+    username: "audit_readonly"
+    password_env: "MONGO_DB_PASSWORD"
+    mongodb_srv: false # true for a mongodb+srv:// connection (e.g. most managed MongoDB hosts, including Atlas)

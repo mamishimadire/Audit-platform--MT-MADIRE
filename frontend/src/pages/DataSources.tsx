@@ -120,7 +120,14 @@ const DB_TYPE_GUIDES: Partial<Record<DirectDbType, string[]>> = {
   ],
   mongodb: [
     'MongoDB Atlas: Database → your cluster → Connect → Drivers → choose Python → copy the connection string shown there. The part between "@" and the next "/" is the cluster address that goes in "Host" below.',
-    'Atlas also requires your IP address on its Network Access allowlist before any connection (including this one) will succeed — add this platform\'s outbound address there, or 0.0.0.0/0 ("allow from anywhere") for a non-production test cluster.',
+    'Atlas will refuse every connection (including this one) until this platform\'s address is added to its Network Access allowlist — this platform doesn\'t have one fixed address yet, so use "Allow from anywhere" for now (see the exact steps below). This is a one-time setup step, not something you\'ll be asked to do again.',
+    'In the left sidebar of cloud.mongodb.com, click "Network Access" (under Security).',
+    'Click the "+ ADD IP ADDRESS" button.',
+    'If you see an "ALLOW ACCESS FROM ANYWHERE" button, click it — it fills in 0.0.0.0/0 automatically. If instead you see a plain text box ("Access List Entry"), type 0.0.0.0/0 into it yourself.',
+    '(Optional) In "Comment", type something like "MT AUDIT platform access" so it\'s clear later why this entry exists.',
+    'Important: if there\'s a toggle for "This entry is temporary and will be deleted in [x] hours", leave it OFF. If it\'s left on, this entry deletes itself and the connection will start failing again after a few hours.',
+    'Click "Confirm". It shows as "Pending" for a minute or two, then "Active" — that\'s permanent from then on, regardless of what server this platform runs on.',
+    'We\'ll switch this to a specific, tighter IP allowlist once we\'re on a paid plan with a fixed outbound address — you won\'t need to do anything differently when that happens; we\'ll simply add the new address alongside this one.',
     'Self-hosted MongoDB / replica set (not Atlas): uncheck "Use SRV connection" below and provide the host and port directly.',
   ],
 }

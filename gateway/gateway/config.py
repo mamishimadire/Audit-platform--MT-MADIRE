@@ -48,6 +48,7 @@ def load_settings(path: Path) -> GatewaySettings:
                     username=entry["username"],
                     password=_resolve_password(entry),
                     schema=entry.get("schema"),
+                    mongodb_srv=bool(entry.get("mongodb_srv", False)),
                 ),
             )
         )

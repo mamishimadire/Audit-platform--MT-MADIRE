@@ -20,6 +20,11 @@ class ConnectorConfig:
     username: str
     password: str
     schema: str | None = None
+    # MongoDB only (see connectors/mongodb.py) — Atlas and most managed
+    # MongoDB hosts use a mongodb+srv:// URI (DNS-based, no explicit port);
+    # a self-hosted MongoDB typically uses a plain mongodb:// URI with one.
+    # Ignored entirely by every SQL connector.
+    mongodb_srv: bool = False
 
 
 class SqlAlchemyConnector:
