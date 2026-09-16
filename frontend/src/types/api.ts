@@ -682,6 +682,10 @@ export interface RulePreviewOut {
   field_mappings: RulePreviewFieldMapping[]
 }
 
+export interface RuleParametersOut {
+  parameters: Record<string, number>
+}
+
 export interface AuditTestOut {
   audit_test_id: string
   organization_id: string

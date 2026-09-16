@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import TestDataMapping, TestRule
+from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.monitoring import MonitoringSchedule
 from app.schemas.audit_engine import ExceptionReport, ExecutionReport
@@ -31,6 +31,7 @@ from app.schemas.test_rule import required_objects_for
 from app.services import rule_evaluation
 from app.services.data_source_service import fetch_direct_records
 from app.services.execution_service import record_execution_report
+from app.services.rule_parameter_service import get_parameters, resolve_parameters
 
 logger = logging.getLogger("app.direct_execution")
 
@@ -133,6 +134,7 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
         connection_by_source.setdefault(c.data_source_id, c)
 
     due: list[_DueDirectTest] = []
+    parameters_by_org: dict[uuid.UUID, dict[str, float]] = {}
     schedules = db.scalars(
         select(MonitoringSchedule).where(
             MonitoringSchedule.is_active.is_(True),
@@ -146,6 +148,12 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
         if rule is None:
             continue
         rule_definition = json.loads(rule.rule_definition)
+        audit_test = db.get(AuditTest, schedule.audit_test_id)
+        if audit_test is None:
+            continue
+        if audit_test.organization_id not in parameters_by_org:
+            parameters_by_org[audit_test.organization_id] = get_parameters(db, organization_id=audit_test.organization_id)
+        rule_definition = resolve_parameters(rule_definition, parameters_by_org[audit_test.organization_id])
         try:
             needed_objects = required_objects_for(rule_definition)
         except Exception:  # noqa: BLE001 — a malformed rule must not crash the whole due-tests pull

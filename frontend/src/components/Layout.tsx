@@ -79,6 +79,16 @@ const NAV: NavGroup[] = [
         implemented: true,
         roles: [...AUDIT_TEAM, ...TECHNICAL_TEAM, 'Control Owner', 'Read Only'],
       },
+      {
+        // Same visibility as Audit Tests, for the same reason — viewing is
+        // open to anyone with a real reason to see test behavior, but only
+        // audit_framework:manage holders (AUDIT_TEAM/TECHNICAL_TEAM) get the
+        // editable inputs; everyone else on this list sees read-only values.
+        label: 'Rule Parameters',
+        path: '/rule-parameters',
+        implemented: true,
+        roles: [...AUDIT_TEAM, ...TECHNICAL_TEAM, 'Control Owner', 'Read Only'],
+      },
     ],
   },
   {

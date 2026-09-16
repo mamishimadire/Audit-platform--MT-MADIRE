@@ -15,6 +15,7 @@ import { BusinessProcessesPage } from './pages/BusinessProcesses'
 import { RisksPage } from './pages/Risks'
 import { ControlsPage } from './pages/Controls'
 import { AuditTestsPage } from './pages/AuditTests'
+import { RuleParametersPage } from './pages/RuleParameters'
 import { GatewaysPage } from './pages/Gateways'
 import { DevicesPage } from './pages/Devices'
 import { DataSourcesPage } from './pages/DataSources'
@@ -57,6 +58,7 @@ export default function App() {
               <Route path="/risks" element={<RisksPage />} />
               <Route path="/controls" element={<ControlsPage />} />
               <Route path="/audit-tests" element={<AuditTestsPage />} />
+              <Route path="/rule-parameters" element={<RuleParametersPage />} />
               <Route path="/data-sources" element={<DataSourcesPage />} />
               <Route path="/gateways" element={<GatewaysPage />} />
               <Route path="/devices" element={<DevicesPage />} />

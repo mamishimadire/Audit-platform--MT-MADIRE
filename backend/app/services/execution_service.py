@@ -15,6 +15,7 @@ from app.schemas.audit_engine import DueTest, DueTestObject, ExecutionReport
 from app.schemas.test_rule import required_objects_for
 from app.services.audit_log_service import log_action
 from app.services.monitoring_service import next_run_after
+from app.services.rule_parameter_service import get_parameters, resolve_parameters
 from app.core.security import fingerprint
 
 # Only an explicitly reviewed-and-approved mapping is execution-ready.
@@ -41,6 +42,7 @@ def resolve_due_tests_for_gateway(db: Session, *, gateway_id: uuid.UUID) -> list
     connection_by_source = {row.data_source_id: row.connection_id for row in connection_rows}
 
     due: list[DueTest] = []
+    parameters_by_org: dict[uuid.UUID, dict[str, float]] = {}
 
     schedules = db.scalars(
         select(MonitoringSchedule).where(
@@ -55,6 +57,12 @@ def resolve_due_tests_for_gateway(db: Session, *, gateway_id: uuid.UUID) -> list
         if rule is None:
             continue
         rule_definition = json.loads(rule.rule_definition)
+        audit_test = db.get(AuditTest, schedule.audit_test_id)
+        if audit_test is None:
+            continue
+        if audit_test.organization_id not in parameters_by_org:
+            parameters_by_org[audit_test.organization_id] = get_parameters(db, organization_id=audit_test.organization_id)
+        rule_definition = resolve_parameters(rule_definition, parameters_by_org[audit_test.organization_id])
         try:
             needed_objects = required_objects_for(rule_definition)
         except Exception:  # noqa: BLE001 — a malformed rule must not crash the whole due-tests pull

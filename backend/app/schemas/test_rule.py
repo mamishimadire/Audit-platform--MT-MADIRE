@@ -57,10 +57,40 @@ blocked after the first round — again all-optional/backward-compatible:
     specific approver's role) — the latter is just a three-way join where
     the third object IS the lookup table, compared via field_comparison
     instead of a fixed literal.
+
+A third round, orthogonal to the rule shape itself:
+  - ParameterReference as a FieldCondition/ThresholdRule value: a named,
+    org-tunable number (e.g. "dormancy_days") instead of a fixed literal,
+    so a client's own risk appetite can change 90 days to 60 without
+    anyone editing or regenerating the rule. Resolved to a concrete number
+    entirely on the platform side, before either rule engine ever sees the
+    rule_definition — see app/services/rule_parameter_service.py — so
+    rule_evaluation.py and gateway/gateway/rule_engine.py need no changes
+    at all to support it.
 """
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
+
+
+class ParameterReference(BaseModel):
+    """A named, org-tunable number substituted in at execution time instead
+    of a fixed literal — e.g. key="dormancy_days" so a client's own risk
+    appetite can change the number without editing or regenerating the
+    rule. default is what the rule behaves as until an organization
+    explicitly overrides that parameter (see rule_parameter_service.
+    DEFAULT_PARAMETERS and get_parameters/set_parameters) — always stored
+    and shown to an auditor as a plain positive magnitude ("180 days"),
+    never a signed one. multiplier is applied AFTER lookup and is never
+    org-editable — it's how a template embeds this reference inside a
+    RelativeDate.relative_days and still gets the sign it needs (-1 for "N
+    days in the past", +1 for "N days from now" or a plain threshold),
+    without the org-facing number itself ever being negative."""
+
+    kind: Literal["parameter"] = "parameter"
+    key: str
+    default: float
+    multiplier: float = 1
 
 
 class RelativeDate(BaseModel):
@@ -70,17 +100,20 @@ class RelativeDate(BaseModel):
     (typically compared with lt/lte — "this date is older than 90 days
     ago"), +30 means 30 days in the future (typically compared with
     lt/lte too — "this date is sooner than 30 days from now", e.g. a
-    certificate expiring soon)."""
+    certificate expiring soon). May itself be a ParameterReference (with
+    multiplier=-1/+1 matching the direction this rule needs) instead of a
+    fixed int, so "how many days is too many" stays org-tunable even
+    inside a relative-date comparison."""
 
     kind: Literal["relative_date"] = "relative_date"
-    relative_days: int
+    relative_days: int | ParameterReference
 
 
 class FieldCondition(BaseModel):
     field: str  # canonical field, e.g. "employment_status"
     operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "is_null", "is_not_null", "matches", "in", "not_in"]
     # "matches" expects a regex pattern string; "in"/"not_in" expect a list.
-    value: str | float | bool | RelativeDate | list[str | float] | None = None
+    value: str | float | bool | RelativeDate | ParameterReference | list[str | float] | None = None
 
 
 class ThresholdRule(BaseModel):
@@ -88,7 +121,7 @@ class ThresholdRule(BaseModel):
     object: str  # canonical object, e.g. "transaction"
     field: str
     operator: Literal["gt", "gte", "lt", "lte", "eq", "ne"]
-    value: float | str | RelativeDate
+    value: float | str | RelativeDate | ParameterReference
 
     def required_objects(self) -> set[str]:
         return {self.object}

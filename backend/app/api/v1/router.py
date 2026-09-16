@@ -24,6 +24,7 @@ from app.api.v1.routes import (
     platform_users,
     risks,
     roles,
+    rule_parameters,
     scope_assignments,
     test_rules,
     users,
@@ -48,6 +49,7 @@ api_router.include_router(data_mappings.router)
 api_router.include_router(scope_assignments.router)
 api_router.include_router(scope_assignments.admin_router)
 api_router.include_router(test_rules.router)
+api_router.include_router(rule_parameters.router)
 api_router.include_router(monitoring.router)
 api_router.include_router(executions.router)
 api_router.include_router(exceptions.router)

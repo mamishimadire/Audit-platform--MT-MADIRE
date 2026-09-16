@@ -14,10 +14,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import TestDataMapping
+from app.models.audit_test import AuditTest, TestDataMapping
 from app.models.data_source import DataEntity, DataField
 from app.schemas.test_rule import required_fields_by_object_for
 from app.services.mapping_service import list_mappings
+from app.services.rule_parameter_service import get_parameters
 
 _OPERATOR_WORDS = {
     "eq": "is",
@@ -34,21 +35,39 @@ _OPERATOR_WORDS = {
 }
 
 
-def _describe_value(value: Any) -> str:
+def _describe_parameter(value: dict, parameters: dict[str, float]) -> tuple[float, str]:
+    """Returns (resolved_number, plain-English note) for a ParameterReference
+    — resolved_number already has multiplier applied (so a caller embedding
+    this inside a RelativeDate gets the correctly-signed day count), the
+    note names the setting and whether this org has customized it."""
+    key = value["key"]
+    magnitude = parameters.get(key, value.get("default"))
+    origin = "this org's default" if magnitude == value.get("default") else "customized by this org"
+    note = f"an adjustable setting called '{key}' — currently {origin}, changeable without touching this rule"
+    return magnitude * value.get("multiplier", 1), note
+
+
+def _describe_value(value: Any, parameters: dict[str, float]) -> str:
     if isinstance(value, dict) and value.get("kind") == "relative_date":
         days = value["relative_days"]
+        if isinstance(days, dict) and days.get("kind") == "parameter":
+            resolved_days, note = _describe_parameter(days, parameters)
+            return f"{abs(resolved_days):g} days {'from now' if resolved_days >= 0 else 'ago'} ({note})"
         return f"{abs(days)} days {'from now' if days >= 0 else 'ago'} (recalculated every run)"
+    if isinstance(value, dict) and value.get("kind") == "parameter":
+        resolved, note = _describe_parameter(value, parameters)
+        return f"{resolved:g} ({note})"
     if isinstance(value, list):
         return ", ".join(str(v) for v in value)
     return str(value)
 
 
-def _describe_condition(object_label: str, condition: dict) -> str:
+def _describe_condition(object_label: str, condition: dict, parameters: dict[str, float]) -> str:
     op = _OPERATOR_WORDS.get(condition["operator"], condition["operator"])
     field = f"{object_label}.{condition['field']}"
     if condition["operator"] in ("is_null", "is_not_null"):
         return f"{field} {op}"
-    return f"{field} {op} {_describe_value(condition.get('value'))}"
+    return f"{field} {op} {_describe_value(condition.get('value'), parameters)}"
 
 
 def _mapped_field_label(mappings_by_canonical: dict[str, tuple[DataEntity | None, DataField | None]], canonical_object: str, field: str) -> str:
@@ -59,6 +78,9 @@ def _mapped_field_label(mappings_by_canonical: dict[str, tuple[DataEntity | None
 
 
 def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition: dict) -> dict:
+    audit_test = db.get(AuditTest, audit_test_id)
+    parameters = get_parameters(db, organization_id=audit_test.organization_id) if audit_test else {}
+
     mappings = list_mappings(db, audit_test_id=audit_test_id)
     mappings_by_canonical: dict[str, tuple[DataEntity | None, DataField | None]] = {}
     for m in mappings:
@@ -82,7 +104,7 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
     if rule_type == "threshold":
         obj = rule_definition["object"]
         source = obj
-        test_condition = _describe_condition(obj, {"field": rule_definition["field"], "operator": rule_definition["operator"], "value": rule_definition["value"]})
+        test_condition = _describe_condition(obj, {"field": rule_definition["field"], "operator": rule_definition["operator"], "value": rule_definition["value"]}, parameters)
         joins: list[str] = []
         filters: list[str] = []
         pass_condition = f"No {obj} record has {test_condition[len(obj) + 1:]}"
@@ -92,7 +114,7 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         source = obj
         joins = []
         group_by = ", ".join(f"{obj}.{f}" for f in rule_definition["group_by"])
-        filters = [_describe_condition(obj, rule_definition["condition"])] if rule_definition.get("condition") else []
+        filters = [_describe_condition(obj, rule_definition["condition"], parameters)] if rule_definition.get("condition") else []
         test_condition = f"More than one {obj} record shares the same {group_by}"
         pass_condition = f"Every {group_by} combination is unique"
 
@@ -102,7 +124,7 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         secondary_field = rule_definition.get("secondary_join_field") or join_field
         source = primary
         joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
-        filters = [_describe_condition(primary, rule_definition["primary_condition"])] if rule_definition.get("primary_condition") else []
+        filters = [_describe_condition(primary, rule_definition["primary_condition"], parameters)] if rule_definition.get("primary_condition") else []
         test_condition = f"A {primary} record has no matching {secondary} record"
         pass_condition = f"Every {primary} record has a matching {secondary} record"
 
@@ -113,8 +135,8 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         source = primary
         joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
         filters = [
-            _describe_condition(primary, rule_definition["condition_primary"]),
-            _describe_condition(secondary, rule_definition["condition_secondary"]),
+            _describe_condition(primary, rule_definition["condition_primary"], parameters),
+            _describe_condition(secondary, rule_definition["condition_secondary"], parameters),
         ]
         test_condition = " AND ".join(filters)
         if rule_definition.get("field_comparison"):
@@ -135,7 +157,7 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         filters = []
         for role, obj in (("condition_primary", primary), ("condition_secondary", secondary), ("condition_tertiary", tertiary)):
             if rule_definition.get(role):
-                filters.append(_describe_condition(obj, rule_definition[role]))
+                filters.append(_describe_condition(obj, rule_definition[role], parameters))
         test_condition = " AND ".join(filters) if filters else f"{primary}, {secondary}, and {tertiary} records are linked together"
         if rule_definition.get("field_comparison"):
             fc = rule_definition["field_comparison"]
