@@ -25,6 +25,9 @@ _OPERATORS = {
     "lte": lambda s, v: s <= v,
     "is_null": lambda s, _v: s.isna(),
     "is_not_null": lambda s, _v: s.notna(),
+    "matches": lambda s, v: s.astype(str).str.contains(str(v), regex=True, na=False) if v is not None else pd.Series(False, index=s.index),
+    "in": lambda s, v: s.isin(v or []),
+    "not_in": lambda s, v: ~s.isin(v or []),
 }
 
 
@@ -89,8 +92,10 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
     if rule_type == "duplicate":
         df = dataframes[rule["object"]]
         group_cols = rule["group_by"]
-        counts = df.groupby(group_cols)[group_cols[0]].transform("size")
-        hits = df[counts > 1]
+        condition = rule.get("condition")
+        candidates = df if condition is None else df[_apply_condition(df, condition["field"], condition["operator"], condition.get("value"))]
+        counts = candidates.groupby(group_cols)[group_cols[0]].transform("size")
+        hits = candidates[counts > 1]
         return RuleResult(
             records_analyzed=len(df),
             exceptions=[{"record_identifier": _record_identifier(row, group_cols), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
@@ -151,6 +156,47 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             records_analyzed=len(primary),
             exceptions=[
                 {"record_identifier": _record_identifier(row, [join_field]), "exception_data": _json_safe_row(row)} for _, row in merged.iterrows()
+            ],
+        )
+
+    if rule_type == "three_way_match":
+        primary = dataframes[rule["primary_object"]]
+        secondary = dataframes[rule["secondary_object"]]
+        tertiary = dataframes[rule["tertiary_object"]]
+        jf_ps = rule["join_field_primary_secondary"]
+        sec_field_1 = rule.get("secondary_join_field_1") or jf_ps
+        jf_st = rule["join_field_secondary_tertiary"]
+        tert_field = rule.get("tertiary_join_field") or jf_st
+        cp, cs, ct = rule.get("condition_primary"), rule.get("condition_secondary"), rule.get("condition_tertiary")
+        field_comparison = rule.get("field_comparison")
+
+        primary_hits = primary if cp is None else primary[_apply_condition(primary, cp["field"], cp["operator"], cp.get("value"))]
+        secondary_hits = secondary if cs is None else secondary[_apply_condition(secondary, cs["field"], cs["operator"], cs.get("value"))]
+        tertiary_hits = tertiary if ct is None else tertiary[_apply_condition(tertiary, ct["field"], ct["operator"], ct.get("value"))]
+
+        # Every column suffixed by its role BEFORE either merge — with
+        # three tables, trying to track pandas' automatic overlap-only
+        # suffixing (as cross_match_condition does for two) gets genuinely
+        # ambiguous; doing it upfront makes every column name unique and
+        # unambiguous by construction, including the join keys themselves
+        # (referenced below as "<field>_primary" etc.).
+        primary_hits = primary_hits.add_suffix("_primary")
+        secondary_hits = secondary_hits.add_suffix("_secondary")
+        tertiary_hits = tertiary_hits.add_suffix("_tertiary")
+
+        merged = primary_hits.merge(secondary_hits, left_on=f"{jf_ps}_primary", right_on=f"{sec_field_1}_secondary")
+        merged = merged.merge(tertiary_hits, left_on=f"{jf_st}_secondary", right_on=f"{tert_field}_tertiary")
+
+        if field_comparison is not None:
+            left_col = f"{field_comparison['left_field']}_{field_comparison['left_object']}"
+            right_col = f"{field_comparison['right_field']}_{field_comparison['right_object']}"
+            merged = merged[_OPERATORS[field_comparison["operator"]](merged[left_col], merged[right_col])]
+
+        return RuleResult(
+            records_analyzed=len(primary),
+            exceptions=[
+                {"record_identifier": _record_identifier(row, [f"{jf_ps}_primary"]), "exception_data": _json_safe_row(row)}
+                for _, row in merged.iterrows()
             ],
         )
 

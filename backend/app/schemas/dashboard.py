@@ -21,6 +21,12 @@ class DashboardStats(OrmModel):
     tests_executed_today: int
     tests_passed: int  # completed executions that found zero exceptions — the control held
     failed_tests: int
+    # Latest execution per test only, not the cumulative totals above — "is
+    # this control passing right now", distinct from "how many runs ever
+    # passed/failed" (a control that failed all week then got fixed reads
+    # as currently passing, not still dragging failed_tests up).
+    controls_currently_passing: int
+    controls_currently_failing: int
     exceptions_open: int
     exceptions_high_risk: int
     open_findings: int

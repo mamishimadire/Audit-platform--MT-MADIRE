@@ -15,6 +15,7 @@ time it gets here, never a native datetime object. RelativeDate values
 (see app.schemas.test_rule.RelativeDate) are resolved and compared as
 timezone-aware datetimes, parsed from those strings.
 """
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -28,6 +29,9 @@ _OPERATORS = {
     "lte": lambda v, target: v is not None and target is not None and v <= target,
     "is_null": lambda v, _t: v is None,
     "is_not_null": lambda v, _t: v is not None,
+    "matches": lambda v, pattern: v is not None and pattern is not None and re.search(str(pattern), str(v)) is not None,
+    "in": lambda v, values: v in (values or []),
+    "not_in": lambda v, values: v not in (values or []),
 }
 
 
@@ -84,11 +88,15 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
     if rule_type == "duplicate":
         rows = records[rule["object"]]
         group_cols = rule["group_by"]
+        condition = rule.get("condition")
+        candidates = rows
+        if condition is not None:
+            candidates = [r for r in candidates if _matches(r, condition["field"], condition["operator"], condition.get("value"))]
         counts: dict[tuple, int] = {}
-        for r in rows:
+        for r in candidates:
             key = tuple(r.get(c) for c in group_cols)
             counts[key] = counts.get(key, 0) + 1
-        hits = [r for r in rows if counts[tuple(r.get(c) for c in group_cols)] > 1]
+        hits = [r for r in candidates if counts[tuple(r.get(c) for c in group_cols)] > 1]
         return RuleResult(
             len(rows), [{"record_identifier": _record_identifier(r, group_cols), "exception_data": r} for r in hits]
         )
@@ -140,6 +148,49 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                 merged = {(f"{k}_primary" if k in overlap_keys else k): v for k, v in pr.items()}
                 merged.update({(f"{k}_secondary" if k in overlap_keys else k): v for k, v in sr.items()})
                 exceptions.append({"record_identifier": _record_identifier(pr, [join_field]), "exception_data": merged})
+        return RuleResult(len(primary), exceptions)
+
+    if rule_type == "three_way_match":
+        primary = records[rule["primary_object"]]
+        secondary = records[rule["secondary_object"]]
+        tertiary = records[rule["tertiary_object"]]
+        jf_ps = rule["join_field_primary_secondary"]
+        sec_field_1 = rule.get("secondary_join_field_1") or jf_ps
+        jf_st = rule["join_field_secondary_tertiary"]
+        tert_field = rule.get("tertiary_join_field") or jf_st
+        cp, cs, ct = rule.get("condition_primary"), rule.get("condition_secondary"), rule.get("condition_tertiary")
+        field_comparison = rule.get("field_comparison")
+
+        primary_hits = [r for r in primary if cp is None or _matches(r, cp["field"], cp["operator"], cp.get("value"))]
+        secondary_hits = [r for r in secondary if cs is None or _matches(r, cs["field"], cs["operator"], cs.get("value"))]
+        tertiary_hits = [r for r in tertiary if ct is None or _matches(r, ct["field"], ct["operator"], ct.get("value"))]
+
+        secondary_by_key: dict[Any, list[dict]] = {}
+        for r in secondary_hits:
+            secondary_by_key.setdefault(r.get(sec_field_1), []).append(r)
+        tertiary_by_key: dict[Any, list[dict]] = {}
+        for r in tertiary_hits:
+            tertiary_by_key.setdefault(r.get(tert_field), []).append(r)
+
+        exceptions = []
+        for pr in primary_hits:
+            for sr in secondary_by_key.get(pr.get(jf_ps), []):
+                for tr in tertiary_by_key.get(sr.get(jf_st), []):
+                    if field_comparison is not None:
+                        rows_by_role = {"primary": pr, "secondary": sr, "tertiary": tr}
+                        left = rows_by_role[field_comparison["left_object"]].get(field_comparison["left_field"])
+                        right = rows_by_role[field_comparison["right_object"]].get(field_comparison["right_field"])
+                        if not _OPERATORS[field_comparison["operator"]](left, right):
+                            continue
+                    # Always suffixed by role (unlike the two-object rules'
+                    # overlap-only suffixing) — simpler and unambiguous
+                    # with three tables in play; exception_data is
+                    # informational evidence, not consumed programmatically.
+                    merged: dict[str, Any] = {}
+                    merged.update({f"{k}_primary": v for k, v in pr.items()})
+                    merged.update({f"{k}_secondary": v for k, v in sr.items()})
+                    merged.update({f"{k}_tertiary": v for k, v in tr.items()})
+                    exceptions.append({"record_identifier": _record_identifier(pr, [jf_ps]), "exception_data": merged})
         return RuleResult(len(primary), exceptions)
 
     raise ValueError(f"Unsupported rule_type: {rule_type}")

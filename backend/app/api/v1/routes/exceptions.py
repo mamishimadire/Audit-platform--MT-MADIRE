@@ -9,8 +9,8 @@ from app.models.audit_test import AuditTest
 from app.models.evidence_exception import Exception_, ExceptionRecord
 from app.models.monitoring import TestExecution
 from app.models.rbac import User
-from app.schemas.audit_engine import ExceptionOut, ExceptionRecordOut, ExceptionUpdate
-from app.services.exception_service import update_exception
+from app.schemas.audit_engine import ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, ExceptionUpdate
+from app.services.exception_service import explain_exception, update_exception
 from app.services.execution_service import list_exceptions_for_organization
 from sqlalchemy import select
 
@@ -64,3 +64,10 @@ def records(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User =
     _exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
     return list(db.scalars(select(ExceptionRecord).where(ExceptionRecord.exception_id == exception_id)))
+
+
+@router.get("/exceptions/{exception_id}/explanation", response_model=ExceptionExplanationOut)
+def explanation(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
+    exception, organization_id = _get_exception_with_org(db, exception_id)
+    enforce_same_organization(organization_id, user, db)
+    return explain_exception(db, exception=exception)

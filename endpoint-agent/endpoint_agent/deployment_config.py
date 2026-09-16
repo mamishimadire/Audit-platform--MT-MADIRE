@@ -13,4 +13,4 @@ before that build is ever handed to a client. The mechanism (no URL entry,
 just a code) is identical in every environment — only this literal value
 changes per build.
 """
-PLATFORM_URL = "http://192.168.8.167:8001/api/v1"
+PLATFORM_URL = "https://audit-platform-mt-madire.onrender.com/api/v1"

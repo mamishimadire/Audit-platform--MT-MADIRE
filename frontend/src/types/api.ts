@@ -454,6 +454,8 @@ export interface DashboardStats {
   tests_executed_today: number
   tests_passed: number
   failed_tests: number
+  controls_currently_passing: number
+  controls_currently_failing: number
   exceptions_open: number
   exceptions_high_risk: number
   open_findings: number
@@ -581,6 +583,21 @@ export interface ExceptionRecordOut {
   exception_id: string
   record_identifier: string | null
   exception_data: Record<string, unknown> | null
+}
+
+export interface ExceptionFactOut {
+  label: string
+  value: string
+}
+
+export interface ExceptionExplanationOut {
+  summary: string
+  facts: ExceptionFactOut[]
+  why_it_matters: string
+  what_to_do: string
+  seen_count: number
+  first_seen: string
+  last_seen: string
 }
 
 export interface MappingSuggestion {

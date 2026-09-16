@@ -39,6 +39,24 @@ remaining 89 untemplated controls showed the same few gaps recurring:
     name (e.g. device.asset_tag on one side, patch_deployments.device_
     asset_tag on the other) — defaults to join_field when omitted, so every
     existing rule is unaffected.
+
+A second round of additions, for the categories of control that remained
+blocked after the first round — again all-optional/backward-compatible:
+  - FieldCondition operators "matches" (regex, e.g. a generic-account
+    username pattern), "in" and "not_in" (list membership, e.g. a fixed
+    set of approved remote-access tools).
+  - DuplicateRule.condition: filters rows BEFORE duplicate-detection, same
+    idea as MissingMatchRule.primary_condition — "repeated attempts to
+    reach a *blocked* site" needs the blocked ones singled out first, not
+    duplicates across all traffic.
+  - ThreeWayMatchRule: joins three objects in a chain (primary-secondary,
+    secondary-tertiary), each side optionally filtered, with an optional
+    post-join field_comparison between any two sides. Covers genuine
+    three-way matches (PO/GRN/invoice) AND dynamic per-row threshold
+    lookups (a payment's amount vs. an approval_limits row for that
+    specific approver's role) — the latter is just a three-way join where
+    the third object IS the lookup table, compared via field_comparison
+    instead of a fixed literal.
 """
 from typing import Annotated, Literal, Union
 
@@ -60,8 +78,9 @@ class RelativeDate(BaseModel):
 
 class FieldCondition(BaseModel):
     field: str  # canonical field, e.g. "employment_status"
-    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "is_null", "is_not_null"]
-    value: str | float | bool | RelativeDate | None = None
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "is_null", "is_not_null", "matches", "in", "not_in"]
+    # "matches" expects a regex pattern string; "in"/"not_in" expect a list.
+    value: str | float | bool | RelativeDate | list[str | float] | None = None
 
 
 class ThresholdRule(BaseModel):
@@ -82,12 +101,16 @@ class DuplicateRule(BaseModel):
     rule_type: Literal["duplicate"] = "duplicate"
     object: str
     group_by: list[str] = Field(min_length=1)
+    condition: FieldCondition | None = None  # filters rows before duplicate-detection
 
     def required_objects(self) -> set[str]:
         return {self.object}
 
     def required_fields_by_object(self) -> dict[str, set[str]]:
-        return {self.object: set(self.group_by)}
+        fields = set(self.group_by)
+        if self.condition is not None:
+            fields.add(self.condition.field)
+        return {self.object: fields}
 
 
 class MissingMatchRule(BaseModel):
@@ -179,8 +202,82 @@ class CrossMatchConditionRule(BaseModel):
         return {self.primary_object: primary_fields, self.secondary_object: secondary_fields}
 
 
+class ThreeWayFieldComparison(BaseModel):
+    """Like FieldComparison, but for ThreeWayMatchRule where the two sides
+    being compared aren't always "primary vs secondary" — e.g. a goods-
+    receipt quantity (secondary) vs. an invoice quantity (tertiary)."""
+
+    left_object: Literal["primary", "secondary", "tertiary"]
+    left_field: str
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte"]
+    right_object: Literal["primary", "secondary", "tertiary"]
+    right_field: str
+
+
+class ThreeWayMatchRule(BaseModel):
+    """Joins three objects in a chain: primary <-> secondary on
+    join_field_primary_secondary, then secondary <-> tertiary on
+    join_field_secondary_tertiary — e.g. purchase_order <-> goods_receipt
+    <-> supplier_invoice, the classic three-way match. Each side may have
+    its own FieldCondition pre-filter (all optional — omit for "no filter,
+    just join"). An optional field_comparison checks a field from any two
+    of the three sides against each other post-join.
+
+    Also how a dynamic per-row threshold lookup is expressed (e.g. "does
+    this payment exceed the approval limit for THIS SPECIFIC approver's
+    role"): the "tertiary" object is the lookup/limits table, joined in by
+    whatever key ties a row to its limit, then field_comparison checks the
+    record's value against the limit's value — a fixed literal threshold
+    never has to be hard-coded into the rule itself.
+    """
+
+    rule_type: Literal["three_way_match"] = "three_way_match"
+    primary_object: str
+    secondary_object: str
+    tertiary_object: str
+    join_field_primary_secondary: str  # canonical field name on primary_object
+    secondary_join_field_1: str | None = None  # name on secondary_object for the primary<->secondary join; defaults to join_field_primary_secondary
+    join_field_secondary_tertiary: str  # canonical field name on secondary_object
+    tertiary_join_field: str | None = None  # name on tertiary_object for the secondary<->tertiary join; defaults to join_field_secondary_tertiary
+    condition_primary: FieldCondition | None = None
+    condition_secondary: FieldCondition | None = None
+    condition_tertiary: FieldCondition | None = None
+    field_comparison: ThreeWayFieldComparison | None = None
+
+    def _secondary_ps_field(self) -> str:
+        return self.secondary_join_field_1 or self.join_field_primary_secondary
+
+    def _tertiary_field(self) -> str:
+        return self.tertiary_join_field or self.join_field_secondary_tertiary
+
+    def required_objects(self) -> set[str]:
+        return {self.primary_object, self.secondary_object, self.tertiary_object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        obj_by_role = {"primary": self.primary_object, "secondary": self.secondary_object, "tertiary": self.tertiary_object}
+        fields_by_obj: dict[str, set[str]] = {}
+
+        def add(obj: str, field: str) -> None:
+            fields_by_obj.setdefault(obj, set()).add(field)
+
+        add(self.primary_object, self.join_field_primary_secondary)
+        add(self.secondary_object, self._secondary_ps_field())
+        add(self.secondary_object, self.join_field_secondary_tertiary)
+        add(self.tertiary_object, self._tertiary_field())
+        if self.condition_primary is not None:
+            add(self.primary_object, self.condition_primary.field)
+        if self.condition_secondary is not None:
+            add(self.secondary_object, self.condition_secondary.field)
+        if self.condition_tertiary is not None:
+            add(self.tertiary_object, self.condition_tertiary.field)
+        if self.field_comparison is not None:
+            add(obj_by_role[self.field_comparison.left_object], self.field_comparison.left_field)
+            add(obj_by_role[self.field_comparison.right_object], self.field_comparison.right_field)
+        return fields_by_obj
+
+
 TestRuleDefinition = Annotated[
-    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule],
+    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule],
     Field(discriminator="rule_type"),
 ]
 
@@ -190,6 +287,7 @@ _RULE_CLASSES = {
     "duplicate": DuplicateRule,
     "missing_match": MissingMatchRule,
     "cross_match_condition": CrossMatchConditionRule,
+    "three_way_match": ThreeWayMatchRule,
 }
 
 

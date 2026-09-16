@@ -103,6 +103,25 @@ class ExceptionUpdate(OrmModel):
     owner_id: uuid.UUID | None = None
 
 
+class ExceptionFactOut(OrmModel):
+    label: str
+    value: str
+
+
+class ExceptionExplanationOut(OrmModel):
+    """A plain-English breakdown of one exception — what was found, the
+    real field values behind it, why it matters, and what to do — so
+    reading it doesn't require already knowing how the rule engine works."""
+
+    summary: str
+    facts: list[ExceptionFactOut]
+    why_it_matters: str
+    what_to_do: str
+    seen_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+
 # --- Gateway-facing: pulling due work and reporting results ---
 
 

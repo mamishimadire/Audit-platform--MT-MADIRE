@@ -42,8 +42,8 @@ def _pending_rules(db: Session, *, organization_id: uuid.UUID, exclude_user_id: 
         PendingApprovalOut(
             category="rule",
             entity_id=rule.rule_id,
-            label=f"Rule “{rule.rule_name}” for {test.test_code or test.test_name}",
-            detail="Awaiting approval before it can execute.",
+            label=f"New rule “{rule.rule_name}” needs your OK",
+            detail=f"For {test.test_code or test.test_name}. It will not start checking anything until someone says yes.",
             requested_at=rule.created_at,
             link_path="/audit-tests",
         )
@@ -67,7 +67,8 @@ def _pending_controls(db: Session, *, organization_id: uuid.UUID, exclude_user_i
                 PendingApprovalOut(
                     category="control_activation",
                     entity_id=control.control_id,
-                    label=f"Activate control {control.control_code} — {control.control_name}",
+                    label=f"Turn ON control {control.control_code} — {control.control_name}?",
+                    detail="Someone wants to switch this control on. Say yes or no.",
                     requested_at=control.updated_at,
                     link_path="/controls",
                 )
@@ -79,8 +80,12 @@ def _pending_controls(db: Session, *, organization_id: uuid.UUID, exclude_user_i
                 PendingApprovalOut(
                     category="control_deactivation",
                     entity_id=control.control_id,
-                    label=f"Deactivate control {control.control_code} — {control.control_name}",
-                    detail=control.deactivation_requested_reason,
+                    label=f"Turn OFF control {control.control_code} — {control.control_name}?",
+                    detail=(
+                        f"Someone wants to switch this control off. They said: {control.deactivation_requested_reason}"
+                        if control.deactivation_requested_reason
+                        else "Someone wants to switch this control off."
+                    ),
                     requested_at=control.updated_at,
                     link_path="/controls",
                 )
@@ -112,8 +117,8 @@ def _pending_mappings(db: Session, *, organization_id: uuid.UUID, exclude_user_i
         PendingApprovalOut(
             category="mapping",
             entity_id=test_id,
-            label=f"{bucket['count']} field mapping{'s' if bucket['count'] != 1 else ''} for {bucket['test'].test_code or bucket['test'].test_name}",
-            detail="Awaiting approval before this control's test can rely on them.",
+            label=f"{bucket['count']} thing{'s' if bucket['count'] != 1 else ''} to check for {bucket['test'].test_code or bucket['test'].test_name}",
+            detail="These tell the system where to find the right information. Please look and say if they are correct.",
             requested_at=bucket["latest"],
             link_path="/audit-tests",
         )
@@ -132,11 +137,17 @@ def _pending_connection_changes(db: Session, *, organization_id: uuid.UUID, excl
             DataConnectionChange.requested_by != exclude_user_id,
         )
     )
+    _CHANGE_QUESTION = {
+        "disconnect": "Stop using the connection",
+        "delete": "Delete the connection",
+        "update": "Change the details of the connection",
+    }
     return [
         PendingApprovalOut(
             category="data_connection_change",
             entity_id=change.change_id,
-            label=f"{change.change_type.capitalize()} connection “{connection.connection_name or connection.host}”",
+            label=f"{_CHANGE_QUESTION.get(change.change_type, 'Change the connection')} “{connection.connection_name or connection.host}”?",
+            detail="Say yes or no.",
             requested_at=change.requested_at,
             link_path="/data-sources",
         )
@@ -156,7 +167,8 @@ def _pending_device_policy_changes(db: Session, *, organization_id: uuid.UUID, e
         PendingApprovalOut(
             category="device_policy_change",
             entity_id=row.policy_change_id,
-            label="Device compliance policy change",
+            label="New rules for keeping devices safe",
+            detail="Someone wants to change what counts as a safe device. Please check and say if it's OK.",
             requested_at=row.requested_at,
             link_path="/devices",
         )
@@ -176,7 +188,8 @@ def _pending_approved_software(db: Session, *, organization_id: uuid.UUID, exclu
         PendingApprovalOut(
             category="approved_software",
             entity_id=row.approved_software_id,
-            label=f"Classify “{row.app_name}” as {row.classification}",
+            label=f"Is the app “{row.app_name}” OK to use?",
+            detail=f"Someone marked it as: {row.classification}. Please check and say if that's right.",
             requested_at=row.created_at,
             link_path="/devices",
         )
@@ -200,8 +213,12 @@ def _pending_device_lifecycle(db: Session, *, organization_id: uuid.UUID, exclud
                 PendingApprovalOut(
                     category="device_revocation",
                     entity_id=device.device_id,
-                    label=f"Revoke device “{device.device_name}”",
-                    detail=device.revocation_reason,
+                    label=f"Turn off device “{device.device_name}”?",
+                    detail=(
+                        f"Someone wants to stop this device from being trusted. They said: {device.revocation_reason}"
+                        if device.revocation_reason
+                        else "Someone wants to stop this device from being trusted."
+                    ),
                     requested_at=device.revocation_requested_at or device.updated_at,
                     link_path="/devices",
                 )
@@ -213,8 +230,12 @@ def _pending_device_lifecycle(db: Session, *, organization_id: uuid.UUID, exclud
                 PendingApprovalOut(
                     category="device_deletion",
                     entity_id=device.device_id,
-                    label=f"Delete device “{device.device_name}”",
-                    detail=device.deletion_reason,
+                    label=f"Delete device “{device.device_name}”?",
+                    detail=(
+                        f"Someone wants to remove this device for good. They said: {device.deletion_reason}"
+                        if device.deletion_reason
+                        else "Someone wants to remove this device for good."
+                    ),
                     requested_at=device.deletion_requested_at or device.updated_at,
                     link_path="/devices",
                 )

@@ -54,6 +54,31 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         )
     ) or 0
 
+    # "Currently passing/failing" is a genuinely different question from
+    # the cumulative totals above — a control that failed every 30 seconds
+    # for a week and was then fixed should read as passing NOW, not still
+    # be dragging the historical failed_tests count around. DISTINCT ON
+    # picks exactly the latest execution row per audit_test_id.
+    latest_execution = (
+        select(TestExecution.audit_test_id, TestExecution.status, TestExecution.exceptions_found)
+        .distinct(TestExecution.audit_test_id)
+        .select_from(execution_join)
+        .where(execution_where)
+        .order_by(TestExecution.audit_test_id, TestExecution.started_at.desc())
+    ).subquery()
+
+    controls_currently_passing = db.scalar(
+        select(func.count()).select_from(latest_execution).where(
+            latest_execution.c.status == "completed", latest_execution.c.exceptions_found == 0
+        )
+    ) or 0
+    controls_currently_failing = db.scalar(
+        select(func.count()).select_from(latest_execution).where(
+            (latest_execution.c.status == "failed")
+            | ((latest_execution.c.status == "completed") & (latest_execution.c.exceptions_found > 0))
+        )
+    ) or 0
+
     exception_join = (
         Exception_.__table__.join(TestExecution.__table__, TestExecution.execution_id == Exception_.execution_id)
         .join(AuditTest.__table__, AuditTest.audit_test_id == TestExecution.audit_test_id)
@@ -114,6 +139,8 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         tests_executed_today=tests_executed_today,
         tests_passed=tests_passed,
         failed_tests=failed_tests,
+        controls_currently_passing=controls_currently_passing,
+        controls_currently_failing=controls_currently_failing,
         exceptions_open=exceptions_open,
         exceptions_high_risk=exceptions_high_risk,
         open_findings=open_findings,

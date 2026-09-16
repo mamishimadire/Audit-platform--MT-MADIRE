@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
-import type { ExceptionOut, ExceptionRecordOut } from '../types/api'
+import type { ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut } from '../types/api'
 
 const SEVERITY_STYLES: Record<string, string> = {
   critical: 'bg-red-50 text-red-700',
@@ -57,6 +57,7 @@ function humanizeExceptionValue(key: string, value: unknown, data: Record<string
 function ExceptionRow({ exception, canManage, onChanged }: { exception: ExceptionOut; canManage: boolean; onChanged: () => void }) {
   const [open, setOpen] = useState(false)
   const [records, setRecords] = useState<ExceptionRecordOut[] | null>(null)
+  const [explanation, setExplanation] = useState<ExceptionExplanationOut | null>(null)
   const [escalating, setEscalating] = useState(false)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -68,6 +69,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
   const toggle = () => {
     if (!open && records === null) {
       apiClient.get<ExceptionRecordOut[]>(`/exceptions/${exception.exception_id}/records`).then((res) => setRecords(res.data))
+      apiClient.get<ExceptionExplanationOut>(`/exceptions/${exception.exception_id}/explanation`).then((res) => setExplanation(res.data))
     }
     setOpen(!open)
   }
@@ -202,10 +204,20 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
       {open && records && (
         <tr className="border-t border-line bg-bg">
           <td colSpan={6} className="px-4 py-3">
-            {exception.recommended_remediation && (
-              <div className="mb-3 rounded-md border border-accent-soft bg-accent-soft/40 p-2">
-                <div className="text-xs font-medium uppercase tracking-wide text-accent-ink">How to resolve this</div>
-                <p className="mt-1 text-xs text-ink">{exception.recommended_remediation}</p>
+            {explanation && (
+              <div className="mb-3 space-y-2 rounded-md border border-line bg-surface p-3">
+                <div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">What happened</div>
+                  <p className="mt-1 text-sm text-ink">{explanation.summary}</p>
+                </div>
+                <div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Why it matters</div>
+                  <p className="mt-1 text-sm text-ink">{explanation.why_it_matters}</p>
+                </div>
+                <div className="rounded-md border border-accent-soft bg-accent-soft/40 p-2">
+                  <div className="text-xs font-medium uppercase tracking-wide text-accent-ink">What to do</div>
+                  <p className="mt-1 text-sm text-ink">{explanation.what_to_do}</p>
+                </div>
               </div>
             )}
             <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Exception record{records.length !== 1 ? 's' : ''}</div>

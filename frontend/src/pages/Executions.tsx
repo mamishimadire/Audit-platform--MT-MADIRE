@@ -25,6 +25,14 @@ export function ExecutionsPage() {
   const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
   const [filter, setFilter] = useState<StatusFilterKey>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  // "Current" shows only the most recent run of each test — the answer to
+  // "is this control passing right now" without last week's re-runs of the
+  // same failure burying it. "History" is every run ever, with a date
+  // range to narrow it down — nothing is hidden there, just not the
+  // default view, so a demo/test cycle's noise doesn't read as today's status.
+  const [view, setView] = useState<'current' | 'history'>('current')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
 
   useEffect(() => {
     if (!organizationId) return
@@ -47,25 +55,85 @@ export function ExecutionsPage() {
 
   const sorted = [...executions].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
 
+  const latestPerTest = (() => {
+    const seen = new Set<string>()
+    const out: TestExecutionOut[] = []
+    for (const e of sorted) {
+      if (seen.has(e.audit_test_id)) continue
+      seen.add(e.audit_test_id)
+      out.push(e)
+    }
+    return out.sort((a, b) => testLabel(a.audit_test_id).localeCompare(testLabel(b.audit_test_id)))
+  })()
+
+  const base = view === 'current' ? latestPerTest : sorted.filter((e) => {
+    const started = new Date(e.started_at)
+    if (fromDate && started < new Date(fromDate)) return false
+    if (toDate && started > new Date(`${toDate}T23:59:59`)) return false
+    return true
+  })
+
   const counts = {
-    all: sorted.length,
-    failed: sorted.filter((e) => e.status === 'failed').length,
-    completed: sorted.filter((e) => e.status === 'completed').length,
-    running: sorted.filter((e) => e.status === 'running').length,
+    all: base.length,
+    failed: base.filter((e) => e.status === 'failed').length,
+    completed: base.filter((e) => e.status === 'completed').length,
+    running: base.filter((e) => e.status === 'running').length,
   }
 
-  const filtered = sorted.filter((e) => filter === 'all' || e.status === filter)
+  const filtered = base.filter((e) => filter === 'all' || e.status === filter)
 
   return (
     <div>
       <h1 className="text-2xl font-semibold text-ink">Executions</h1>
       <p className="mt-1 text-sm text-ink-soft">
-        Every run of every audit test in this organization, newest first — a failed test is always recorded as failed,
-        never silently reinterpreted as a pass.
+        {view === 'current'
+          ? "The most recent run of each test — this is the control's status right now."
+          : 'Every run of every audit test in this organization, newest first.'}{' '}
+        A failed test is always recorded as failed, never silently reinterpreted as a pass.
       </p>
       {needsPicker && <OrganizationPicker organizations={organizations} value={organizationId} onChange={setOrganizationId} />}
 
-      <div className="mt-4 flex gap-1 rounded-md bg-bg p-0.5 text-xs w-fit">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 rounded-md bg-bg p-0.5 text-xs">
+          <button
+            onClick={() => setView('current')}
+            className={`rounded px-3 py-1.5 font-medium ${view === 'current' ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+          >
+            Current
+          </button>
+          <button
+            onClick={() => setView('history')}
+            className={`rounded px-3 py-1.5 font-medium ${view === 'history' ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'}`}
+          >
+            History
+          </button>
+        </div>
+        {view === 'history' && (
+          <>
+            <label className="flex items-center gap-1 text-xs text-ink-soft">
+              From
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs" />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-ink-soft">
+              To
+              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs" />
+            </label>
+            {(fromDate || toDate) && (
+              <button
+                onClick={() => {
+                  setFromDate('')
+                  setToDate('')
+                }}
+                className="text-xs font-medium text-accent-ink hover:underline"
+              >
+                Clear dates
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="mt-3 flex gap-1 rounded-md bg-bg p-0.5 text-xs w-fit">
         {STATUS_FILTERS.map((f) => (
           <button
             key={f.key}
