@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
@@ -238,6 +239,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
 export function ExceptionsPage() {
   const { hasRole } = useAuth()
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
   // "Active" hides resolved/closed ones — an exception that's been re-tested
   // and confirmed fixed (or manually resolved) shouldn't linger in the
@@ -247,6 +249,9 @@ export function ExceptionsPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  // Arriving from the Dashboard's "High-Risk Exceptions" tile
+  // (/exceptions?risk=high) narrows straight to what that tile counted.
+  const [highRiskOnly, setHighRiskOnly] = useState(searchParams.get('risk') === 'high')
 
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
 
@@ -257,6 +262,7 @@ export function ExceptionsPage() {
   }, [organizationId])
 
   const visible = exceptions.filter((e) => {
+    if (highRiskOnly && e.severity !== 'critical' && e.severity !== 'high') return false
     if (view === 'active') return e.status !== 'resolved' && e.status !== 'closed'
     if (statusFilter && e.status !== statusFilter) return false
     const detected = new Date(e.last_detected_at)
@@ -264,6 +270,13 @@ export function ExceptionsPage() {
     if (toDate && detected > new Date(`${toDate}T23:59:59`)) return false
     return true
   })
+
+  const clearHighRiskOnly = () => {
+    setHighRiskOnly(false)
+    const next = new URLSearchParams(searchParams)
+    next.delete('risk')
+    setSearchParams(next, { replace: true })
+  }
 
   return (
     <div>
@@ -273,6 +286,15 @@ export function ExceptionsPage() {
         whether to escalate.
       </p>
       {needsPicker && <OrganizationPicker organizations={organizations} value={organizationId} onChange={setOrganizationId} />}
+
+      {highRiskOnly && (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700">
+          Showing only critical/high severity exceptions.
+          <button onClick={clearHighRiskOnly} className="font-medium underline">
+            Show all severities
+          </button>
+        </div>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <div className="flex gap-1 rounded-md bg-bg p-0.5 text-xs">

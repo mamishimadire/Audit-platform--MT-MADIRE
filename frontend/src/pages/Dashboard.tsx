@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
@@ -10,6 +11,10 @@ interface StatTileProps {
   label: string
   value: string | number
   tone?: 'default' | 'warning' | 'critical' | 'good'
+  // Plain-English meaning, shown directly on the tile — so a reader knows
+  // what they're about to see before they click, not just after.
+  hint?: string
+  to?: string
 }
 
 const TONE_STYLES: Record<string, string> = {
@@ -19,13 +24,22 @@ const TONE_STYLES: Record<string, string> = {
   critical: 'text-red-600',
 }
 
-function StatTile({ label, value, tone = 'default' }: StatTileProps) {
-  return (
-    <div className="rounded-lg border border-line bg-surface p-4">
+function StatTile({ label, value, tone = 'default', hint, to }: StatTileProps) {
+  const body = (
+    <>
       <div className={`text-2xl font-semibold tabular-nums ${TONE_STYLES[tone]}`}>{value}</div>
-      <div className="mt-1 text-xs text-ink-soft">{label}</div>
-    </div>
+      <div className="mt-1 text-xs font-medium text-ink-soft">{label}</div>
+      {hint && <div className="mt-1 text-[11px] leading-snug text-ink-faint">{hint}</div>}
+    </>
   )
+  if (to) {
+    return (
+      <Link to={to} className="block rounded-lg border border-line bg-surface p-4 transition hover:border-accent-soft hover:bg-bg">
+        {body}
+      </Link>
+    )
+  }
+  return <div className="rounded-lg border border-line bg-surface p-4">{body}</div>
 }
 
 function GatewayHealthBar({ stats }: { stats: DashboardStats }) {
@@ -108,31 +122,38 @@ export function DashboardPage() {
                 label="Controls Passing Now"
                 value={stats.controls_currently_passing}
                 tone={stats.controls_currently_passing > 0 ? 'good' : 'default'}
+                hint="Tested just now, no problems found."
+                to="/executions?status=pass"
               />
               <StatTile
                 label="Controls Failing Now"
                 value={stats.controls_currently_failing}
                 tone={stats.controls_currently_failing > 0 ? 'critical' : 'default'}
+                hint="Tested just now — a real problem was found. Click to see each one explained."
+                to="/executions?status=exception"
               />
               <StatTile
                 label="Needs Attention"
                 value={stats.controls_needs_attention}
                 tone={stats.controls_needs_attention > 0 ? 'warning' : 'default'}
+                hint="Couldn't actually be tested — not mapped, not connected, or a technical problem. Not the same as failing."
+                to="/executions?status=needs_attention"
               />
-              <StatTile label="Open Exceptions" value={stats.exceptions_open} tone={stats.exceptions_open > 0 ? 'warning' : 'good'} />
-              <StatTile label="High-Risk Exceptions" value={stats.exceptions_high_risk} tone={stats.exceptions_high_risk > 0 ? 'critical' : 'good'} />
+              <StatTile
+                label="Open Exceptions"
+                value={stats.exceptions_open}
+                tone={stats.exceptions_open > 0 ? 'warning' : 'good'}
+                hint="Individual issues currently open, not yet resolved or escalated to a finding."
+                to="/exceptions"
+              />
+              <StatTile
+                label="High-Risk Exceptions"
+                value={stats.exceptions_high_risk}
+                tone={stats.exceptions_high_risk > 0 ? 'critical' : 'good'}
+                hint="Open exceptions rated critical or high severity — the ones worth looking at first."
+                to="/exceptions?risk=high"
+              />
             </div>
-            {stats.controls_needs_attention > 0 && (
-              <p className="mt-2 text-xs text-ink-soft">
-                "Needs Attention" means a control couldn't actually be checked — its data isn't mapped yet, a required table
-                hasn't been connected, or a technical problem stopped the test from running. It is not the same as a control
-                failing its test; see the{' '}
-                <a href="/executions" className="font-medium text-accent-ink hover:underline">
-                  Executions
-                </a>{' '}
-                page for the specific reason on each one.
-              </p>
-            )}
           </div>
 
           <div className="mt-6">
@@ -140,14 +161,36 @@ export function DashboardPage() {
               Historical totals — every run and finding ever recorded
             </div>
             <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <StatTile label="Active Monitoring Tests" value={stats.active_monitoring_tests} />
-              <StatTile label="Tests Executed Today" value={stats.tests_executed_today} />
-              <StatTile label="Tests Passed (all-time)" value={stats.tests_passed} tone={stats.tests_passed > 0 ? 'good' : 'default'} />
-              <StatTile label="Failed Tests (all-time)" value={stats.failed_tests} tone={stats.failed_tests > 0 ? 'critical' : 'default'} />
-              <StatTile label="Blocked Runs (all-time)" value={stats.tests_blocked_total} />
-              <StatTile label="Open Findings" value={stats.open_findings} tone={stats.open_findings > 0 ? 'warning' : 'good'} />
-              <StatTile label="Overdue Findings" value={stats.overdue_findings} tone={stats.overdue_findings > 0 ? 'critical' : 'good'} />
-              <StatTile label="Remediation Rate" value={`${stats.remediation_rate}%`} tone="good" />
+              <StatTile label="Active Monitoring Tests" value={stats.active_monitoring_tests} to="/monitoring" />
+              <StatTile label="Tests Executed Today" value={stats.tests_executed_today} to="/executions?view=history" />
+              <StatTile
+                label="Tests Passed (all-time)"
+                value={stats.tests_passed}
+                tone={stats.tests_passed > 0 ? 'good' : 'default'}
+                to="/executions?view=history&status=pass"
+              />
+              <StatTile
+                label="Failed Tests (all-time)"
+                value={stats.failed_tests}
+                tone={stats.failed_tests > 0 ? 'critical' : 'default'}
+                hint="Every run, ever, that found a real exception."
+                to="/executions?view=history&status=exception"
+              />
+              <StatTile
+                label="Blocked Runs (all-time)"
+                value={stats.tests_blocked_total}
+                hint="Every run, ever, that couldn't be tested — mapping, connection, or a technical problem."
+                to="/executions?view=history&status=needs_attention"
+              />
+              <StatTile label="Open Findings" value={stats.open_findings} tone={stats.open_findings > 0 ? 'warning' : 'good'} to="/findings" />
+              <StatTile
+                label="Overdue Findings"
+                value={stats.overdue_findings}
+                tone={stats.overdue_findings > 0 ? 'critical' : 'good'}
+                hint="Past their target date and not yet closed."
+                to="/findings"
+              />
+              <StatTile label="Remediation Rate" value={`${stats.remediation_rate}%`} tone="good" to="/remediation" />
             </div>
           </div>
 

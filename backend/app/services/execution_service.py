@@ -162,6 +162,15 @@ def record_execution_report(db: Session, *, report: ExecutionReport) -> TestExec
         if existing is not None:
             existing.last_detected_at = now
             existing.occurrence_count += 1
+            # Re-point at the run that just re-detected it, not the run
+            # that first created it — otherwise a recurring exception
+            # (the normal case for anything not yet fixed) permanently
+            # joins to a stale, long-past execution, and the Executions
+            # page's per-row "show full explanation" (which matches
+            # exceptions to executions by execution_id) never finds it for
+            # any execution after the very first one. detected_at (below,
+            # left untouched) still preserves when this was FIRST seen.
+            existing.execution_id = execution.execution_id
             exception_id = existing.exception_id
         else:
             exception_row = Exception_(

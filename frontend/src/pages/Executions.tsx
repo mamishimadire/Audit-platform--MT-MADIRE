@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { apiClient } from '../lib/apiClient'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
@@ -36,9 +37,17 @@ const STATUS_EXPLANATIONS: Record<string, string> = {
   error: "The test couldn't run because of a technical problem (like a connection dropping), not because of anything wrong with the control.",
 }
 
+// A control that couldn't actually be checked — for any of three different
+// reasons — is a different question from "did this control pass or fail,"
+// so it gets its own combined filter (mirrors app.core.execution_status.
+// NEEDS_ATTENTION on the backend, and the Dashboard's own "Needs Attention"
+// tile) alongside the granular per-status tabs.
+const NEEDS_ATTENTION_STATUSES = new Set(['mapping_required', 'not_testable', 'error'])
+
 const STATUS_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'exception', label: 'Exceptions' },
+  { key: 'needs_attention', label: 'Needs attention' },
   { key: 'pass', label: 'Passed' },
   { key: 'mapping_required', label: 'Mapping needed' },
   { key: 'not_testable', label: 'Not testable' },
@@ -53,22 +62,36 @@ function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+const VALID_FILTER_KEYS = new Set(STATUS_FILTERS.map((f) => f.key))
+
 export function ExecutionsPage() {
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
+  const [searchParams] = useSearchParams()
   const [executions, setExecutions] = useState<TestExecutionOut[]>([])
   const [tests, setTests] = useState<AuditTestOut[]>([])
   const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
-  const [filter, setFilter] = useState<StatusFilterKey>('all')
+  // Arriving from a Dashboard tile link (e.g. "Controls Failing Now" ->
+  // /executions?status=exception) pre-selects the matching tab, so the
+  // reader lands exactly on what the tile was counting instead of "All"
+  // and having to re-find it.
+  const initialFilter = searchParams.get('status')
+  const [filter, setFilter] = useState<StatusFilterKey>(
+    initialFilter && VALID_FILTER_KEYS.has(initialFilter as StatusFilterKey) ? (initialFilter as StatusFilterKey) : 'all'
+  )
   const [expandedId, setExpandedId] = useState<string | null>(null)
   // "Current" shows only the most recent run of each test — the answer to
   // "is this control passing right now" without last week's re-runs of the
   // same failure burying it. "History" is every run ever, with a date
   // range to narrow it down — nothing is hidden there, just not the
   // default view, so a demo/test cycle's noise doesn't read as today's status.
-  const [view, setView] = useState<'current' | 'history'>('current')
-  const [historyPreset, setHistoryPreset] = useState<HistoryPreset>('today')
-  const [fromDate, setFromDate] = useState(() => isoDate(new Date()))
-  const [toDate, setToDate] = useState(() => isoDate(new Date()))
+  const initialView = searchParams.get('view') === 'history' ? 'history' : 'current'
+  const [view, setView] = useState<'current' | 'history'>(initialView)
+  // A Dashboard "(all-time)" tile linking into History would otherwise land
+  // on just today's date range by default and look empty — "all" is the
+  // only preset that actually matches what an all-time count promises.
+  const [historyPreset, setHistoryPreset] = useState<HistoryPreset>(initialView === 'history' ? 'all' : 'today')
+  const [fromDate, setFromDate] = useState(() => (initialView === 'history' ? '' : isoDate(new Date())))
+  const [toDate, setToDate] = useState(() => (initialView === 'history' ? '' : isoDate(new Date())))
 
   const applyPreset = (preset: HistoryPreset) => {
     setHistoryPreset(preset)
@@ -137,6 +160,7 @@ export function ExecutionsPage() {
   const counts = {
     all: base.length,
     exception: base.filter((e) => e.status === 'exception').length,
+    needs_attention: base.filter((e) => NEEDS_ATTENTION_STATUSES.has(e.status)).length,
     pass: base.filter((e) => e.status === 'pass').length,
     mapping_required: base.filter((e) => e.status === 'mapping_required').length,
     not_testable: base.filter((e) => e.status === 'not_testable').length,
@@ -144,7 +168,11 @@ export function ExecutionsPage() {
     error: base.filter((e) => e.status === 'error').length,
   }
 
-  const filtered = base.filter((e) => filter === 'all' || e.status === filter)
+  const filtered = base.filter((e) => {
+    if (filter === 'all') return true
+    if (filter === 'needs_attention') return NEEDS_ATTENTION_STATUSES.has(e.status)
+    return e.status === filter
+  })
 
   return (
     <div>

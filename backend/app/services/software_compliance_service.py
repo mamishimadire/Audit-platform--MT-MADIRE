@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.execution_status import classify_completed_run
 from app.models.audit_test import AuditTest
 from app.models.device import ApprovedSoftware, Device, DeviceSoftwareInventory
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
@@ -393,10 +394,11 @@ def check_software_compliance(
         audit_test_id=audit_test.audit_test_id,
         started_at=now,
         completed_at=now,
-        # Mirrors the same fix in device_compliance_service: a device with
-        # one or more flagged apps is a failed execution, not "completed" —
-        # otherwise the dashboard's "Failed Tests" tile can never count it.
-        status="failed" if flagged else "completed",
+        # Same vocabulary as every other execution path (see
+        # app.core.execution_status) — also correctly reads as
+        # insufficient_data rather than a false pass if a device ever
+        # reports zero installed software.
+        status=classify_completed_run(records_analyzed=len(installed_software), exceptions_found=len(flagged)),
         records_analyzed=len(installed_software),
         exceptions_found=len(flagged),
     )

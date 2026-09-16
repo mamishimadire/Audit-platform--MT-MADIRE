@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.execution_status import classify_completed_run
 from app.models.audit_test import AuditTest
 from app.models.device import Device, DeviceSoftwareInventory, DeviceTelemetry
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
@@ -215,13 +216,12 @@ def record_telemetry_and_check_compliance(db: Session, *, device: Device, report
         audit_test_id=audit_test.audit_test_id,
         started_at=now,
         completed_at=now,
-        # A device that failed one or more enabled checks is recorded as a
-        # failed execution, not "completed" — same principle execution_service
-        # already applies to Gateway-executed tests (never classify a failed
-        # test as a successful control); this endpoint-side path had been
-        # silently exempting itself from it, which kept the dashboard's
-        # "Failed Tests" tile at 0 no matter how many devices were failing.
-        status="failed" if failed_checks else "completed",
+        # Same pass/exception vocabulary as every other execution path (see
+        # app.core.execution_status) — this endpoint-side path used to write
+        # its own "completed"/"failed" strings, which kept it permanently
+        # invisible to the new-vocabulary filters/counts on the Executions
+        # page and the dashboard's "Needs Attention" bucket.
+        status=classify_completed_run(records_analyzed=1, exceptions_found=len(failed_checks)),
         records_analyzed=1,
     )
     db.add(execution)
@@ -338,7 +338,7 @@ def recheck_all_devices_from_latest_telemetry(db: Session, *, organization_id: u
             audit_test_id=audit_test.audit_test_id,
             started_at=now,
             completed_at=now,
-            status="failed" if failed_checks else "completed",
+            status=classify_completed_run(records_analyzed=1, exceptions_found=len(failed_checks)),
             records_analyzed=1,
             exceptions_found=len(failed_checks),
         )
