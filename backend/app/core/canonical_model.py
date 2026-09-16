@@ -106,7 +106,20 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "purchase_orders": ["po_number", "supplier_id", "amount", "created_by", "created_at", "status"],
     "po_approvals": ["po_number", "approved_by", "approved_at"],
     "goods_receipts": ["grn_number", "po_number", "received_quantity", "received_at"],
-    "supplier_invoices": ["invoice_number", "supplier_id", "po_number", "amount", "quantity", "received_at"],
+    # "processed_by" added (round-3 pass) for SOD-003 ("Invoice creation
+    # and payment should be segregated"): every OTHER transactional
+    # document object this same segregation-of-duties pattern is tested
+    # against already carries an actor field (purchase_orders.created_by,
+    # journal_entries.prepared_by) — supplier_invoices was the one
+    # document type missing it, which is why 0050 found "there is nothing
+    # on the primary side to compare against payments.paid_by in the
+    # first place." Deliberately NOT extending this same treatment to
+    # master-data objects (customers/suppliers/employee, for SOD-005/
+    # SOD-006) — those consistently have no creator field anywhere in the
+    # model (suppliers itself has none either), so adding one there would
+    # be introducing a new pattern rather than completing an existing one;
+    # only this transactional-document case is a genuine like-for-like gap.
+    "supplier_invoices": ["invoice_number", "supplier_id", "po_number", "amount", "quantity", "received_at", "processed_by"],
     "invoice_approvals": ["invoice_number", "approved_by", "approved_at"],
     "payments": ["payment_id", "invoice_number", "supplier_id", "amount", "paid_by", "paid_at"],
     "payment_approvals": ["payment_id", "approved_by", "approved_at"],
@@ -117,7 +130,14 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "journal_entries": ["journal_id", "description", "amount", "account", "prepared_by", "posted_at", "period", "entry_type"],
     "journal_approvals": ["journal_id", "approved_by", "approved_at"],
     "journal_lines": ["journal_id", "line", "debit", "credit"],
-    "general_ledger": ["account", "account_name", "balance", "as_of"],
+    # "account_type" added (round-3 pass) for GL-008 ("Suspense accounts
+    # require review"): general_ledger previously had no way to identify a
+    # suspense account other than free-text account_name, which 0044-0051
+    # correctly refused to hardcode as a magic string. A classification
+    # field is a completely standard GL attribute in any real chart of
+    # accounts (asset/liability/suspense/...), so this is filling an
+    # obviously-missing attribute, not inventing structure.
+    "general_ledger": ["account", "account_name", "account_type", "balance", "as_of"],
     "ap_transactions": ["transaction_id", "supplier_id", "amount", "posted_at"],
     "ar_transactions": ["transaction_id", "customer_id", "amount", "posted_at"],
     "inventory": ["item_code", "description", "quantity_on_hand", "unit_cost"],
@@ -133,7 +153,15 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "audit_logs": ["log_id", "entity_type", "entity_id", "action", "logged_at"],
     # 5. Master Data / Order-to-Cash
     "customers": ["customer_id", "customer_name", "tax_number", "credit_limit", "status"],
-    "sales_orders": ["order_id", "customer_id", "amount", "created_at"],
+    # "discount_amount" added (round-3 pass) for OTC-006 ("Discounts
+    # require approval"): discount_approvals already records discount_
+    # amount for the approval side, but sales_orders itself had no field
+    # to identify WHICH orders carried a discount in the first place —
+    # without it there is no way to scope the check to discounted orders
+    # only (an unfiltered version would wrongly demand an approval row for
+    # every order, discounted or not). Mirrors discount_approvals'
+    # existing field name exactly.
+    "sales_orders": ["order_id", "customer_id", "amount", "discount_amount", "created_at"],
     "sales_approvals": ["order_id", "approved_by", "approved_at"],
     "sales_invoices": ["invoice_id", "order_id", "customer_id", "amount", "issued_at"],
     "deliveries": ["delivery_id", "invoice_id", "delivered_at"],
@@ -149,7 +177,16 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "deployments": ["change_id", "deployed_by", "deployed_at"],
     "production_logs": ["log_id", "change_id", "logged_at"],
     # 7. IT Operations
-    "scheduled_jobs": ["job_id", "job_name", "schedule", "critical"],
+    # "max_duration_seconds" added (round-3 pass) for OP-004 ("Processing
+    # time should remain within limits"): job_executions.duration_seconds
+    # was already real and usable, but no field anywhere defined what
+    # limit a given job should be held to — 0044/0049/0051 correctly
+    # refused to invent a hardcoded cutoff. A per-job expected-duration
+    # ceiling is a standard scheduler attribute (most job schedulers let
+    # you configure exactly this), so this fills an obviously-missing
+    # attribute on the job definition itself rather than fabricating a
+    # policy value.
+    "scheduled_jobs": ["job_id", "job_name", "schedule", "critical", "max_duration_seconds"],
     "job_executions": ["job_id", "executed_at", "status", "duration_seconds"],
     "incident_records": ["incident_id", "job_id", "opened_at"],
     "incidents": ["incident_id", "description", "severity", "opened_at", "status"],
@@ -221,9 +258,27 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "patch_deployments": ["deployment_id", "patch_id", "asset_id", "deployed_at", "approved", "tested", "emergency"],
     "patch_approvals": ["deployment_id", "approved_by", "approved_at"],
     "patch_incidents": ["deployment_id", "issue", "resolved"],
-    "patch_exceptions": ["asset_id", "reason"],
+    # "exception_id" added (round-3 pass) for PM-010 ("Patch exceptions/
+    # deferrals require documented justification"): every other exception-
+    # tracking object in the library that needs an approval trail has its
+    # own per-row id (web_filter_exceptions.exception_id, paired with
+    # exception_approvals.exception_id) — patch_exceptions was the one
+    # exception-style object missing it, which is why 0049 found "the
+    # generic exception_approvals table... can't be reused here despite
+    # the very similar-sounding name." Adding the same id field this
+    # object's own sibling already has is completing an established
+    # pattern, not inventing a new one.
+    "patch_exceptions": ["exception_id", "asset_id", "reason"],
     # 18. Remote Access
-    "remote_access_logs": ["user_id", "session_id", "started_at", "mfa_used", "source_country", "idle_minutes"],
+    # "outcome" added (round-3 pass) for RA-011 ("Failed remote login
+    # attempts must be monitored"): 0049 found this was "a genuine missing-
+    # canonical-field gap" — neither remote_access_logs nor login_history
+    # had any success/failure field at all. A login/session outcome is
+    # about as basic an attribute as an access-log object can have (nearly
+    # every real auth/VPN log carries one), so this fills an obviously-
+    # missing attribute on the object this control's own required_tables
+    # names first.
+    "remote_access_logs": ["user_id", "session_id", "started_at", "mfa_used", "source_country", "idle_minutes", "outcome"],
     "mfa_config": ["user_id", "mfa_enabled"],
     "remote_access_grants": ["user_id", "granted_at", "approved"],
     "vpn_accounts": ["user_id", "vpn_username", "status"],
