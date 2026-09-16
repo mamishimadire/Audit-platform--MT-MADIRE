@@ -7,13 +7,22 @@ gateway/config.yaml
 gateway/.gateway_identity.json
 gateway/.venv/
 gateway/build/
-gateway/dist/
+# The compiled .exe (not the rest of dist/) IS tracked, deliberately — see
+# app/services/gateway_download_service.py's WINDOWS_EXE_PATH: the backend
+# serves this exact file to clients on request, and Render's Linux build
+# servers cannot compile a Windows .exe themselves (PyInstaller doesn't
+# cross-compile), so it has to already be in the repo or the download
+# endpoint 503s. Rebuild locally after any gateway source change, then
+# commit the new binary — see WINDOWS_README.md.
+gateway/dist/*
+!gateway/dist/MadireGateway.exe
 gateway/logs/
-gateway/*.spec
 endpoint-agent/build/
-endpoint-agent/dist/
+# Same reasoning as gateway/dist/ above — see
+# app/services/endpoint_agent_download_service.py's WINDOWS_EXE_PATH.
+endpoint-agent/dist/*
+!endpoint-agent/dist/MadireEndpointAgent.exe
 endpoint-agent/logs/
-endpoint-agent/*.spec
 
 # Python
 backend/.venv/
