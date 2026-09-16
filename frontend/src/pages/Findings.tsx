@@ -4,7 +4,8 @@ import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
-import type { ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode } from '../types/api'
+import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
+import type { ExceptionExplanationOut, ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode } from '../types/api'
 
 function inNDays(days: number): string {
   const d = new Date()
@@ -34,6 +35,7 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   const [rootCauses, setRootCauses] = useState<RootCauseOut[]>([])
   const [actions, setActions] = useState<RemediationActionOut[]>([])
   const [retests, setRetests] = useState<RetestOut[]>([])
+  const [explanation, setExplanation] = useState<ExceptionExplanationOut | null>(null)
 
   const [rcCategory, setRcCategory] = useState('')
   const [rcDescription, setRcDescription] = useState('')
@@ -46,6 +48,9 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
     apiClient.get<RootCauseOut[]>(`/findings/${finding.finding_id}/root-causes`).then((res) => setRootCauses(res.data))
     apiClient.get<RemediationActionOut[]>(`/findings/${finding.finding_id}/remediation-actions`).then((res) => setActions(res.data))
     apiClient.get<RetestOut[]>(`/findings/${finding.finding_id}/retests`).then((res) => setRetests(res.data))
+    apiClient
+      .get<ExceptionExplanationOut>(`/exceptions/${finding.exception_id}/explanation`)
+      .then((res) => setExplanation(res.data))
   }
 
   useEffect(load, [finding.finding_id])
@@ -101,6 +106,14 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
 
   return (
     <div className="space-y-4 bg-bg p-4">
+      {explanation && (
+        <ExceptionExplanationBlock
+          summary={explanation.summary}
+          whyItMatters={explanation.why_it_matters}
+          whatToDo={explanation.what_to_do}
+        />
+      )}
+
       <div className="flex flex-wrap items-center gap-1 text-xs text-ink-soft">
         {trace.map((n, i) => (
           <span key={n.id}>

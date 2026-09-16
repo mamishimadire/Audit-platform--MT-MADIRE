@@ -96,6 +96,16 @@ class ExceptionOut(OrmModel):
     last_detected_at: datetime
     occurrence_count: int
     has_finding: bool = False
+    # Only set by list_exceptions_for_organization (see execution_service.py)
+    # — the plain-English explain_exception() breakdown, attached in bulk so
+    # a list of exceptions (Executions/Exceptions pages) never needs a
+    # separate per-row fetch just to show what a reader actually needs to
+    # know. None on every other path that returns a bare Exception_ (get/
+    # update) — those still have the dedicated GET .../explanation endpoint
+    # for the full breakdown (facts table included).
+    summary: str | None = None
+    why_it_matters: str | None = None
+    what_to_do: str | None = None
 
 
 class ExceptionUpdate(OrmModel):

@@ -579,6 +579,12 @@ export interface ExceptionOut {
   last_detected_at: string
   occurrence_count: number
   has_finding: boolean
+  // Only set when this exception came back from the organization-wide list
+  // endpoint (see execution_service.list_exceptions_for_organization) —
+  // null on a bare get/update of a single exception.
+  summary: string | null
+  why_it_matters: string | null
+  what_to_do: string | null
 }
 
 export interface ExceptionRecordOut {

@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
+import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
 import type { AuditTestOut, ExceptionOut, TestExecutionOut } from '../types/api'
 
 // Mirrors app.core.execution_status on the backend — six statuses instead
@@ -107,8 +108,11 @@ export function ExecutionsPage() {
   // exceptions it produced (every execution path already creates real
   // Exception rows linked by execution_id). A run that never got to
   // execute at all — a connection failure, for instance — has none of
-  // those; its reason is execution_log instead, rendered below.
-  const reasonsFor = (executionId: string) => exceptions.filter((e) => e.execution_id === executionId).map((e) => e.exception_description).filter(Boolean) as string[]
+  // those; its reason is execution_log instead, rendered below. Each
+  // ExceptionOut already carries its own plain-English summary/why-it-
+  // matters/what-to-do (see execution_service.list_exceptions_for_
+  // organization) — no separate fetch needed to show the full picture.
+  const exceptionsFor = (executionId: string) => exceptions.filter((e) => e.execution_id === executionId)
 
   const sorted = [...executions].sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
 
@@ -242,9 +246,9 @@ export function ExecutionsPage() {
           </thead>
           <tbody>
             {filtered.map((e) => {
-              const reasons = e.status === 'exception' ? reasonsFor(e.execution_id) : []
+              const rowExceptions = e.status === 'exception' ? exceptionsFor(e.execution_id) : []
               const isExpanded = expandedId === e.execution_id
-              const preview = reasons.slice(0, 2).join('; ')
+              const preview = rowExceptions[0]?.summary ?? rowExceptions[0]?.exception_description ?? ''
               return (
                 <Fragment key={e.execution_id}>
                   <tr className="border-t border-line align-top">
@@ -258,31 +262,33 @@ export function ExecutionsPage() {
                     <td className="px-4 py-2 text-ink-soft">{e.records_analyzed ?? '—'}</td>
                     <td className="px-4 py-2 text-ink-soft">{e.exceptions_found ?? '—'}</td>
                     <td className="px-4 py-2 text-ink-soft max-w-md">
-                      {reasons.length === 0 ? (
+                      {rowExceptions.length === 0 ? (
                         e.execution_log || STATUS_EXPLANATIONS[e.status] || '—'
                       ) : (
                         <>
                           {preview}
-                          {reasons.length > 2 && (
-                            <button
-                              onClick={() => setExpandedId(isExpanded ? null : e.execution_id)}
-                              className="ml-1 font-medium text-accent-ink hover:underline"
-                            >
-                              {isExpanded ? 'hide' : `+${reasons.length - 2} more`}
-                            </button>
-                          )}
+                          {rowExceptions.length > 1 && <span className="text-ink-faint"> (+{rowExceptions.length - 1} more)</span>}
+                          <button
+                            onClick={() => setExpandedId(isExpanded ? null : e.execution_id)}
+                            className="ml-1 font-medium text-accent-ink hover:underline"
+                          >
+                            {isExpanded ? 'hide full explanation' : 'show full explanation'}
+                          </button>
                         </>
                       )}
                     </td>
                   </tr>
-                  {isExpanded && reasons.length > 2 && (
+                  {isExpanded && rowExceptions.length > 0 && (
                     <tr className="border-t border-line-soft bg-bg">
-                      <td colSpan={6} className="px-4 py-2">
-                        <ul className="list-disc space-y-0.5 pl-5 text-xs text-ink-soft">
-                          {reasons.map((r, i) => (
-                            <li key={i}>{r}</li>
-                          ))}
-                        </ul>
+                      <td colSpan={6} className="space-y-2 px-4 py-3">
+                        {rowExceptions.map((exc) => (
+                          <ExceptionExplanationBlock
+                            key={exc.exception_id}
+                            summary={exc.summary ?? exc.exception_description ?? 'This record failed the check.'}
+                            whyItMatters={exc.why_it_matters ?? 'This check exists to catch a real problem.'}
+                            whatToDo={exc.what_to_do ?? 'Look into this record and decide what needs to change.'}
+                          />
+                        ))}
                       </td>
                     </tr>
                   )}

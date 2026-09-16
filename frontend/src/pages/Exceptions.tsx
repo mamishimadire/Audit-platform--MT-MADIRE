@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
+import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
 import type { ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut } from '../types/api'
 
 const SEVERITY_STYLES: Record<string, string> = {
@@ -205,19 +206,12 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
         <tr className="border-t border-line bg-bg">
           <td colSpan={6} className="px-4 py-3">
             {explanation && (
-              <div className="mb-3 space-y-2 rounded-md border border-line bg-surface p-3">
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">What happened</div>
-                  <p className="mt-1 text-sm text-ink">{explanation.summary}</p>
-                </div>
-                <div>
-                  <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Why it matters</div>
-                  <p className="mt-1 text-sm text-ink">{explanation.why_it_matters}</p>
-                </div>
-                <div className="rounded-md border border-accent-soft bg-accent-soft/40 p-2">
-                  <div className="text-xs font-medium uppercase tracking-wide text-accent-ink">What to do</div>
-                  <p className="mt-1 text-sm text-ink">{explanation.what_to_do}</p>
-                </div>
+              <div className="mb-3">
+                <ExceptionExplanationBlock
+                  summary={explanation.summary}
+                  whyItMatters={explanation.why_it_matters}
+                  whatToDo={explanation.what_to_do}
+                />
               </div>
             )}
             <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Exception record{records.length !== 1 ? 's' : ''}</div>

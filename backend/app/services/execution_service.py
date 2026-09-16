@@ -9,7 +9,7 @@ from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.finding import Finding
-from app.services.exception_service import find_open_exception
+from app.services.exception_service import explain_exception, find_open_exception
 from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.schemas.audit_engine import DueTest, DueTestObject, ExecutionReport
 from app.schemas.test_rule import required_objects_for
@@ -245,4 +245,12 @@ def list_exceptions_for_organization(db: Session, *, organization_id: uuid.UUID)
     )
     for exc in exceptions:
         exc.has_finding = exc.exception_id in ids_with_findings
+        # Attached here (not just the dedicated .../explanation endpoint) so
+        # every screen that lists exceptions in bulk — Exceptions, and
+        # Executions' per-row reasons — shows the same plain-English
+        # explanation without a separate fetch per row.
+        explained = explain_exception(db, exception=exc)
+        exc.summary = explained["summary"]
+        exc.why_it_matters = explained["why_it_matters"]
+        exc.what_to_do = explained["what_to_do"]
     return exceptions
