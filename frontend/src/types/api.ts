@@ -550,7 +550,8 @@ export interface TestExecutionOut {
   audit_test_id: string
   started_at: string
   completed_at: string | null
-  status: 'running' | 'completed' | 'failed'
+  // Mirrors app.core.execution_status on the backend.
+  status: 'running' | 'pass' | 'exception' | 'mapping_required' | 'not_testable' | 'insufficient_data' | 'error'
   records_analyzed: number | null
   exceptions_found: number | null
   execution_log: string | null
