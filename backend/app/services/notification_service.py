@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import AuditTest, TestRule
+from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataConnectionChange, DataSource
 from app.models.device import ApprovedSoftware, Device, DevicePolicyChange
 from app.models.rbac import User
@@ -11,16 +11,19 @@ from app.models.risk_control import Control
 from app.schemas.notification import PendingApprovalOut
 from app.services.auth_service import get_user_permission_names
 
-# Each entry: (permission needed to decide on it, the collector). Only the
-# maker-checker flows that have an explicit "someone requested this, a
-# different person must decide" shape are included here — raw mapping
-# suggestions (auto/needs_review) have no requester and no bounded queue,
-# so they stay on the mapping screen's own bold/orange highlighting instead
-# of flooding this bell.
+# Every mapping row that exists was explicitly created by a human — either
+# accepting a suggestion or mapping a field by hand (see mapping_service.
+# create_mapping) — and, same as every other maker-checker flow here, a
+# different person has to approve it before the control's test can rely on
+# it. 'rejected'/'approved'/'superseded' are already-decided, not pending.
+_PENDING_MAPPING_STATUSES = ("auto", "needs_review", "manually_mapped")
+
+# Each entry: permission needed to decide on it -> the collector it gates.
 _PENDING_PERMISSION = {
     "rule": "audit_framework:manage",
     "control_activation": "audit_framework:manage",
     "control_deactivation": "audit_framework:manage",
+    "mapping": "audit_framework:manage",
     "data_connection_change": "data_sources:approve_change",
     "device_policy_change": "devices:approve_policy",
     "approved_software": "devices:manage_policy",
@@ -83,6 +86,39 @@ def _pending_controls(db: Session, *, organization_id: uuid.UUID, exclude_user_i
                 )
             )
     return out
+
+
+def _pending_mappings(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Grouped per audit test (one notification line per control, not one
+    per field) — a control can easily have a dozen mapped fields awaiting
+    approval at once, and a dozen separate bell entries for the same
+    control would be clutter, not information."""
+    rows = db.execute(
+        select(TestDataMapping, AuditTest)
+        .join(AuditTest, AuditTest.audit_test_id == TestDataMapping.audit_test_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            TestDataMapping.mapping_status.in_(_PENDING_MAPPING_STATUSES),
+            TestDataMapping.created_by != exclude_user_id,
+        )
+    )
+    grouped: dict[uuid.UUID, dict] = {}
+    for mapping, test in rows:
+        bucket = grouped.setdefault(test.audit_test_id, {"test": test, "count": 0, "latest": mapping.created_at})
+        bucket["count"] += 1
+        if mapping.created_at > bucket["latest"]:
+            bucket["latest"] = mapping.created_at
+    return [
+        PendingApprovalOut(
+            category="mapping",
+            entity_id=test_id,
+            label=f"{bucket['count']} field mapping{'s' if bucket['count'] != 1 else ''} for {bucket['test'].test_code or bucket['test'].test_name}",
+            detail="Awaiting approval before this control's test can rely on them.",
+            requested_at=bucket["latest"],
+            link_path="/audit-tests",
+        )
+        for test_id, bucket in grouped.items()
+    ]
 
 
 def _pending_connection_changes(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
@@ -199,6 +235,8 @@ def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: Use
         items += _pending_rules(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if _PENDING_PERMISSION["control_activation"] in granted:
         items += _pending_controls(db, organization_id=organization_id, exclude_user_id=user.user_id)
+    if _PENDING_PERMISSION["mapping"] in granted:
+        items += _pending_mappings(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if _PENDING_PERMISSION["data_connection_change"] in granted:
         items += _pending_connection_changes(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if _PENDING_PERMISSION["device_policy_change"] in granted:

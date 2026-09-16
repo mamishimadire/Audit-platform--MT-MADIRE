@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import ControlAuditTest, TestRule
+from app.models.audit_test import AuditTest, ControlAuditTest, TestRule
 from app.models.control_library import ControlRuleTemplate
 from app.models.risk_control import Control
 from app.schemas.audit_engine import TestRuleCreate
@@ -68,9 +68,55 @@ def approve_rule(db: Session, *, rule: TestRule, approved_by_user_id: uuid.UUID,
         entity_id=rule.rule_id,
         new_value={"status": "active"},
     )
+    _maybe_auto_activate_control(db, audit_test_id=rule.audit_test_id, organization_id=organization_id, approved_by_user_id=approved_by_user_id)
     db.commit()
     db.refresh(rule)
     return rule
+
+
+def _maybe_auto_activate_control(
+    db: Session, *, audit_test_id: uuid.UUID, organization_id: uuid.UUID, approved_by_user_id: uuid.UUID
+) -> None:
+    """A rule only reaches 'active' after its own maker-checker approval,
+    on top of the mapping approvals that got its fields there in the first
+    place — by the time this runs, the control's setup has already been
+    through two independent review cycles. Requiring a THIRD, separate
+    "request activation" / "approve activation" cycle on top of those
+    (control_service.request_activation/approve_activation) adds process
+    without adding assurance, so a control still sitting in
+    'pending_mapping' is activated automatically the moment its rule goes
+    live, provided its required tables are fully bound. A control someone
+    has already put through the manual request_activation flow (now
+    'pending_activation') is left untouched — that explicit approval still
+    applies exactly as before, this only short-circuits the case where
+    nobody has started it."""
+    link = db.scalar(select(ControlAuditTest).where(ControlAuditTest.audit_test_id == audit_test_id))
+    if link is None:
+        return
+    control = db.get(Control, link.control_id)
+    if control is None or control.status != "pending_mapping":
+        return
+    if not is_fully_bound(db, control=control):
+        return
+
+    control.status = "active"
+    control.activation_approved_by = approved_by_user_id
+    log_action(
+        db,
+        action=f"Auto-activated control '{control.control_code} — {control.control_name}' — its test rule was just approved and all required tables are bound",
+        organization_id=organization_id,
+        user_id=approved_by_user_id,
+        entity_type="controls",
+        entity_id=control.control_id,
+        new_value={"status": "active"},
+    )
+    linked_tests = db.scalars(
+        select(AuditTest)
+        .join(ControlAuditTest, ControlAuditTest.audit_test_id == AuditTest.audit_test_id)
+        .where(ControlAuditTest.control_id == control.control_id)
+    )
+    for test in linked_tests:
+        test.status = "active"
 
 
 def reject_rule(db: Session, *, rule: TestRule, reason: str, rejected_by_user_id: uuid.UUID, organization_id: uuid.UUID) -> TestRule:
