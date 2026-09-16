@@ -666,6 +666,22 @@ export interface RelationshipCheckOut {
   detail: string
 }
 
+export interface RulePreviewFieldMapping {
+  canonical: string
+  physical: string
+  mapped: boolean
+}
+
+export interface RulePreviewOut {
+  rule_type: string
+  source: string
+  joins: string[]
+  filters: string[]
+  test_condition: string
+  pass_condition: string
+  field_mappings: RulePreviewFieldMapping[]
+}
+
 export interface AuditTestOut {
   audit_test_id: string
   organization_id: string

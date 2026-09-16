@@ -76,6 +76,27 @@ class MappingReadinessOut(OrmModel):
     objects: list[RequiredObjectStatus]
 
 
+class RulePreviewFieldMapping(OrmModel):
+    canonical: str
+    physical: str
+    mapped: bool
+
+
+class RulePreviewOut(OrmModel):
+    """A plain-English SOURCE/JOIN/FILTER/TEST/PASS breakdown of a rule —
+    shown before a control is even activated, so an auditor can see
+    exactly what will be tested rather than trusting the automated result
+    blindly."""
+
+    rule_type: str
+    source: str
+    joins: list[str]
+    filters: list[str]
+    test_condition: str
+    pass_condition: str
+    field_mappings: list[RulePreviewFieldMapping]
+
+
 RelationshipCheckStatus = Literal["validated", "weak", "not_available"]
 
 

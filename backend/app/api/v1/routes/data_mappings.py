@@ -14,6 +14,7 @@ from app.schemas.data_mapping import (
     MappingRejectRequest,
     MappingSuggestion,
     RelationshipCheckOut,
+    RulePreviewOut,
     TestDataMappingCreate,
     TestDataMappingOut,
     TestDataMappingUpdate,
@@ -30,6 +31,7 @@ from app.services.mapping_service import (
     update_mapping_field,
 )
 from app.services.relationship_validation_service import validate_relationships
+from app.services.rule_preview_service import build_rule_preview
 from app.services.test_rule_service import get_control_rule_template, list_test_rules
 
 router = APIRouter(tags=["data-mappings"])
@@ -143,6 +145,36 @@ def relationship_validation(
             return []
         rule_definition = json.loads(template.rule_definition)
     return validate_relationships(db, audit_test_id=audit_test_id, rule_definition=rule_definition)
+
+
+@router.get(
+    "/organizations/{organization_id}/audit-tests/{audit_test_id}/rule-preview",
+    response_model=RulePreviewOut,
+)
+def rule_preview(
+    organization_id: uuid.UUID, audit_test_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> dict:
+    """Plain-English SOURCE/JOIN/FILTER/TEST/PASS breakdown of whichever
+    rule is most relevant right now: the active rule if one is approved,
+    else a pending one awaiting approval, else the control's own template
+    — so this can be shown before a rule even exists, letting an auditor
+    see what WOULD be tested before clicking "Generate from control
+    template" at all."""
+    enforce_same_organization(organization_id, user, db)
+    test = _get_test_or_404(db, audit_test_id)
+    if test.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
+
+    rules = list_test_rules(db, audit_test_id=audit_test_id)
+    rule = next((r for r in rules if r.status == "active"), None) or next((r for r in rules if r.status == "pending_approval"), None)
+    if rule is not None:
+        rule_definition = json.loads(rule.rule_definition)
+    else:
+        _, template = get_control_rule_template(db, audit_test_id=audit_test_id)
+        if template is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No rule or control template exists yet for this test")
+        rule_definition = json.loads(template.rule_definition)
+    return build_rule_preview(db, audit_test_id=audit_test_id, rule_definition=rule_definition)
 
 
 def _get_mapping_with_org(db: Session, mapping_id: uuid.UUID) -> tuple[TestDataMapping, uuid.UUID]:

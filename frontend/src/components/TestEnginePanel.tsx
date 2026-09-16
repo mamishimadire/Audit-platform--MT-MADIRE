@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
+import { RulePreview } from './RulePreview'
 import type { MonitoringScheduleOut, TestExecutionOut, TestRuleOut } from '../types/api'
 
 const OPERATORS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'is_null', 'is_not_null']
@@ -296,6 +297,8 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
             </ul>
           )}
           {approveError && <p className="mt-1 text-xs text-red-600">{approveError}</p>}
+
+          <RulePreview organizationId={organizationId} auditTestId={auditTestId} />
 
           {canManage && !showRuleForm && (
             <div className="mt-2 flex flex-wrap items-center gap-2">

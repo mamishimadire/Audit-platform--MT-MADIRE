@@ -1,0 +1,163 @@
+"""
+"Show the auditor exactly what will be tested before they activate a
+control" — a plain-English, SOURCE/JOIN/FILTER/TEST/RESULT breakdown of a
+rule_definition, built the same way for a not-yet-generated control
+template as for an already-active TestRule, so it can be shown at every
+stage: previewing a template before "Generate from control template",
+reviewing a pending rule before approving it, or just understanding an
+active one. Never executes anything — this is purely descriptive, reading
+already-approved test_data_mappings to show which physical column each
+canonical field actually resolves to (or "not mapped yet" if it doesn't).
+"""
+import uuid
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.models.audit_test import TestDataMapping
+from app.models.data_source import DataEntity, DataField
+from app.schemas.test_rule import required_fields_by_object_for
+from app.services.mapping_service import list_mappings
+
+_OPERATOR_WORDS = {
+    "eq": "is",
+    "ne": "is not",
+    "gt": "is greater than",
+    "gte": "is at least",
+    "lt": "is less than",
+    "lte": "is at most",
+    "is_null": "is empty",
+    "is_not_null": "is not empty",
+    "matches": "matches the pattern",
+    "in": "is one of",
+    "not_in": "is none of",
+}
+
+
+def _describe_value(value: Any) -> str:
+    if isinstance(value, dict) and value.get("kind") == "relative_date":
+        days = value["relative_days"]
+        return f"{abs(days)} days {'from now' if days >= 0 else 'ago'} (recalculated every run)"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _describe_condition(object_label: str, condition: dict) -> str:
+    op = _OPERATOR_WORDS.get(condition["operator"], condition["operator"])
+    field = f"{object_label}.{condition['field']}"
+    if condition["operator"] in ("is_null", "is_not_null"):
+        return f"{field} {op}"
+    return f"{field} {op} {_describe_value(condition.get('value'))}"
+
+
+def _mapped_field_label(mappings_by_canonical: dict[str, tuple[DataEntity | None, DataField | None]], canonical_object: str, field: str) -> str:
+    entity, data_field = mappings_by_canonical.get(f"{canonical_object}.{field}", (None, None))
+    if entity is None or data_field is None:
+        return "not mapped yet"
+    return f"{entity.entity_name}.{data_field.field_name}"
+
+
+def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition: dict) -> dict:
+    mappings = list_mappings(db, audit_test_id=audit_test_id)
+    mappings_by_canonical: dict[str, tuple[DataEntity | None, DataField | None]] = {}
+    for m in mappings:
+        if m.mapping_status != "approved" or not m.canonical_field:
+            continue
+        entity = db.get(DataEntity, m.entity_id) if m.entity_id else None
+        field = db.get(DataField, m.field_id) if m.field_id else None
+        mappings_by_canonical[m.canonical_field] = (entity, field)
+
+    def physical(obj: str, field: str) -> str:
+        return _mapped_field_label(mappings_by_canonical, obj, field)
+
+    rule_type = rule_definition.get("rule_type")
+    required = required_fields_by_object_for(rule_definition)
+    field_mappings = [
+        {"canonical": f"{obj}.{field}", "physical": physical(obj, field), "mapped": f"{obj}.{field}" in mappings_by_canonical}
+        for obj, fields in required.items()
+        for field in sorted(fields)
+    ]
+
+    if rule_type == "threshold":
+        obj = rule_definition["object"]
+        source = obj
+        test_condition = _describe_condition(obj, {"field": rule_definition["field"], "operator": rule_definition["operator"], "value": rule_definition["value"]})
+        joins: list[str] = []
+        filters: list[str] = []
+        pass_condition = f"No {obj} record has {test_condition[len(obj) + 1:]}"
+
+    elif rule_type == "duplicate":
+        obj = rule_definition["object"]
+        source = obj
+        joins = []
+        group_by = ", ".join(f"{obj}.{f}" for f in rule_definition["group_by"])
+        filters = [_describe_condition(obj, rule_definition["condition"])] if rule_definition.get("condition") else []
+        test_condition = f"More than one {obj} record shares the same {group_by}"
+        pass_condition = f"Every {group_by} combination is unique"
+
+    elif rule_type == "missing_match":
+        primary, secondary = rule_definition["primary_object"], rule_definition["secondary_object"]
+        join_field = rule_definition["join_field"]
+        secondary_field = rule_definition.get("secondary_join_field") or join_field
+        source = primary
+        joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
+        filters = [_describe_condition(primary, rule_definition["primary_condition"])] if rule_definition.get("primary_condition") else []
+        test_condition = f"A {primary} record has no matching {secondary} record"
+        pass_condition = f"Every {primary} record has a matching {secondary} record"
+
+    elif rule_type == "cross_match_condition":
+        primary, secondary = rule_definition["primary_object"], rule_definition["secondary_object"]
+        join_field = rule_definition["join_field"]
+        secondary_field = rule_definition.get("secondary_join_field") or join_field
+        source = primary
+        joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
+        filters = [
+            _describe_condition(primary, rule_definition["condition_primary"]),
+            _describe_condition(secondary, rule_definition["condition_secondary"]),
+        ]
+        test_condition = " AND ".join(filters)
+        if rule_definition.get("field_comparison"):
+            fc = rule_definition["field_comparison"]
+            comparison = f"{primary}.{fc['primary_field']} {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} {secondary}.{fc['secondary_field']}"
+            filters.append(comparison)
+            test_condition += f" AND {comparison}"
+        pass_condition = "No joined record satisfies all of the above at once"
+
+    elif rule_type == "three_way_match":
+        primary, secondary, tertiary = rule_definition["primary_object"], rule_definition["secondary_object"], rule_definition["tertiary_object"]
+        jf1 = rule_definition["join_field_primary_secondary"]
+        jf1_secondary = rule_definition.get("secondary_join_field_1") or jf1
+        jf2 = rule_definition["join_field_secondary_tertiary"]
+        jf2_tertiary = rule_definition.get("tertiary_join_field") or jf2
+        source = primary
+        joins = [f"{primary}.{jf1} = {secondary}.{jf1_secondary}", f"{secondary}.{jf2} = {tertiary}.{jf2_tertiary}"]
+        filters = []
+        for role, obj in (("condition_primary", primary), ("condition_secondary", secondary), ("condition_tertiary", tertiary)):
+            if rule_definition.get(role):
+                filters.append(_describe_condition(obj, rule_definition[role]))
+        test_condition = " AND ".join(filters) if filters else f"{primary}, {secondary}, and {tertiary} records are linked together"
+        if rule_definition.get("field_comparison"):
+            fc = rule_definition["field_comparison"]
+            role_obj = {"primary": primary, "secondary": secondary, "tertiary": tertiary}
+            comparison = f"{role_obj[fc['left_object']]}.{fc['left_field']} {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} {role_obj[fc['right_object']]}.{fc['right_field']}"
+            filters.append(comparison)
+            test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
+        pass_condition = "No linked set of records satisfies all of the above at once"
+
+    else:
+        source = "—"
+        joins = []
+        filters = []
+        test_condition = f"Unrecognized rule type: {rule_type}"
+        pass_condition = "—"
+
+    return {
+        "rule_type": rule_type,
+        "source": source,
+        "joins": joins,
+        "filters": filters,
+        "test_condition": test_condition,
+        "pass_condition": pass_condition,
+        "field_mappings": field_mappings,
+    }
