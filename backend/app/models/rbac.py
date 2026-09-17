@@ -26,6 +26,14 @@ class User(Base, TimestampMixin):
     # auth_service.activate_pending_user). Explicit product decision, not an
     # oversight: see migration 0010.
     temporary_password_plaintext: Mapped[str | None] = mapped_column(String(255))
+    # When the CURRENT password_hash was set — activation and every
+    # self-service change (auth_service.activate_pending_user/change_password)
+    # both update this. Drives the 30-day rotation policy in
+    # auth_service.PASSWORD_ROTATION_DAYS: /auth/me reports must_change_
+    # password once a password is that old, and ProtectedRoute (every page
+    # in the app sits behind it) redirects to /profile until it's changed,
+    # with a reminder shown in the days leading up to it.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Role(Base, TimestampMixin):

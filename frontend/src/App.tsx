@@ -30,6 +30,7 @@ import { RemediationPage } from './pages/Remediation'
 import { RetestsPage } from './pages/Retests'
 import { EvidencePage } from './pages/Evidence'
 import { AuditTrailPage } from './pages/AuditTrail'
+import { ProfilePage } from './pages/Profile'
 
 export default function App() {
   return (
@@ -48,6 +49,7 @@ export default function App() {
               }
             >
               <Route path="/" element={<DashboardPage />} />
+              <Route path="/profile" element={<ProfilePage />} />
               <Route path="/organizations" element={<OrganizationsPage />} />
               <Route path="/engagements" element={<EngagementsPage />} />
               <Route path="/users" element={<UsersPage />} />

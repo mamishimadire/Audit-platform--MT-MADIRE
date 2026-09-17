@@ -200,9 +200,14 @@ export function Layout() {
           {user?.first_name} {user?.last_name}
         </div>
         <div className="text-xs text-ink-soft">{user?.roles.join(', ') || 'No role assigned'}</div>
-        <button onClick={logout} className="mt-2 text-xs font-medium text-accent-ink hover:underline">
-          Log out
-        </button>
+        <div className="mt-2 flex items-center gap-3">
+          <NavLink to="/profile" onClick={() => setMobileNavOpen(false)} className="text-xs font-medium text-ink-soft hover:text-ink hover:underline">
+            Profile
+          </NavLink>
+          <button onClick={logout} className="text-xs font-medium text-accent-ink hover:underline">
+            Log out
+          </button>
+        </div>
       </div>
     </>
   )
@@ -237,6 +242,16 @@ export function Layout() {
             <NotificationBell organizationId={organizationId} />
           </div>
         </div>
+        {user && user.password_reminder_days_remaining != null && !user.must_change_password && (
+          <div className="border-b border-orange-200 bg-orange-50 px-4 py-2 text-xs text-orange-800 sm:px-8">
+            Your password expires in {user.password_reminder_days_remaining} day
+            {user.password_reminder_days_remaining === 1 ? '' : 's'} —{' '}
+            <NavLink to="/profile" className="font-medium underline">
+              change it now
+            </NavLink>
+            .
+          </div>
+        )}
         <div className="p-4 sm:p-8">
           <Outlet />
         </div>

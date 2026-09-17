@@ -23,6 +23,11 @@ export interface UserOut {
   status: 'pending' | 'active' | 'inactive' | 'locked'
   roles: string[]
   temporary_password: string | null
+  // Only populated by /auth/me and /auth/change-password (the currently
+  // logged-in user's own status) — absent on every other UserOut-shaped
+  // response, such as the Users management list.
+  must_change_password?: boolean
+  password_reminder_days_remaining?: number | null
 }
 
 export interface OrganizationOut {

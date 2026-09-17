@@ -6,9 +6,15 @@ from app.api.deps import get_current_user
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.rbac import User, UserSession
-from app.schemas.auth import ActivateAccountRequest, TokenResponse, UserOut
+from app.schemas.auth import ActivateAccountRequest, ChangePasswordRequest, TokenResponse, UserOut
 from app.services.audit_log_service import log_action
-from app.services.auth_service import activate_pending_user, authenticate_user, get_user_role_names
+from app.services.auth_service import (
+    activate_pending_user,
+    authenticate_user,
+    change_password,
+    get_user_role_names,
+    password_expiry_status,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -50,7 +56,35 @@ def activate_account(payload: ActivateAccountRequest, db: Session = Depends(get_
     return TokenResponse(access_token=token)
 
 
+def _to_user_out(db: Session, user: User) -> UserOut:
+    roles = get_user_role_names(db, user.user_id)
+    must_change, reminder_days = password_expiry_status(user)
+    return UserOut.model_validate(user).model_copy(
+        update={
+            "roles": roles,
+            "must_change_password": must_change,
+            "password_reminder_days_remaining": reminder_days,
+        }
+    )
+
+
 @router.get("/me", response_model=UserOut)
 def read_current_user(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> UserOut:
-    roles = get_user_role_names(db, user.user_id)
-    return UserOut.model_validate(user).model_copy(update={"roles": roles})
+    return _to_user_out(db, user)
+
+
+@router.post("/change-password", response_model=UserOut)
+def change_password_route(
+    payload: ChangePasswordRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> UserOut:
+    """Self-service rotation — from the profile page, or in response to the
+    30-day forced-change redirect. get_current_user already requires an
+    'active' account to authenticate at all, so there's nothing further to
+    check there."""
+    try:
+        updated = change_password(db, user=user, current_password=payload.current_password, new_password=payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    log_action(db, action="Password changed", organization_id=updated.organization_id, user_id=updated.user_id)
+    db.commit()
+    return _to_user_out(db, updated)

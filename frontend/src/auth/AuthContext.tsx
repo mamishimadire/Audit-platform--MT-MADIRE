@@ -8,6 +8,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>
   logout: () => void
   hasRole: (...roleNames: string[]) => boolean
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -54,7 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const hasRole = (...roleNames: string[]) => user !== null && roleNames.some((r) => user.roles.includes(r))
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, hasRole }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ user, isLoading, login, logout, hasRole, refreshUser: fetchMe }}>
+      {children}
+    </AuthContext.Provider>
   )
 }
 
