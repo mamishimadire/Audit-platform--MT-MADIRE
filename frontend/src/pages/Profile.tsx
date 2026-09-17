@@ -15,6 +15,9 @@ export function ProfilePage() {
 
   const mustChange = user.must_change_password ?? false
   const reminderDays = user.password_reminder_days_remaining ?? null
+  const passwordAgeDays = user.password_changed_at
+    ? Math.floor((Date.now() - new Date(user.password_changed_at).getTime()) / (1000 * 60 * 60 * 24))
+    : null
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -45,6 +48,12 @@ export function ProfilePage() {
       <p className="mt-1 text-sm text-ink-soft">
         {user.first_name} {user.last_name} · {user.email}
       </p>
+      {passwordAgeDays !== null && (
+        <p className="mt-2 text-xs text-ink-soft">
+          Password last changed on {new Date(user.password_changed_at!).toLocaleDateString()} — {passwordAgeDays}{' '}
+          day{passwordAgeDays === 1 ? '' : 's'} ago.
+        </p>
+      )}
 
       {mustChange && (
         <div className="mt-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">

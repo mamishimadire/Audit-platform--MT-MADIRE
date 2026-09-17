@@ -28,6 +28,7 @@ export interface UserOut {
   // response, such as the Users management list.
   must_change_password?: boolean
   password_reminder_days_remaining?: number | null
+  password_changed_at?: string | null
 }
 
 export interface OrganizationOut {
@@ -624,6 +625,32 @@ export interface ExceptionExplanationOut {
   seen_count: number
   first_seen: string
   last_seen: string
+}
+
+export interface TraceFieldOut {
+  field: string
+  value: string
+}
+
+export interface TraceObjectOut {
+  role: 'primary' | 'secondary' | 'tertiary' | null
+  canonical_object: string
+  table_name: string | null
+  fields: TraceFieldOut[]
+}
+
+export interface ExceptionTraceOut {
+  exception_id: string
+  control_code: string | null
+  control_name: string | null
+  execution_id: string
+  executed_at: string
+  rule_type: string | null
+  summary: string
+  objects: TraceObjectOut[]
+  other_fields: TraceFieldOut[]
+  severity: string | null
+  status: string
 }
 
 export interface EvidenceRequestOut {

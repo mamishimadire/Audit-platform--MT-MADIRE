@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from pydantic import EmailStr, Field
 
@@ -36,3 +37,7 @@ class UserOut(OrmModel):
     # PASSWORD_REMINDER_DAYS) drives a non-blocking "change it soon" nudge.
     must_change_password: bool = False
     password_reminder_days_remaining: int | None = None
+    # When the CURRENT password was set — the profile page shows this as
+    # "Password last changed on <date> (N days ago)". None only for a
+    # still-pending account that has never activated.
+    password_changed_at: datetime | None = None
