@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.deps import enforce_same_organization, get_current_user, require_any_permission, require_permissions
+from app.api.deps import enforce_same_organization, get_current_user, require_permissions
 from app.db.session import get_db
 from app.models.audit_test import AuditTest
 from app.models.evidence_exception import EvidenceRequest, Exception_, ExceptionComment, ExceptionRecord
@@ -21,6 +21,7 @@ from app.schemas.audit_engine import (
     ExceptionTraceOut,
     ExceptionUpdate,
 )
+from app.services.auth_service import get_user_permission_names
 from app.services.evidence_request_service import create_request, list_requests_for_exception, upload_evidence
 from app.services.exception_comment_service import add_comment, list_comments
 from app.services.exception_service import explain_exception, update_exception
@@ -60,10 +61,28 @@ def update(
     exception_id: uuid.UUID,
     payload: ExceptionUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_any_permission("audit_framework:manage", "exceptions:assign")),
+    user: User = Depends(get_current_user),
 ) -> Exception_:
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+
+    granted = get_user_permission_names(db, user.user_id)
+    # Assigning who owns an exception is the client organization's own
+    # call, not the internal audit team's — exceptions:assign is granted
+    # only to Client Organisation Admin (see migration 0063). Status
+    # changes are a separate, broader action both sides legitimately do,
+    # so audit_framework:manage still covers those.
+    if payload.owner_id is not None and "exceptions:assign" not in granted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the client organization's own admin (exceptions:assign) can assign an exception's owner.",
+        )
+    if payload.status is not None and granted.isdisjoint({"audit_framework:manage", "exceptions:assign"}):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing required permission(s): audit_framework:manage, exceptions:assign",
+        )
+
     try:
         return update_exception(
             db, exception=exception, status=payload.status, owner_id=payload.owner_id, organization_id=organization_id,

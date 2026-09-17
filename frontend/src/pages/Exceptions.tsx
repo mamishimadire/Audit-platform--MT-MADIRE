@@ -8,9 +8,13 @@ import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
 import type { EvidenceRequestOut, ExceptionCommentOut, ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, ExceptionTraceOut, UserOut } from '../types/api'
 
-function userName(orgUsers: UserOut[], userId: string | null): string | null {
+// "T. Naidoo (Client IT Admin)" — showing the role alongside the name
+// makes it clear, at a glance, who's the auditor and who's the client
+// responding, in a thread/log where both sides post.
+function userLabel(orgUsers: UserOut[], userId: string | null): string | null {
   const u = orgUsers.find((x) => x.user_id === userId)
-  return u ? `${u.first_name} ${u.last_name}` : null
+  if (!u) return null
+  return u.roles.length > 0 ? `${u.first_name} ${u.last_name} (${u.roles[0]})` : `${u.first_name} ${u.last_name}`
 }
 
 const SEVERITY_STYLES: Record<string, string> = {
@@ -283,18 +287,20 @@ function ExceptionRow({
               className="rounded-md border border-line px-2 py-1 text-xs disabled:opacity-60"
             >
               <option value="">Unassigned</option>
-              {orgUsers.map((u) => (
-                <option key={u.user_id} value={u.user_id}>
-                  {u.first_name} {u.last_name}
-                </option>
-              ))}
+              {/* Only users who actually hold the Exception Owner role are
+                  offered — anyone else in the org (a Read Only viewer, a
+                  Control Owner, etc.) isn't who this exception should be
+                  handed to, even though they're a valid org member. */}
+              {orgUsers
+                .filter((u) => u.roles.includes('Exception Owner'))
+                .map((u) => (
+                  <option key={u.user_id} value={u.user_id}>
+                    {u.first_name} {u.last_name}
+                  </option>
+                ))}
             </select>
           ) : (
-            <span className="text-xs text-ink-soft">
-              {orgUsers.find((u) => u.user_id === exception.owner_id)
-                ? `${orgUsers.find((u) => u.user_id === exception.owner_id)!.first_name} ${orgUsers.find((u) => u.user_id === exception.owner_id)!.last_name}`
-                : 'Unassigned'}
-            </span>
+            <span className="text-xs text-ink-soft">{userLabel(orgUsers, exception.owner_id) ?? 'Unassigned'}</span>
           )}
         </td>
         <td className="px-4 py-2 text-xs text-ink-soft">
@@ -490,12 +496,12 @@ function ExceptionRow({
                           {r.status === 'awaiting' ? (
                             <div className="text-ink-soft">
                               Requested {new Date(r.requested_at).toLocaleDateString()}
-                              {userName(orgUsers, r.requested_by) && ` by ${userName(orgUsers, r.requested_by)}`}
+                              {userLabel(orgUsers, r.requested_by) && ` by ${userLabel(orgUsers, r.requested_by)}`}
                               {r.due_date && ` · due ${r.due_date}`} · awaiting upload
                             </div>
                           ) : (
                             <div className="text-ink-soft">
-                              Uploaded {userName(orgUsers, r.uploaded_by) ? `by ${userName(orgUsers, r.uploaded_by)}` : ''}
+                              Uploaded {userLabel(orgUsers, r.uploaded_by) ? `by ${userLabel(orgUsers, r.uploaded_by)}` : ''}
                               {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
                             </div>
                           )}
@@ -539,7 +545,7 @@ function ExceptionRow({
                   {comments.map((c) => (
                     <li key={c.comment_id} className="rounded-md bg-bg p-2 text-xs">
                       <div className="font-medium text-ink">
-                        {userName(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
+                        {userLabel(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
                         <span className="font-normal text-ink-soft">{new Date(c.created_at).toLocaleString()}</span>
                       </div>
                       <div className="mt-0.5 text-ink">{c.body}</div>
@@ -597,11 +603,12 @@ export function ExceptionsPage() {
   const [highRiskOnly, setHighRiskOnly] = useState(searchParams.get('risk') === 'high')
 
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
-  // Assigning an exception's owner is opened to Client Organisation Admin
-  // too (see backend migration 0063 — exceptions:assign) — a client
-  // organization has no other way to say who, on their side, is
-  // responsible for an exception.
-  const canAssign = hasRole(...AUDIT_FRAMEWORK_ROLES, 'Client Organisation Admin')
+  // Deciding who owns an exception is the client organization's own call,
+  // not the internal audit team's — Client Organisation Admin only (see
+  // backend migration 0063's exceptions:assign, and the PATCH /exceptions
+  // route, which now rejects an owner_id change from anyone else even if
+  // they hold audit_framework:manage).
+  const canAssign = hasRole('Client Organisation Admin')
   const [orgUsers, setOrgUsers] = useState<UserOut[]>([])
 
   const load = (orgId: string) => {

@@ -89,11 +89,19 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
         mandatory=True,
     ),
     SodWorkflowOut(
-        action="Exception / finding ownership assignment",
-        states=["unassigned", "assigned to an owner / a remediation's responsible user"],
-        maker="Assigns or reassigns who owns an exception (PATCH /exceptions/{id}) or who is responsible for a finding's remediation (POST /findings/{id}/remediation-actions).",
+        action="Exception ownership assignment",
+        states=["unassigned", "assigned to an owner"],
+        maker="Assigns or reassigns who owns an exception (PATCH /exceptions/{id}).",
         checker="None — a single authorized user acts alone. This is a role/permission boundary, not an identity-based maker/checker dual control.",
-        enforcement="Requires audit_framework:manage (internal audit team) OR exceptions:assign. On the client side, exceptions:assign is granted only to Client Organisation Admin — the one role responsible for deciding who, within their own organization, is assigned to an exception or finding.",
+        enforcement="Requires exceptions:assign specifically — granted only to Client Organisation Admin. Deciding who, within their own organization, is responsible for an exception is the client's own call; the internal audit team's audit_framework:manage does NOT grant this (it still covers changing an exception's status, a separate action).",
+        mandatory=False,
+    ),
+    SodWorkflowOut(
+        action="Finding remediation ownership assignment",
+        states=["unassigned", "assigned to a responsible user"],
+        maker="Assigns who is responsible for a finding's remediation (POST /findings/{id}/remediation-actions).",
+        checker="None — a single authorized user acts alone. This is a role/permission boundary, not an identity-based maker/checker dual control.",
+        enforcement="Requires audit_framework:manage (internal audit team) OR exceptions:assign (Client Organisation Admin) — unlike exception ownership, both sides can assign remediation responsibility.",
         mandatory=False,
     ),
     SodWorkflowOut(
