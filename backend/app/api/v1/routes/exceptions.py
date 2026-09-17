@@ -103,6 +103,25 @@ def _get_exception_with_org(db: Session, exception_id: uuid.UUID) -> tuple[Excep
     return exception, audit_test.organization_id
 
 
+def _require_exception_collaborator(db: Session, *, exception: Exception_, user: User) -> None:
+    """Comments and evidence requests are a private, exception-specific
+    conversation between the audit team and whoever's actually assigned
+    to it — not a shared noticeboard every member of the organization can
+    read, the same way a WhatsApp thread between two people isn't visible
+    to everyone else in the group. Being in the same organization (which
+    enforce_same_organization already checked) is necessary but not
+    sufficient; you also have to be one of the people actually on this
+    exception."""
+    if exception.owner_id == user.user_id:
+        return
+    granted = get_user_permission_names(db, user.user_id)
+    if granted.isdisjoint({"audit_framework:manage", "exceptions:assign"}):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only this exception's assigned owner or the audit team can view or take part in its evidence requests and comments.",
+        )
+
+
 @router.get("/exceptions/{exception_id}", response_model=ExceptionOut)
 def get_one(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Exception_:
     exception, organization_id = _get_exception_with_org(db, exception_id)
@@ -183,27 +202,28 @@ def trace(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = D
 
 
 # --- Evidence requests: an auditor asks the client for one specific
-# document, the client uploads it, done. Requesting is restricted (an
-# internal auditor decides what's needed); uploading and viewing are open
-# to anyone in the organization — the whole point is the client's own
-# side responding, and it's no more sensitive than the exception itself
-# they already have full access to.
+# document, the client uploads it, done. Requesting is auditor-only.
+# Viewing/uploading is restricted to this exception's own assigned owner
+# plus the audit team (_require_exception_collaborator) — NOT every
+# member of the organization; this is a private, exception-specific
+# conversation, not a shared noticeboard.
 
 
-def _get_evidence_request_with_org(db: Session, request_id: uuid.UUID) -> tuple[EvidenceRequest, uuid.UUID]:
+def _get_evidence_request_with_org(db: Session, request_id: uuid.UUID) -> tuple[EvidenceRequest, Exception_, uuid.UUID]:
     request = db.get(EvidenceRequest, request_id)
     if request is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence request not found")
-    _exception, organization_id = _get_exception_with_org(db, request.exception_id)
-    return request, organization_id
+    exception, organization_id = _get_exception_with_org(db, request.exception_id)
+    return request, exception, organization_id
 
 
 @router.get("/exceptions/{exception_id}/evidence-requests", response_model=list[EvidenceRequestOut])
 def list_evidence_requests(
     exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[EvidenceRequestOut]:
-    _exception, organization_id = _get_exception_with_org(db, exception_id)
+    exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
     return _to_evidence_requests_out(db, list_requests_for_exception(db, exception_id=exception_id))
 
 
@@ -234,8 +254,9 @@ async def upload_evidence_route(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> EvidenceRequestOut:
-    request, organization_id = _get_evidence_request_with_org(db, request_id)
+    request, exception, organization_id = _get_evidence_request_with_org(db, request_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
     data = await file.read()
     try:
         updated = upload_evidence(
@@ -251,8 +272,9 @@ async def upload_evidence_route(
 def download_evidence_file(
     request_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> Response:
-    request, organization_id = _get_evidence_request_with_org(db, request_id)
+    request, exception, organization_id = _get_evidence_request_with_org(db, request_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
     if request.file_data is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No file has been uploaded for this request yet")
     return Response(
@@ -263,15 +285,16 @@ def download_evidence_file(
 
 
 # --- The auditor/client comment thread on one exception — same
-# organization-wide read/write access as evidence requests above.
+# owner-or-audit-team-only access as evidence requests above.
 
 
 @router.get("/exceptions/{exception_id}/comments", response_model=list[ExceptionCommentOut])
 def list_exception_comments(
     exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[ExceptionCommentOut]:
-    _exception, organization_id = _get_exception_with_org(db, exception_id)
+    exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
     return _to_comments_out(db, list_comments(db, exception_id=exception_id))
 
 
@@ -284,8 +307,9 @@ def add_exception_comment(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ExceptionCommentOut:
-    _exception, organization_id = _get_exception_with_org(db, exception_id)
+    exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
     try:
         created = add_comment(db, exception_id=exception_id, body=payload.body, organization_id=organization_id, author_user_id=user.user_id)
     except ValueError as exc:

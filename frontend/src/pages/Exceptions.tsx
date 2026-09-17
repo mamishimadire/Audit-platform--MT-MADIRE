@@ -199,6 +199,10 @@ function ExceptionRow({
   const [uploadingRequestId, setUploadingRequestId] = useState<string | null>(null)
   const [newCommentBody, setNewCommentBody] = useState('')
   const [submittingComment, setSubmittingComment] = useState(false)
+  // Evidence requests and comments are private to this exception's own
+  // owner and the audit team — a viewer who's neither gets a 403, shown
+  // here plainly rather than as a misleading "no comments yet."
+  const [collaborationForbidden, setCollaborationForbidden] = useState(false)
 
   const [trace, setTrace] = useState<ExceptionTraceOut | null>(null)
   const [showTrace, setShowTrace] = useState(false)
@@ -211,8 +215,18 @@ function ExceptionRow({
   const [showRecordHistory, setShowRecordHistory] = useState(false)
 
   const loadCollaboration = () => {
-    apiClient.get<EvidenceRequestOut[]>(`/exceptions/${exception.exception_id}/evidence-requests`).then((res) => setEvidenceRequests(res.data))
-    apiClient.get<ExceptionCommentOut[]>(`/exceptions/${exception.exception_id}/comments`).then((res) => setComments(res.data))
+    apiClient
+      .get<EvidenceRequestOut[]>(`/exceptions/${exception.exception_id}/evidence-requests`)
+      .then((res) => setEvidenceRequests(res.data))
+      .catch((err) => {
+        if (err?.response?.status === 403) setCollaborationForbidden(true)
+      })
+    apiClient
+      .get<ExceptionCommentOut[]>(`/exceptions/${exception.exception_id}/comments`)
+      .then((res) => setComments(res.data))
+      .catch((err) => {
+        if (err?.response?.status === 403) setCollaborationForbidden(true)
+      })
   }
 
   const ensureLoaded = () => {
@@ -589,6 +603,12 @@ function ExceptionRow({
               </div>
             ))}
 
+            {collaborationForbidden ? (
+              <p className="mt-4 rounded-md border border-line bg-surface p-3 text-xs text-ink-soft">
+                Evidence requests and comments here are private to this exception's assigned owner and the audit
+                team — you're seeing everything else about this exception, just not this conversation.
+              </p>
+            ) : (
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="rounded-md border border-line bg-surface p-3">
                 <div className="flex items-center justify-between">
@@ -717,6 +737,7 @@ function ExceptionRow({
                 </div>
               </div>
             </div>
+            )}
           </td>
         </tr>
       )}
