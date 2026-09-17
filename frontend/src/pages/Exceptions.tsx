@@ -241,6 +241,13 @@ export function ExceptionsPage() {
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
   const [searchParams, setSearchParams] = useSearchParams()
   const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
+  // Starts true, not false — without this, the table below has no way to
+  // tell "still loading" apart from "genuinely zero exceptions," and would
+  // flash "No exceptions" on every page load until the fetch resolves
+  // (worse on a cold Render instance, where that first request can take
+  // real seconds).
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   // "Active" hides resolved/closed ones — an exception that's been re-tested
   // and confirmed fixed (or manually resolved) shouldn't linger in the
   // working list. "History" reveals every status plus a date range — nothing
@@ -255,7 +262,15 @@ export function ExceptionsPage() {
 
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
 
-  const load = (orgId: string) => apiClient.get<ExceptionOut[]>(`/organizations/${orgId}/exceptions`).then((res) => setExceptions(res.data))
+  const load = (orgId: string) => {
+    setLoading(true)
+    setLoadError(false)
+    apiClient
+      .get<ExceptionOut[]>(`/organizations/${orgId}/exceptions`)
+      .then((res) => setExceptions(res.data))
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
     if (organizationId) load(organizationId)
@@ -391,7 +406,21 @@ export function ExceptionsPage() {
                 ))}
               </Fragment>
             ))}
-            {visible.length === 0 && (
+            {loading && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
+                  Loading exceptions…
+                </td>
+              </tr>
+            )}
+            {!loading && loadError && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-red-600">
+                  Could not load exceptions. Try refreshing the page.
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && visible.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
                   No exceptions.

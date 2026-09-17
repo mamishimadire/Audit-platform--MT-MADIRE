@@ -221,8 +221,21 @@ export function FindingsPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  // Starts true — otherwise the table has no way to tell "still loading"
+  // apart from "genuinely zero findings," and flashes an empty state on
+  // every page load until the fetch resolves.
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
-  const load = (orgId: string) => apiClient.get<FindingOut[]>(`/organizations/${orgId}/findings`).then((res) => setFindings(res.data))
+  const load = (orgId: string) => {
+    setLoading(true)
+    setLoadError(false)
+    apiClient
+      .get<FindingOut[]>(`/organizations/${orgId}/findings`)
+      .then((res) => setFindings(res.data))
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
     if (organizationId) load(organizationId)
@@ -355,7 +368,21 @@ export function FindingsPage() {
                 ))}
               </Fragment>
             ))}
-            {visibleFindings.length === 0 && (
+            {loading && (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-ink-soft">
+                  Loading findings…
+                </td>
+              </tr>
+            )}
+            {!loading && loadError && (
+              <tr>
+                <td colSpan={5} className="px-4 py-6 text-center text-red-600">
+                  Could not load findings. Try refreshing the page.
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && visibleFindings.length === 0 && (
               <tr>
                 <td colSpan={5} className="px-4 py-6 text-center text-ink-soft">
                   {findings.length === 0 ? 'No findings yet.' : 'No findings match these filters.'}

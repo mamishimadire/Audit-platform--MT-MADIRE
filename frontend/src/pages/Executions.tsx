@@ -70,6 +70,12 @@ export function ExecutionsPage() {
   const [executions, setExecutions] = useState<TestExecutionOut[]>([])
   const [tests, setTests] = useState<AuditTestOut[]>([])
   const [exceptions, setExceptions] = useState<ExceptionOut[]>([])
+  // Gated on the executions fetch specifically (the one that determines
+  // what the table actually shows) — without this, the table has no way
+  // to tell "still loading" apart from "genuinely zero executions," and
+  // flashes an empty state on every page load until the fetch resolves.
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   // Arriving from a Dashboard tile link (e.g. "Controls Failing Now" ->
   // /executions?status=exception) pre-selects the matching tab, so the
   // reader lands exactly on what the tile was counting instead of "All"
@@ -117,7 +123,13 @@ export function ExecutionsPage() {
 
   useEffect(() => {
     if (!organizationId) return
-    apiClient.get<TestExecutionOut[]>(`/organizations/${organizationId}/executions`).then((res) => setExecutions(res.data))
+    setLoading(true)
+    setLoadError(false)
+    apiClient
+      .get<TestExecutionOut[]>(`/organizations/${organizationId}/executions`)
+      .then((res) => setExecutions(res.data))
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false))
     apiClient.get<AuditTestOut[]>(`/organizations/${organizationId}/audit-tests`).then((res) => setTests(res.data))
     apiClient.get<ExceptionOut[]>(`/organizations/${organizationId}/exceptions`).then((res) => setExceptions(res.data))
   }, [organizationId])
@@ -323,7 +335,21 @@ export function ExecutionsPage() {
                 </Fragment>
               )
             })}
-            {filtered.length === 0 && (
+            {loading && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
+                  Loading executions…
+                </td>
+              </tr>
+            )}
+            {!loading && loadError && (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-red-600">
+                  Could not load executions. Try refreshing the page.
+                </td>
+              </tr>
+            )}
+            {!loading && !loadError && filtered.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
                   No test executions{filter !== 'all' ? ` with status "${filter}"` : ''} yet.
