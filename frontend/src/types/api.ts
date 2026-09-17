@@ -616,6 +616,7 @@ export interface ExceptionRecordOut {
   exception_id: string
   record_identifier: string | null
   exception_data: Record<string, unknown> | null
+  detected_at: string
 }
 
 export interface ExceptionFactOut {
@@ -671,6 +672,10 @@ export interface EvidenceRequestOut {
   content_type: string | null
   uploaded_by: string | null
   uploaded_at: string | null
+  requested_by_name: string | null
+  requested_by_role: string | null
+  uploaded_by_name: string | null
+  uploaded_by_role: string | null
 }
 
 export interface ExceptionCommentOut {
@@ -679,6 +684,8 @@ export interface ExceptionCommentOut {
   author_id: string | null
   body: string
   created_at: string
+  author_name: string | null
+  author_role: string | null
 }
 
 export interface MappingSuggestion {

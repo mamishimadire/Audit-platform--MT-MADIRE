@@ -48,6 +48,7 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   const [targetDate, setTargetDate] = useState('')
   const [responsibleUserId, setResponsibleUserId] = useState('')
   const [retestComments, setRetestComments] = useState('')
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const load = () => {
     apiClient.get<{ chain: TraceNode[] }>(`/findings/${finding.finding_id}/trace`).then((res) => setTrace(res.data.chain))
@@ -93,16 +94,25 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   }
 
   const addAction = async () => {
-    await apiClient.post(`/findings/${finding.finding_id}/remediation-actions`, {
-      action_description: actionDescription,
-      target_date: targetDate || null,
-      responsible_user_id: responsibleUserId || null,
-    })
-    setActionDescription('')
-    setTargetDate('')
-    setResponsibleUserId('')
-    load()
-    onChanged()
+    setActionError(null)
+    try {
+      await apiClient.post(`/findings/${finding.finding_id}/remediation-actions`, {
+        action_description: actionDescription,
+        target_date: targetDate || null,
+        responsible_user_id: responsibleUserId || null,
+      })
+      setActionDescription('')
+      setTargetDate('')
+      setResponsibleUserId('')
+      load()
+      onChanged()
+    } catch (err: any) {
+      setActionError(
+        err?.response?.status === 403
+          ? "You don't have permission to add a remediation action."
+          : err?.response?.data?.detail ?? 'Could not add this remediation action. Please try again.'
+      )
+    }
   }
 
   const completeAction = async (id: string) => {
@@ -203,9 +213,13 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
                   ))}
               </select>
               <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs" />
-              <button onClick={addAction} disabled={!actionDescription} className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-60">
+              <button onClick={addAction} disabled={!actionDescription.trim()} className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-60">
                 Add remediation action
               </button>
+              {!actionDescription.trim() && (
+                <p className="text-[11px] text-ink-soft">Enter an action description above to enable this button.</p>
+              )}
+              {actionError && <p className="text-xs text-red-600">{actionError}</p>}
             </div>
           )}
         </div>

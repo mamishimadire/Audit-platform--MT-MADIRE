@@ -17,19 +17,17 @@ function userLabel(orgUsers: UserOut[], userId: string | null): string | null {
   return u.roles.length > 0 ? `${u.first_name} ${u.last_name} (${u.roles[0]})` : `${u.first_name} ${u.last_name}`
 }
 
-// A small "MM" / "TN" avatar circle — dark navy for the internal audit
-// team, teal for the client side — so a thread with both sides posting
-// reads at a glance without having to read every name.
-function userAvatar(orgUsers: UserOut[], userId: string | null): { initials: string; internal: boolean } {
-  const u = orgUsers.find((x) => x.user_id === userId)
-  if (!u) return { initials: '?', internal: false }
-  const initials = `${u.first_name[0] ?? ''}${u.last_name[0] ?? ''}`.toUpperCase()
-  const internal = u.roles.some((r) => (AUDIT_FRAMEWORK_ROLES as readonly string[]).includes(r))
-  return { initials, internal }
+// "T. Naidoo (Client IT Admin)" built directly from a name+role the
+// backend already resolved — used for comments/evidence requests, where
+// the poster can be an internal auditor who'd never appear in this
+// client organization's own /organizations/{id}/users list (see
+// routes/exceptions.py._resolve_user_display).
+function labelFor(name: string | null, role: string | null): string | null {
+  if (!name) return null
+  return role ? `${name} (${role})` : name
 }
 
-function Avatar({ orgUsers, userId }: { orgUsers: UserOut[]; userId: string | null }) {
-  const { initials, internal } = userAvatar(orgUsers, userId)
+function AvatarCircle({ initials, internal }: { initials: string; internal: boolean }) {
   return (
     <span
       className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white ${
@@ -39,6 +37,19 @@ function Avatar({ orgUsers, userId }: { orgUsers: UserOut[]; userId: string | nu
       {initials}
     </span>
   )
+}
+
+function AvatarFor({ name, role }: { name: string | null; role: string | null }) {
+  const initials = name
+    ? name
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .map((p) => p[0]?.toUpperCase() ?? '')
+        .join('') || '?'
+    : '?'
+  const internal = role ? (AUDIT_FRAMEWORK_ROLES as readonly string[]).includes(role) : false
+  return <AvatarCircle initials={initials} internal={internal} />
 }
 
 // A small colored file-type badge ("PDF", "XLS", "?" while still
@@ -102,12 +113,48 @@ function titleCaseFieldName(key: string): string {
     .join(' ')
 }
 
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+// Matches a lowercase status/enum-style value ("active", "procurement_
+// officer") — never an identifier like "U008" or "EMP008" (uppercase
+// letters) or a username like "d.pretorius" (a period isn't in this
+// character class), both of which are meant to stay exactly as-is.
+const SNAKE_CASE_WORD_PATTERN = /^[a-z0-9]+(_[a-z0-9]+)*$/
+
+// A list value can arrive two ways depending on how the source system
+// stored it: a real JSON/JS array, or (some raw source columns) a plain
+// string holding a Python-style list literal such as
+// "['procurement_officer']" — single-quoted, not valid JSON as-is.
+// Both are turned into the same plain, comma-separated, title-cased list
+// rather than shown as array/Python syntax.
+function asListOfStrings(value: unknown): string[] | null {
+  if (Array.isArray(value)) return value.map(String)
+  if (typeof value === 'string' && /^\[.*\]$/.test(value.trim())) {
+    try {
+      const parsed = JSON.parse(value.replace(/'/g, '"'))
+      if (Array.isArray(parsed)) return parsed.map(String)
+    } catch {
+      // fall through — not actually a list literal, render as plain text below
+    }
+  }
+  return null
+}
+
 function humanizeExceptionValue(key: string, value: unknown, data: Record<string, unknown>): string {
   if (key === 'check' && typeof value === 'string') return COMPLIANCE_CHECK_NAMES[value] ?? titleCaseFieldName(value)
   if (key === 'value' && typeof data.check === 'string') return value === false ? 'Failing' : value === true ? 'Passing' : String(value)
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   if (value === null || value === undefined || value === '') return 'Not reported'
+
+  const list = asListOfStrings(value)
+  if (list) return list.length > 0 ? list.map(titleCaseFieldName).join(', ') : 'None'
+
+  if (typeof value === 'string' && ISO_TIMESTAMP_PATTERN.test(value)) {
+    const parsed = new Date(value)
+    if (!isNaN(parsed.getTime())) return parsed.toLocaleString()
+  }
+
   if (typeof value === 'object') return JSON.stringify(value)
+  if (typeof value === 'string' && SNAKE_CASE_WORD_PATTERN.test(value)) return titleCaseFieldName(value)
   return String(value)
 }
 
@@ -124,6 +171,13 @@ function ExceptionRow({
   orgUsers: UserOut[]
   onChanged: () => void
 }) {
+  const { user } = useAuth()
+  // The exception's own assigned owner can always move its status too —
+  // they're the one actually doing the work, not just the audit team or
+  // the client admin who assigned it. Matches the backend's PATCH
+  // /exceptions/{id} check exactly, so this control is never shown only
+  // to 403 when clicked.
+  const canChangeStatus = canManage || canAssign || (user !== null && user.user_id === exception.owner_id)
   const [open, setOpen] = useState(false)
   const [records, setRecords] = useState<ExceptionRecordOut[] | null>(null)
   const [explanation, setExplanation] = useState<ExceptionExplanationOut | null>(null)
@@ -149,6 +203,12 @@ function ExceptionRow({
   const [trace, setTrace] = useState<ExceptionTraceOut | null>(null)
   const [showTrace, setShowTrace] = useState(false)
   const [traceLoading, setTraceLoading] = useState(false)
+  // A fast-re-detecting schedule adds one exception_records row per run —
+  // showing every one piles up dozens of near-identical blocks for a
+  // single ongoing issue. Only the latest (records[0], the backend
+  // returns them newest-first) is current by default; the rest are one
+  // click away as history, never deleted or hidden for good.
+  const [showRecordHistory, setShowRecordHistory] = useState(false)
 
   const loadCollaboration = () => {
     apiClient.get<EvidenceRequestOut[]>(`/exceptions/${exception.exception_id}/evidence-requests`).then((res) => setEvidenceRequests(res.data))
@@ -179,6 +239,23 @@ function ExceptionRow({
     }
     setShowTrace(!showTrace)
     setOpen(true)
+  }
+
+  // Suggest a starting point instead of a blank field — built from the
+  // exception's own plain-English summary, so the common case is a
+  // single click + light edit, not typing the whole request from
+  // scratch. Still a normal editable input, so the auditor reviews/
+  // adjusts before submitting (same pattern as Findings.tsx's remediation
+  // description prefill).
+  const startRequestingEvidence = () => {
+    setNewRequestDescription((prev) => prev || `Evidence needed to resolve: ${exception.summary || exception.exception_description || 'this exception'}`)
+    setNewRequestDueDate((prev) => {
+      if (prev) return prev
+      const d = new Date()
+      d.setDate(d.getDate() + 7)
+      return d.toISOString().slice(0, 10)
+    })
+    setRequestingEvidence(true)
   }
 
   const submitEvidenceRequest = async () => {
@@ -308,18 +385,21 @@ function ExceptionRow({
           </span>
         </td>
         <td className="px-4 py-2">
-          {canManage ? (
-            <select
-              value={exception.status}
-              onChange={(e) => changeStatus(e.target.value)}
-              className="rounded-md border border-line px-2 py-1 text-xs"
-            >
-              {STATUS_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+          {canChangeStatus ? (
+            <>
+              <select
+                value={exception.status}
+                onChange={(e) => changeStatus(e.target.value)}
+                className="rounded-md border border-line px-2 py-1 text-xs"
+              >
+                {STATUS_OPTIONS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-0.5 text-[10px] text-ink-soft">Resolved/closed auto re-runs the test to confirm.</div>
+            </>
           ) : (
             <span className="text-xs text-ink-soft">{exception.status}</span>
           )}
@@ -478,19 +558,35 @@ function ExceptionRow({
                 />
               </div>
             )}
-            <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Exception record{records.length !== 1 ? 's' : ''}</div>
-            {records.map((r) => (
-              <dl key={r.exception_record_id} className="mt-2 grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 rounded-md bg-surface p-3 text-sm">
-                {Object.entries(r.exception_data ?? {}).map(([key, value]) => (
-                  <Fragment key={key}>
-                    <dt className="text-ink-soft">{EXCEPTION_FIELD_LABELS[key] ?? titleCaseFieldName(key)}</dt>
-                    <dd className="text-ink">{humanizeExceptionValue(key, value, r.exception_data ?? {})}</dd>
-                  </Fragment>
-                ))}
-                {(!r.exception_data || Object.keys(r.exception_data).length === 0) && (
-                  <dd className="text-ink-soft">No additional detail recorded.</dd>
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">
+                Exception record{records.length !== 1 ? 's' : ''}
+              </div>
+              {records.length > 1 && (
+                <button onClick={() => setShowRecordHistory((v) => !v)} className="text-xs font-medium text-accent-ink hover:underline">
+                  {showRecordHistory ? 'Hide history' : `Show ${records.length - 1} earlier detection${records.length - 1 === 1 ? '' : 's'} (history)`}
+                </button>
+              )}
+            </div>
+            {(showRecordHistory ? records : records.slice(0, 1)).map((r, i) => (
+              <div key={r.exception_record_id}>
+                {i === 0 ? (
+                  <p className="mt-2 text-[11px] font-medium uppercase tracking-wide text-accent-ink">Current</p>
+                ) : (
+                  <p className="mt-3 text-[11px] text-ink-soft">Detected {new Date(r.detected_at).toLocaleString()}</p>
                 )}
-              </dl>
+                <dl className="mt-1 grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 rounded-md bg-surface p-3 text-sm">
+                  {Object.entries(r.exception_data ?? {}).map(([key, value]) => (
+                    <Fragment key={key}>
+                      <dt className="text-ink-soft">{EXCEPTION_FIELD_LABELS[key] ?? titleCaseFieldName(key)}</dt>
+                      <dd className="text-ink">{humanizeExceptionValue(key, value, r.exception_data ?? {})}</dd>
+                    </Fragment>
+                  ))}
+                  {(!r.exception_data || Object.keys(r.exception_data).length === 0) && (
+                    <dd className="text-ink-soft">No additional detail recorded.</dd>
+                  )}
+                </dl>
+              </div>
             ))}
 
             <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -498,7 +594,7 @@ function ExceptionRow({
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Evidence requested from client</div>
                   {canManage && !requestingEvidence && (
-                    <button onClick={() => setRequestingEvidence(true)} className="text-xs font-medium text-accent-ink hover:underline">
+                    <button onClick={startRequestingEvidence} className="text-xs font-medium text-accent-ink hover:underline">
                       Request evidence
                     </button>
                   )}
@@ -551,12 +647,12 @@ function ExceptionRow({
                         {r.status === 'awaiting' ? (
                           <div className="text-ink-soft">
                             Requested {new Date(r.requested_at).toLocaleDateString()}
-                            {userLabel(orgUsers, r.requested_by) && ` by ${userLabel(orgUsers, r.requested_by)}`}
+                            {labelFor(r.requested_by_name, r.requested_by_role) && ` by ${labelFor(r.requested_by_name, r.requested_by_role)}`}
                             {r.due_date && ` · due ${r.due_date}`} · awaiting upload
                           </div>
                         ) : (
                           <div className="text-ink-soft">
-                            Uploaded {userLabel(orgUsers, r.uploaded_by) ? `by ${userLabel(orgUsers, r.uploaded_by)}` : ''}
+                            Uploaded {labelFor(r.uploaded_by_name, r.uploaded_by_role) ? `by ${labelFor(r.uploaded_by_name, r.uploaded_by_role)}` : ''}
                             {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
                           </div>
                         )}
@@ -591,10 +687,10 @@ function ExceptionRow({
                 <ul className="mt-2 space-y-3">
                   {comments.map((c) => (
                     <li key={c.comment_id} className="flex items-start gap-2 text-xs">
-                      <Avatar orgUsers={orgUsers} userId={c.author_id} />
+                      <AvatarFor name={c.author_name} role={c.author_role} />
                       <div className="min-w-0 flex-1 rounded-md bg-bg p-2">
                         <div className="font-medium text-ink">
-                          {userLabel(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
+                          {labelFor(c.author_name, c.author_role) ?? 'Unknown user'}{' '}
                           <span className="font-normal text-ink-soft">{new Date(c.created_at).toLocaleString()}</span>
                         </div>
                         <div className="mt-0.5 text-ink">{c.body}</div>

@@ -64,7 +64,7 @@ export function NotificationBell({ organizationId }: { organizationId: string | 
       <button
         onClick={() => setOpen((v) => !v)}
         className="relative rounded-md border border-line px-2 py-1 text-sm hover:bg-bg"
-        title="Pending approvals"
+        title="Your inbox"
       >
         🔔
         {items.length > 0 && (
@@ -76,7 +76,7 @@ export function NotificationBell({ organizationId }: { organizationId: string | 
       {open && (
         <div className="absolute right-0 z-20 mt-2 w-96 rounded-lg border border-line bg-surface shadow-lg">
           <div className="border-b border-line px-3 py-2 text-xs font-medium uppercase tracking-wide text-ink-soft">
-            Pending your approval
+            Your inbox
           </div>
           {items.length === 0 ? (
             <p className="px-3 py-4 text-sm text-ink-soft">Nothing waiting on you right now.</p>
