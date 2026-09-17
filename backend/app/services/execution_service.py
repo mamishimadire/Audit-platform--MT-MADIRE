@@ -9,7 +9,7 @@ from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.finding import Finding
-from app.services.exception_service import explain_exception, find_open_exception
+from app.services.exception_service import explain_exceptions_bulk, find_open_exception
 from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.schemas.audit_engine import DueTest, DueTestObject, ExecutionReport
 from app.schemas.test_rule import required_objects_for
@@ -47,6 +47,7 @@ def resolve_due_tests_for_gateway(db: Session, *, gateway_id: uuid.UUID) -> list
     schedules = db.scalars(
         select(MonitoringSchedule).where(
             MonitoringSchedule.is_active.is_(True),
+            MonitoringSchedule.status == "active",  # never picked up while pending someone else's approval
             (MonitoringSchedule.next_run.is_(None)) | (MonitoringSchedule.next_run <= now),
         )
     )
@@ -237,28 +238,43 @@ def list_evidence_for_organization(db: Session, *, organization_id: uuid.UUID) -
 
 
 def list_exceptions_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[Exception_]:
-    exceptions = list(
-        db.scalars(
-            select(Exception_)
+    # Select the joined execution/audit_test/rule rows alongside each
+    # exception (not just Exception_) so explain_exceptions_bulk below can
+    # reuse them instead of re-fetching the same rows by id in three more
+    # round trips (rule_id is an outer join — an execution's rule can be
+    # null, e.g. TestRule.rule_id ON DELETE SET NULL).
+    rows = list(
+        db.execute(
+            select(Exception_, TestExecution, AuditTest, TestRule)
             .join(TestExecution, TestExecution.execution_id == Exception_.execution_id)
             .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
+            .outerjoin(TestRule, TestRule.rule_id == TestExecution.rule_id)
             .where(AuditTest.organization_id == organization_id)
         )
     )
+    exceptions = [row[0] for row in rows]
     if not exceptions:
         return exceptions
+
+    executions = {row[1].execution_id: row[1] for row in rows}
+    audit_tests = {row[2].audit_test_id: row[2] for row in rows}
+    rules = {row[3].rule_id: row[3] for row in rows if row[3] is not None}
 
     exception_ids = [exc.exception_id for exc in exceptions]
     ids_with_findings = set(
         db.scalars(select(Finding.exception_id).where(Finding.exception_id.in_(exception_ids)))
     )
+    # Attached here (not just the dedicated .../explanation endpoint) so
+    # every screen that lists exceptions in bulk — Exceptions, and
+    # Executions' per-row reasons — shows the same plain-English
+    # explanation without a separate fetch per row. explain_exceptions_bulk
+    # is called ONCE for the whole page (not once per exception) — that's
+    # what keeps a page with many exceptions loading promptly instead of
+    # firing a fresh burst of queries for every single row.
+    explanations = explain_exceptions_bulk(db, exceptions=exceptions, executions=executions, audit_tests=audit_tests, rules=rules)
     for exc in exceptions:
         exc.has_finding = exc.exception_id in ids_with_findings
-        # Attached here (not just the dedicated .../explanation endpoint) so
-        # every screen that lists exceptions in bulk — Exceptions, and
-        # Executions' per-row reasons — shows the same plain-English
-        # explanation without a separate fetch per row.
-        explained = explain_exception(db, exception=exc)
+        explained = explanations[exc.exception_id]
         exc.summary = explained["summary"]
         exc.why_it_matters = explained["why_it_matters"]
         exc.what_to_do = explained["what_to_do"]

@@ -139,6 +139,7 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
     schedules = db.scalars(
         select(MonitoringSchedule).where(
             MonitoringSchedule.is_active.is_(True),
+            MonitoringSchedule.status == "active",  # never picked up while pending someone else's approval
             (MonitoringSchedule.next_run.is_(None)) | (MonitoringSchedule.next_run <= now),
         )
     )

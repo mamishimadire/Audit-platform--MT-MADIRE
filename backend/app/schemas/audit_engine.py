@@ -54,6 +54,20 @@ class MonitoringScheduleOut(OrmModel):
     next_run: datetime | None
     last_run: datetime | None
     is_active: bool
+    # pending_approval | active | rejected | superseded — see
+    # MonitoringSchedule's own docstring. A schedule is never picked up by
+    # the Gateway (resolve_due_tests_for_gateway) until this is 'active'.
+    status: str
+    created_by: uuid.UUID | None
+    approved_by: uuid.UUID | None
+    approved_at: datetime | None
+    rejected_reason: str | None
+    version: int
+    supersedes_schedule_id: uuid.UUID | None
+
+
+class ScheduleRejectRequest(OrmModel):
+    reason: str
 
 
 class TestExecutionOut(OrmModel):

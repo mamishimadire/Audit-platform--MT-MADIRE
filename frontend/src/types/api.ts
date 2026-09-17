@@ -545,6 +545,13 @@ export interface MonitoringScheduleOut {
   next_run: string | null
   last_run: string | null
   is_active: boolean
+  status: 'pending_approval' | 'active' | 'rejected' | 'superseded'
+  created_by: string | null
+  approved_by: string | null
+  approved_at: string | null
+  rejected_reason: string | null
+  version: number
+  supersedes_schedule_id: string | null
 }
 
 export interface TestExecutionOut {

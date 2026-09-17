@@ -36,7 +36,11 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         select(func.count())
         .select_from(MonitoringSchedule)
         .join(AuditTest, AuditTest.audit_test_id == MonitoringSchedule.audit_test_id)
-        .where(AuditTest.organization_id == organization_id, MonitoringSchedule.is_active.is_(True))
+        .where(
+            AuditTest.organization_id == organization_id,
+            MonitoringSchedule.is_active.is_(True),
+            MonitoringSchedule.status == "active",
+        )
     ) or 0
 
     execution_join = TestExecution.__table__.join(AuditTest.__table__, AuditTest.audit_test_id == TestExecution.audit_test_id)

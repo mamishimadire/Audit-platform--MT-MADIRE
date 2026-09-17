@@ -119,6 +119,11 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const [rejectingRuleId, setRejectingRuleId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
 
+  const [schedulingError, setSchedulingError] = useState<string | null>(null)
+  const [approvingScheduleId, setApprovingScheduleId] = useState<string | null>(null)
+  const [rejectingScheduleId, setRejectingScheduleId] = useState<string | null>(null)
+  const [scheduleRejectReason, setScheduleRejectReason] = useState('')
+
   const [ruleName, setRuleName] = useState('')
   const [ruleType, setRuleType] = useState<RuleType>('cross_match_condition')
   const [f, setF] = useState({
@@ -262,20 +267,45 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const createSchedule = async () => {
     if (schedulingSubmitting) return
     setSchedulingSubmitting(true)
+    setSchedulingError(null)
     try {
       await apiClient.post(`/organizations/${organizationId}/audit-tests/${auditTestId}/schedules`, { frequency, is_active: true })
       await load()
+    } catch (err: any) {
+      setSchedulingError(err?.response?.data?.detail ?? 'Could not request this schedule.')
     } finally {
       setSchedulingSubmitting(false)
     }
   }
 
+  const approveSchedule = async (scheduleId: string) => {
+    setApprovingScheduleId(scheduleId)
+    setSchedulingError(null)
+    try {
+      await apiClient.post(`/schedules/${scheduleId}/approve`)
+      await load()
+    } catch (err: any) {
+      setSchedulingError(err?.response?.data?.detail ?? 'Could not approve this schedule.')
+    } finally {
+      setApprovingScheduleId(null)
+    }
+  }
+
+  const confirmRejectSchedule = async () => {
+    if (!rejectingScheduleId || !scheduleRejectReason.trim()) return
+    await apiClient.post(`/schedules/${rejectingScheduleId}/reject`, { reason: scheduleRejectReason })
+    setRejectingScheduleId(null)
+    setScheduleRejectReason('')
+    await load()
+  }
+
   const visibleRules = rules.filter((r) => r.status !== 'deleted')
-  // A test only ever needs one live schedule; anything else is a
-  // superseded duplicate (see backend migration 0045) kept only for its
-  // audit trail — listing it here would just be clutter.
-  const activeSchedules = schedules.filter((s) => s.is_active)
-  const supersededScheduleCount = schedules.length - activeSchedules.length
+  // A test only ever has one LIVE schedule, plus at most one change
+  // awaiting a second person's approval — anything else (rejected,
+  // superseded) is history only, listing it here would just be clutter.
+  const activeSchedule = schedules.find((s) => s.status === 'active') ?? null
+  const pendingSchedule = schedules.find((s) => s.status === 'pending_approval') ?? null
+  const supersededScheduleCount = schedules.filter((s) => s.status === 'superseded').length
   const STATUS_STYLES: Record<string, string> = {
     pending_approval: 'bg-orange-100 text-orange-800 font-bold',
     active: 'bg-accent-soft text-accent-ink',
@@ -477,25 +507,60 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
         <div className="rounded-lg border border-line bg-surface p-3">
           <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Monitoring schedule</div>
-          {activeSchedules.length > 0 ? (
-            <>
-              <ul className="mt-2 space-y-1">
-                {activeSchedules.map((s) => (
-                  <li key={s.schedule_id} className="text-xs">
-                    {s.frequency} · active · next run{' '}
-                    {s.next_run ? new Date(s.next_run).toLocaleString() : '—'}
-                    {s.last_run && <> · last run {new Date(s.last_run).toLocaleString()}</>}
-                  </li>
-                ))}
-              </ul>
-              {supersededScheduleCount > 0 && (
-                <p className="mt-1 text-[10px] text-ink-soft">
-                  {supersededScheduleCount} superseded schedule{supersededScheduleCount === 1 ? '' : 's'} hidden (kept for history only).
-                </p>
-              )}
-            </>
-          ) : canManage ? (
-            <div className="mt-3 flex gap-2">
+
+          {activeSchedule && (
+            <p className="mt-2 text-xs">
+              {activeSchedule.frequency} · active · next run{' '}
+              {activeSchedule.next_run ? new Date(activeSchedule.next_run).toLocaleString() : '—'}
+              {activeSchedule.last_run && <> · last run {new Date(activeSchedule.last_run).toLocaleString()}</>}
+            </p>
+          )}
+
+          {pendingSchedule && (
+            <div className="mt-2 rounded-md border border-orange-300 bg-orange-50/60 px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs">
+                  <span className="font-bold text-ink">{pendingSchedule.frequency}</span>{' '}
+                  <span className="text-ink-soft">
+                    {activeSchedule ? '— proposed change, awaiting approval' : '— awaiting approval'}
+                  </span>
+                </span>
+                {canManage && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => approveSchedule(pendingSchedule.schedule_id)}
+                      disabled={approvingScheduleId === pendingSchedule.schedule_id}
+                      className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60"
+                    >
+                      {approvingScheduleId === pendingSchedule.schedule_id ? 'Approving…' : 'Approve'}
+                    </button>
+                    <button
+                      onClick={() => setRejectingScheduleId(pendingSchedule.schedule_id)}
+                      className="text-xs font-medium text-red-600 hover:underline"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-ink-soft">
+                A different authorized user must approve this before it takes effect — nothing runs on this cadence yet.
+              </p>
+            </div>
+          )}
+
+          {!activeSchedule && !pendingSchedule && (
+            <p className="mt-2 text-xs text-ink-soft">No schedule set yet.</p>
+          )}
+
+          {supersededScheduleCount > 0 && (
+            <p className="mt-1 text-[10px] text-ink-soft">
+              {supersededScheduleCount} superseded schedule{supersededScheduleCount === 1 ? '' : 's'} hidden (kept for history only).
+            </p>
+          )}
+
+          {canManage && !pendingSchedule && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <select value={frequency} onChange={(e) => setFrequency(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs">
                 <option value="real_time">Real-time</option>
                 <option value="hourly">Hourly</option>
@@ -508,12 +573,11 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                 disabled={schedulingSubmitting}
                 className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-60"
               >
-                {schedulingSubmitting ? 'Scheduling…' : 'Schedule'}
+                {schedulingSubmitting ? 'Requesting…' : activeSchedule ? 'Request change' : 'Schedule'}
               </button>
             </div>
-          ) : (
-            <p className="mt-2 text-xs text-ink-soft">No schedule set yet.</p>
           )}
+          {schedulingError && <p className="mt-1 text-xs text-red-600">{schedulingError}</p>}
         </div>
       </div>
 
@@ -628,7 +692,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                   ))}
                 </div>
               )}
-              <div className="mt-2 overflow-hidden rounded-lg border border-line bg-surface">
+              <div className="mt-2 overflow-x-auto rounded-lg border border-line bg-surface">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
@@ -785,6 +849,43 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
               <button
                 onClick={confirmReject}
                 disabled={!rejectReason.trim()}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rejectingScheduleId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setRejectingScheduleId(null)}>
+          <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold text-ink">Reject monitoring schedule</div>
+            <p className="mt-2 text-sm text-ink-soft">
+              A reason is required — the maker can request a different cadence afterward.
+            </p>
+            <textarea
+              autoFocus
+              placeholder="e.g. Real-time is overkill here — daily is enough for this control."
+              value={scheduleRejectReason}
+              onChange={(e) => setScheduleRejectReason(e.target.value)}
+              className="mt-2 w-full rounded-md border border-line px-2 py-1 text-sm"
+              rows={3}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setRejectingScheduleId(null)
+                  setScheduleRejectReason('')
+                }}
+                className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-bg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmRejectSchedule}
+                disabled={!scheduleRejectReason.trim()}
                 className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
               >
                 Reject

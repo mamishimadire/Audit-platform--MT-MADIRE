@@ -249,6 +249,152 @@ def get_control_for_audit_test(db: Session, *, audit_test_id: uuid.UUID) -> Cont
     return db.get(Control, link.control_id)
 
 
+def explain_exceptions_bulk(
+    db: Session,
+    *,
+    exceptions: list[Exception_],
+    executions: dict[uuid.UUID, TestExecution] | None = None,
+    audit_tests: dict[uuid.UUID, AuditTest] | None = None,
+    rules: dict[uuid.UUID, TestRule] | None = None,
+) -> dict[uuid.UUID, dict]:
+    """Same output as explain_exception, for many exceptions in one call —
+    a handful of batch queries total instead of ~8 sequential round trips
+    PER exception. list_exceptions_for_organization can return hundreds of
+    rows on a single page load; calling explain_exception once per row (the
+    original approach) turned that into thousands of queries, which is
+    what actually made the Exceptions/Executions pages slow to populate —
+    the data was correct, it just took a while to arrive.
+
+    executions/audit_tests can be passed in already keyed by id when the
+    caller's own query already joined them (list_exceptions_for_organization
+    joins both to filter by organization) — that skips two more round trips
+    that would otherwise just re-fetch rows the caller already has."""
+    if not exceptions:
+        return {}
+
+    if executions is None:
+        execution_ids = {exc.execution_id for exc in exceptions}
+        executions = {e.execution_id: e for e in db.scalars(select(TestExecution).where(TestExecution.execution_id.in_(execution_ids)))}
+
+    if audit_tests is None:
+        audit_test_ids = {e.audit_test_id for e in executions.values()}
+        audit_tests = (
+            {a.audit_test_id: a for a in db.scalars(select(AuditTest).where(AuditTest.audit_test_id.in_(audit_test_ids)))}
+            if audit_test_ids
+            else {}
+        )
+    else:
+        audit_test_ids = set(audit_tests.keys())
+
+    if rules is None:
+        rule_ids = {e.rule_id for e in executions.values() if e.rule_id}
+        rules = {r.rule_id: r for r in db.scalars(select(TestRule).where(TestRule.rule_id.in_(rule_ids)))} if rule_ids else {}
+
+    # get_control_for_audit_test does 2 queries (link, then control) per
+    # audit test; here it's one joined query for ALL of them, plus the
+    # control's library entry riding along in the same round trip (an
+    # outer join since not every control has one) — keeping the original
+    # "first link wins" rule for an audit test with more than one control.
+    control_id_by_audit_test: dict[uuid.UUID, uuid.UUID] = {}
+    controls: dict[uuid.UUID, Control] = {}
+    library_entries: dict[uuid.UUID, ControlLibraryEntry] = {}
+    if audit_test_ids:
+        for link, control, library_entry in db.execute(
+            select(ControlAuditTest, Control, ControlLibraryEntry)
+            .join(Control, Control.control_id == ControlAuditTest.control_id)
+            .outerjoin(ControlLibraryEntry, ControlLibraryEntry.control_library_id == Control.control_library_id)
+            .where(ControlAuditTest.audit_test_id.in_(audit_test_ids))
+        ):
+            control_id_by_audit_test.setdefault(link.audit_test_id, link.control_id)
+            controls.setdefault(control.control_id, control)
+            if library_entry is not None:
+                library_entries.setdefault(library_entry.control_library_id, library_entry)
+
+    control_ids = set(control_id_by_audit_test.values())
+
+    # Same idea: RiskControl + Risk in one joined query instead of two.
+    risk_id_by_control: dict[uuid.UUID, uuid.UUID] = {}
+    risks: dict[uuid.UUID, Risk] = {}
+    if control_ids:
+        for link, risk in db.execute(
+            select(RiskControl, Risk)
+            .join(Risk, Risk.risk_id == RiskControl.risk_id)
+            .where(RiskControl.control_id.in_(control_ids))
+        ):
+            risk_id_by_control.setdefault(link.control_id, link.risk_id)
+            risks.setdefault(risk.risk_id, risk)
+
+    exception_ids = [exc.exception_id for exc in exceptions]
+    records_by_exception: dict[uuid.UUID, list[ExceptionRecord]] = {}
+    for record in db.scalars(select(ExceptionRecord).where(ExceptionRecord.exception_id.in_(exception_ids))):
+        records_by_exception.setdefault(record.exception_id, []).append(record)
+
+    explanations: dict[uuid.UUID, dict] = {}
+    for exception in exceptions:
+        execution = executions.get(exception.execution_id)
+        audit_test = audit_tests.get(execution.audit_test_id) if execution else None
+        rule = rules.get(execution.rule_id) if execution and execution.rule_id else None
+
+        control = controls.get(control_id_by_audit_test.get(audit_test.audit_test_id)) if audit_test else None
+        library_entry = library_entries.get(control.control_library_id) if control and control.control_library_id else None
+        risk = risks.get(risk_id_by_control.get(control.control_id)) if control else None
+
+        records = records_by_exception.get(exception.exception_id, [])
+        facts = [
+            {"label": _humanize_field_name(key), "value": "(no value)" if value is None else str(value)}
+            for key, value in (records[0].exception_data or {}).items()
+        ] if records else []
+
+        control_label = f"{control.control_code} — {control.control_name}" if control else (audit_test.test_name if audit_test else "This control")
+        # exception.exception_description is an internal grouping key ("{test
+        # name}: exception on {record id}", set by execution_service so repeat
+        # detections of the SAME record update one row instead of piling up
+        # duplicates) — not written to be read aloud.
+        record_id = records[0].record_identifier if records else None
+        rule_definition = json.loads(rule.rule_definition) if rule else None
+        natural = _natural_summary(rule_definition, (records[0].exception_data or {}) if records else {}, record_id, control_label)
+        summary = natural or (
+            f"Record {record_id} did not pass the \"{control_label}\" check."
+            if record_id
+            else f"A record did not pass the \"{control_label}\" check."
+        )
+
+        why_it_matters = (
+            risk.risk_description
+            if risk is not None and risk.risk_description
+            else (
+                f"This control exists to check: {library_entry.audit_procedure}"
+                if library_entry is not None
+                else "This check exists to catch a real problem — when it fails, it usually means something needs a closer look."
+            )
+        )
+
+        what_to_do = exception.recommended_remediation or _RULE_TYPE_RECOMMENDATION.get(
+            rule.rule_type if rule else None, "Look into this record and decide what needs to change."
+        )
+
+        explanations[exception.exception_id] = {
+            "summary": summary,
+            "facts": facts,
+            "why_it_matters": why_it_matters,
+            "what_to_do": what_to_do,
+            "seen_count": exception.occurrence_count,
+            "first_seen": exception.detected_at,
+            "last_seen": exception.last_detected_at,
+            "control_code": control.control_code if control else None,
+            "control_name": control.control_name if control else None,
+            # Lets a reader match this exception to "the current status of
+            # THIS test" by audit_test_id rather than by the exact execution_id
+            # it happens to be pointed at right now — more robust for a
+            # frequently re-running test, where execution_id moves forward on
+            # every re-detection (see execution_service.record_execution_report)
+            # and a client fetching executions/exceptions as two separate
+            # requests can otherwise catch them a beat apart.
+            "audit_test_id": audit_test.audit_test_id if audit_test else None,
+        }
+    return explanations
+
+
 def explain_exception(db: Session, *, exception: Exception_) -> dict:
     """Everything a non-technical reader needs to understand one exception:
     what was actually found (the real field values from the record that
@@ -257,76 +403,10 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
     fly from data that already exists (exception_records, the control's
     own audit_procedure, its linked risk's risk_description) rather than
     hand-written per control, so it stays accurate as mappings/data change
-    and covers all 157 controls without anyone writing 157 explanations."""
-    execution = db.get(TestExecution, exception.execution_id)
-    audit_test = db.get(AuditTest, execution.audit_test_id) if execution else None
-    rule = db.get(TestRule, execution.rule_id) if execution and execution.rule_id else None
-
-    control: Control | None = None
-    library_entry: ControlLibraryEntry | None = None
-    risk: Risk | None = None
-    if audit_test is not None:
-        control = get_control_for_audit_test(db, audit_test_id=audit_test.audit_test_id)
-        if control is not None:
-            if control.control_library_id is not None:
-                library_entry = db.get(ControlLibraryEntry, control.control_library_id)
-            risk_link = db.scalar(select(RiskControl).where(RiskControl.control_id == control.control_id))
-            if risk_link is not None:
-                risk = db.get(Risk, risk_link.risk_id)
-
-    records = list(db.scalars(select(ExceptionRecord).where(ExceptionRecord.exception_id == exception.exception_id)))
-    facts = [
-        {"label": _humanize_field_name(key), "value": "(no value)" if value is None else str(value)}
-        for key, value in (records[0].exception_data or {}).items()
-    ] if records else []
-
-    control_label = f"{control.control_code} — {control.control_name}" if control else (audit_test.test_name if audit_test else "This control")
-    # exception.exception_description is an internal grouping key ("{test
-    # name}: exception on {record id}", set by execution_service so repeat
-    # detections of the SAME record update one row instead of piling up
-    # duplicates) — not written to be read aloud.
-    record_id = records[0].record_identifier if records else None
-    rule_definition = json.loads(rule.rule_definition) if rule else None
-    natural = _natural_summary(rule_definition, (records[0].exception_data or {}) if records else {}, record_id, control_label)
-    summary = natural or (
-        f"Record {record_id} did not pass the \"{control_label}\" check."
-        if record_id
-        else f"A record did not pass the \"{control_label}\" check."
-    )
-
-    why_it_matters = (
-        risk.risk_description
-        if risk is not None and risk.risk_description
-        else (
-            f"This control exists to check: {library_entry.audit_procedure}"
-            if library_entry is not None
-            else "This check exists to catch a real problem — when it fails, it usually means something needs a closer look."
-        )
-    )
-
-    what_to_do = exception.recommended_remediation or _RULE_TYPE_RECOMMENDATION.get(
-        rule.rule_type if rule else None, "Look into this record and decide what needs to change."
-    )
-
-    return {
-        "summary": summary,
-        "facts": facts,
-        "why_it_matters": why_it_matters,
-        "what_to_do": what_to_do,
-        "seen_count": exception.occurrence_count,
-        "first_seen": exception.detected_at,
-        "last_seen": exception.last_detected_at,
-        "control_code": control.control_code if control else None,
-        "control_name": control.control_name if control else None,
-        # Lets a reader match this exception to "the current status of
-        # THIS test" by audit_test_id rather than by the exact execution_id
-        # it happens to be pointed at right now — more robust for a
-        # frequently re-running test, where execution_id moves forward on
-        # every re-detection (see execution_service.record_execution_report)
-        # and a client fetching executions/exceptions as two separate
-        # requests can otherwise catch them a beat apart.
-        "audit_test_id": audit_test.audit_test_id if audit_test else None,
-    }
+    and covers all 157 controls without anyone writing 157 explanations.
+    Single-exception convenience wrapper around explain_exceptions_bulk,
+    used by the dedicated GET .../explanation endpoint."""
+    return explain_exceptions_bulk(db, exceptions=[exception])[exception.exception_id]
 
 
 def update_exception(

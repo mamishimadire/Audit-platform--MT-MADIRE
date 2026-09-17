@@ -65,6 +65,14 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
         mandatory=True,
     ),
     SodWorkflowOut(
+        action="Monitoring schedule approval",
+        states=["pending_approval", "active", "rejected", "superseded (replaced by a later version)"],
+        maker="Sets or changes a test's monitoring cadence (POST .../schedules).",
+        checker="Approves the schedule (POST /schedules/{id}/approve) or rejects it with a reason.",
+        enforcement="created_by != approved_by, checked by user identity. Only an 'active' schedule is ever picked up for execution. Changing the cadence on a test that already has an active schedule creates a new pending version rather than changing what's live in place.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
         action="Control activation",
         states=["pending_mapping", "pending_activation", "active"],
         maker="Requests activation once all required tables are bound.",
