@@ -68,6 +68,28 @@ def _matches(record: dict, field: str, operator: str, value: Any) -> bool:
     return _OPERATORS[operator](field_value, value)
 
 
+def _dynamic_relative_date_matches(date_record: dict, offset_record: dict, spec: dict) -> bool:
+    """Shared by cross_match_condition (2-object: date_field always read
+    from date_record/primary, offset_field always from offset_record/
+    secondary) and three_way_match (3-object: caller passes whichever two
+    role-records the spec's date_object/offset_object select). A missing
+    date or a missing/non-numeric offset never matches — same is_null-style
+    safety as a bad RelativeDate field, not a crash."""
+    date_field = spec.get("date_field", spec.get("primary_field"))
+    offset_field = spec.get("offset_field", spec.get("secondary_field"))
+    date_val = _parse_datetime(date_record.get(date_field))
+    offset_val = offset_record.get(offset_field)
+    if date_val is None or offset_val is None:
+        return False
+    try:
+        offset_days = float(offset_val)
+    except (TypeError, ValueError):
+        return False
+    direction = spec.get("direction", -1)
+    threshold = datetime.now(timezone.utc) + timedelta(days=direction * offset_days)
+    return _OPERATORS[spec["operator"]](date_val, threshold)
+
+
 def _record_identifier(record: dict, prefer: list[str]) -> str:
     for col in prefer:
         if record.get(col) is not None:
@@ -107,6 +129,7 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         join_field = rule["join_field"]
         secondary_join_field = rule.get("secondary_join_field") or join_field
         primary_condition = rule.get("primary_condition")
+        secondary_condition = rule.get("secondary_condition")
 
         candidates = primary
         if primary_condition is not None:
@@ -114,7 +137,15 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                 r for r in candidates if _matches(r, primary_condition["field"], primary_condition["operator"], primary_condition.get("value"))
             ]
 
-        matched_keys = {r[secondary_join_field] for r in secondary if r.get(secondary_join_field) is not None}
+        secondary_candidates = secondary
+        if secondary_condition is not None:
+            secondary_candidates = [
+                r
+                for r in secondary_candidates
+                if _matches(r, secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
+            ]
+
+        matched_keys = {r[secondary_join_field] for r in secondary_candidates if r.get(secondary_join_field) is not None}
         hits = [r for r in candidates if r.get(join_field) not in matched_keys]
         return RuleResult(
             len(primary), [{"record_identifier": _record_identifier(r, [join_field]), "exception_data": r} for r in hits]
@@ -127,6 +158,7 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         secondary_join_field = rule.get("secondary_join_field") or join_field
         cp, cs = rule["condition_primary"], rule["condition_secondary"]
         field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
 
         primary_hits = [r for r in primary if _matches(r, cp["field"], cp["operator"], cp.get("value"))]
         secondary_hits = [r for r in secondary if _matches(r, cs["field"], cs["operator"], cs.get("value"))]
@@ -145,6 +177,8 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                     op = field_comparison["operator"]
                     if not _OPERATORS[op](pr.get(field_comparison["primary_field"]), sr.get(field_comparison["secondary_field"])):
                         continue
+                if dynamic_cmp is not None and not _dynamic_relative_date_matches(pr, sr, dynamic_cmp):
+                    continue
                 merged = {(f"{k}_primary" if k in overlap_keys else k): v for k, v in pr.items()}
                 merged.update({(f"{k}_secondary" if k in overlap_keys else k): v for k, v in sr.items()})
                 exceptions.append({"record_identifier": _record_identifier(pr, [join_field]), "exception_data": merged})
@@ -160,6 +194,7 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         tert_field = rule.get("tertiary_join_field") or jf_st
         cp, cs, ct = rule.get("condition_primary"), rule.get("condition_secondary"), rule.get("condition_tertiary")
         field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
 
         primary_hits = [r for r in primary if cp is None or _matches(r, cp["field"], cp["operator"], cp.get("value"))]
         secondary_hits = [r for r in secondary if cs is None or _matches(r, cs["field"], cs["operator"], cs.get("value"))]
@@ -176,11 +211,16 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         for pr in primary_hits:
             for sr in secondary_by_key.get(pr.get(jf_ps), []):
                 for tr in tertiary_by_key.get(sr.get(jf_st), []):
+                    rows_by_role = {"primary": pr, "secondary": sr, "tertiary": tr}
                     if field_comparison is not None:
-                        rows_by_role = {"primary": pr, "secondary": sr, "tertiary": tr}
                         left = rows_by_role[field_comparison["left_object"]].get(field_comparison["left_field"])
                         right = rows_by_role[field_comparison["right_object"]].get(field_comparison["right_field"])
                         if not _OPERATORS[field_comparison["operator"]](left, right):
+                            continue
+                    if dynamic_cmp is not None:
+                        date_record = rows_by_role[dynamic_cmp["date_object"]]
+                        offset_record = rows_by_role[dynamic_cmp["offset_object"]]
+                        if not _dynamic_relative_date_matches(date_record, offset_record, dynamic_cmp):
                             continue
                     # Always suffixed by role (unlike the two-object rules'
                     # overlap-only suffixing) — simpler and unambiguous

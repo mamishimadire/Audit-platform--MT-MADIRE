@@ -211,7 +211,21 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "data_access": ["access_id", "user_id", "data_classification", "granted_by", "granted_at"],
     "data_classification": ["dataset", "classification"],
     "user_access": ["user_id", "dataset", "access_level"],
-    "data_records": ["record_id", "subject", "created_at"],
+    # "dataset" added (round-4 pass, migration 0060) for DP-004 ("Data
+    # retention requirements must be followed"): retention_rules is keyed
+    # per-dataset (e.g. "applicant_records" -> 730 days), but data_records
+    # itself carried no field identifying WHICH dataset a given record
+    # belongs to — without it there is no way to join a record to its own
+    # retention rule at all, only to guess a single global day-count for
+    # every record regardless of type. Every other object in this model
+    # that a retention/classification rule keys against already carries the
+    # matching attribute (data_classification.dataset, user_access.dataset)
+    # — data_records was the one record-level object missing its own copy,
+    # the same "obviously missing attribute on the object the control's own
+    # required_tables names first" pattern that justified account_type
+    # (GL-008), max_duration_seconds (OP-004), and exception_id
+    # (patch_exceptions) in the prior round.
+    "data_records": ["record_id", "subject", "created_at", "dataset"],
     "retention_rules": ["dataset", "retention_days"],
     "privacy_requests": ["request_id", "type", "requested_at"],
     "deletion_records": ["request_id", "deleted_at"],

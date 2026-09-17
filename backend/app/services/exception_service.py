@@ -118,6 +118,31 @@ def _fact_value(exception_data: dict, field: str, role: str | None):
     return exception_data.get(field)
 
 
+def _describe_literal_condition(field: str, operator: str, value) -> str:
+    """Like _describe_fact, but for a condition where no per-record value
+    exists to show at all — a missing_match secondary_condition describes
+    what a WOULD-BE match would have needed to satisfy, on a row that, by
+    definition, was never found (there is nothing in exception_data to
+    look up), so this always falls back to the rule's own literal."""
+    label = _humanize_field_name(field).lower()
+    if operator in ("is_null", "is_not_null"):
+        return f"{label} {_OPERATOR_WORDS[operator]}"
+    return f"{label} {_OPERATOR_WORDS.get(operator, operator)} {value}"
+
+
+def _describe_dynamic_relative_date_fact(exception_data: dict, date_field: str, date_role: str | None, operator: str, offset_field: str, offset_role: str | None, direction: int) -> str:
+    """'its run at (2026-08-08) is less than the allowed 30-day window' —
+    the dynamic-relative-date counterpart of _describe_fact: both the date
+    and the day-count are real per-record values from THIS joined pair
+    (unlike a missing_match secondary_condition, this rule_type only ever
+    fires on an actual match, so both sides are present in exception_data)."""
+    date_label = _humanize_field_name(date_field).lower()
+    date_val = _fact_value(exception_data, date_field, date_role)
+    offset_val = _fact_value(exception_data, offset_field, offset_role)
+    window = "before" if direction == -1 else "after"
+    return f"its {date_label} ({date_val}) {_OPERATOR_WORDS.get(operator, operator)} the {offset_val}-day {window} cutoff from now"
+
+
 def _describe_fact(exception_data: dict, field: str, role: str | None, operator: str, rule_value) -> str:
     """'employment status is terminated' — the field's real value on this
     specific record when it's actually present in the data (informative
@@ -153,7 +178,14 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
         cp, cs = rule_definition["condition_primary"], rule_definition["condition_secondary"]
         primary_fact = _describe_fact(exception_data, cp["field"], "primary", cp["operator"], cp.get("value"))
         secondary_fact = _describe_fact(exception_data, cs["field"], "secondary", cs["operator"], cs.get("value"))
-        return f"{primary_obj.capitalize()} {ident}: {primary_fact}, but its linked {secondary_obj}'s {secondary_fact}."
+        sentence = f"{primary_obj.capitalize()} {ident}: {primary_fact}, but its linked {secondary_obj}'s {secondary_fact}."
+        dc = rule_definition.get("dynamic_relative_date_comparison")
+        if dc is not None:
+            extra = _describe_dynamic_relative_date_fact(
+                exception_data, dc["primary_field"], "primary", dc["operator"], dc["secondary_field"], "secondary", dc.get("direction", -1)
+            )
+            sentence = f"{sentence[:-1]}; also, {extra}."
+        return sentence
 
     if rule_type == "threshold":
         obj = _humanize_object(rule_definition["object"])
@@ -163,6 +195,10 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
     if rule_type == "missing_match":
         primary_obj = _humanize_object(rule_definition["primary_object"])
         secondary_obj = _humanize_object(rule_definition["secondary_object"])
+        secondary_condition = rule_definition.get("secondary_condition")
+        if secondary_condition is not None:
+            condition_text = _describe_literal_condition(secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
+            return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record where {condition_text}."
         return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record at all."
 
     if rule_type == "duplicate":
@@ -189,6 +225,13 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
             parts.append(
                 f"its {role_obj[fc['left_object']]}'s {left_label} ({left_val}) {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} "
                 f"its {role_obj[fc['right_object']]}'s {right_label} ({right_val})"
+            )
+        dc = rule_definition.get("dynamic_relative_date_comparison")
+        if dc is not None:
+            parts.append(
+                _describe_dynamic_relative_date_fact(
+                    exception_data, dc["date_field"], dc["date_object"], dc["operator"], dc["offset_field"], dc["offset_object"], dc.get("direction", -1)
+                )
             )
         joined = "; ".join(parts) if parts else f"its linked {primary_obj}, {secondary_obj}, and {tertiary_obj} records don't reconcile"
         return f"{ident}: {joined}."

@@ -56,6 +56,19 @@ def _apply_condition(df: pd.DataFrame, field: str, operator: str, value: Any) ->
     return _OPERATORS[operator](series, value)
 
 
+def _dynamic_relative_date_mask(date_series: pd.Series, offset_series: pd.Series, operator: str, direction: int) -> pd.Series:
+    """Shared by cross_match_condition and three_way_match: builds the
+    row-wise now()+/-offset threshold from a per-row day-count column and
+    compares date_series to it. coerce=NaT/NaN for anything unparseable —
+    same is_null-style safety _apply_condition already uses for RelativeDate
+    — then those rows simply never satisfy any comparison operator, rather
+    than raising."""
+    dates = pd.to_datetime(date_series, errors="coerce", utc=True)
+    offsets = pd.to_numeric(offset_series, errors="coerce")
+    threshold = pd.Timestamp(datetime.now(timezone.utc)) + pd.to_timedelta(direction * offsets, unit="D")
+    return _OPERATORS[operator](dates, threshold).fillna(False)
+
+
 def _record_identifier(row: pd.Series, prefer: list[str]) -> str:
     for col in prefer:
         if col in row and pd.notna(row[col]):
@@ -107,12 +120,19 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
         join_field = rule["join_field"]
         secondary_join_field = rule.get("secondary_join_field") or join_field
         primary_condition = rule.get("primary_condition")
+        secondary_condition = rule.get("secondary_condition")
 
         candidates = primary
         if primary_condition is not None:
             candidates = primary[_apply_condition(primary, primary_condition["field"], primary_condition["operator"], primary_condition.get("value"))]
 
-        matched_keys = set(secondary[secondary_join_field].dropna())
+        secondary_candidates = secondary
+        if secondary_condition is not None:
+            secondary_candidates = secondary[
+                _apply_condition(secondary, secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
+            ]
+
+        matched_keys = set(secondary_candidates[secondary_join_field].dropna())
         hits = candidates[~candidates[join_field].isin(matched_keys)]
         return RuleResult(
             records_analyzed=len(primary),
@@ -126,6 +146,7 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
         secondary_join_field = rule.get("secondary_join_field") or join_field
         cp, cs = rule["condition_primary"], rule["condition_secondary"]
         field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
 
         primary_hits = primary[_apply_condition(primary, cp["field"], cp["operator"], cp.get("value"))].copy()
         secondary_hits = secondary[_apply_condition(secondary, cs["field"], cs["operator"], cs.get("value"))].copy()
@@ -139,6 +160,9 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
         if field_comparison is not None:
             primary_hits = primary_hits.rename(columns={field_comparison["primary_field"]: "__cmp_primary__"})
             secondary_hits = secondary_hits.rename(columns={field_comparison["secondary_field"]: "__cmp_secondary__"})
+        if dynamic_cmp is not None:
+            primary_hits = primary_hits.rename(columns={dynamic_cmp["primary_field"]: "__dyn_date__"})
+            secondary_hits = secondary_hits.rename(columns={dynamic_cmp["secondary_field"]: "__dyn_offset__"})
 
         if secondary_join_field == join_field:
             merged = primary_hits.merge(secondary_hits, on=join_field, suffixes=("_primary", "_secondary"))
@@ -151,6 +175,13 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             merged = merged.rename(
                 columns={"__cmp_primary__": field_comparison["primary_field"], "__cmp_secondary__": field_comparison["secondary_field"]}
             )
+
+        if dynamic_cmp is not None:
+            mask = _dynamic_relative_date_mask(
+                merged["__dyn_date__"], merged["__dyn_offset__"], dynamic_cmp["operator"], dynamic_cmp.get("direction", -1)
+            )
+            merged = merged[mask]
+            merged = merged.rename(columns={"__dyn_date__": dynamic_cmp["primary_field"], "__dyn_offset__": dynamic_cmp["secondary_field"]})
 
         return RuleResult(
             records_analyzed=len(primary),
@@ -169,6 +200,7 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
         tert_field = rule.get("tertiary_join_field") or jf_st
         cp, cs, ct = rule.get("condition_primary"), rule.get("condition_secondary"), rule.get("condition_tertiary")
         field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
 
         primary_hits = primary if cp is None else primary[_apply_condition(primary, cp["field"], cp["operator"], cp.get("value"))]
         secondary_hits = secondary if cs is None else secondary[_apply_condition(secondary, cs["field"], cs["operator"], cs.get("value"))]
@@ -191,6 +223,16 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             left_col = f"{field_comparison['left_field']}_{field_comparison['left_object']}"
             right_col = f"{field_comparison['right_field']}_{field_comparison['right_object']}"
             merged = merged[_OPERATORS[field_comparison["operator"]](merged[left_col], merged[right_col])]
+
+        if dynamic_cmp is not None:
+            # Every column was suffixed by role before either merge (see
+            # above), so — unlike cross_match_condition's two-object rename
+            # trick — the role-suffixed column names are already unique and
+            # can be addressed directly with no rename needed.
+            date_col = f"{dynamic_cmp['date_field']}_{dynamic_cmp['date_object']}"
+            offset_col = f"{dynamic_cmp['offset_field']}_{dynamic_cmp['offset_object']}"
+            mask = _dynamic_relative_date_mask(merged[date_col], merged[offset_col], dynamic_cmp["operator"], dynamic_cmp.get("direction", -1))
+            merged = merged[mask]
 
         return RuleResult(
             records_analyzed=len(primary),

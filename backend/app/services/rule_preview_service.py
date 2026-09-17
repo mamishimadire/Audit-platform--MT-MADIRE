@@ -70,6 +70,19 @@ def _describe_condition(object_label: str, condition: dict, parameters: dict[str
     return f"{field} {op} {_describe_value(condition.get('value'), parameters)}"
 
 
+def _describe_dynamic_relative_date(
+    date_label: str, date_field: str, operator: str, offset_label: str, offset_field: str, direction: int
+) -> str:
+    """Plain-English rendering of a DynamicRelativeDateComparison/
+    ThreeWayDynamicRelativeDateComparison — the day-count offset is read
+    from a field on another row at execution time, not a fixed number, so
+    it's described by naming that field rather than by a resolved value
+    the way _describe_value resolves a ParameterReference."""
+    op = _OPERATOR_WORDS.get(operator, operator)
+    sign = "minus" if direction == -1 else "plus"
+    return f"{date_label}.{date_field} {op} (now {sign} {offset_label}.{offset_field} days)"
+
+
 def _mapped_field_label(mappings_by_canonical: dict[str, tuple[DataEntity | None, DataField | None]], canonical_object: str, field: str) -> str:
     entity, data_field = mappings_by_canonical.get(f"{canonical_object}.{field}", (None, None))
     if entity is None or data_field is None:
@@ -125,8 +138,17 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         source = primary
         joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
         filters = [_describe_condition(primary, rule_definition["primary_condition"], parameters)] if rule_definition.get("primary_condition") else []
-        test_condition = f"A {primary} record has no matching {secondary} record"
-        pass_condition = f"Every {primary} record has a matching {secondary} record"
+        if rule_definition.get("secondary_condition"):
+            filters.append(_describe_condition(secondary, rule_definition["secondary_condition"], parameters))
+            test_condition = f"A {primary} record has no matching {secondary} record where " + _describe_condition(
+                secondary, rule_definition["secondary_condition"], parameters
+            )
+            pass_condition = f"Every {primary} record has a matching {secondary} record where " + _describe_condition(
+                secondary, rule_definition["secondary_condition"], parameters
+            )
+        else:
+            test_condition = f"A {primary} record has no matching {secondary} record"
+            pass_condition = f"Every {primary} record has a matching {secondary} record"
 
     elif rule_type == "cross_match_condition":
         primary, secondary = rule_definition["primary_object"], rule_definition["secondary_object"]
@@ -142,6 +164,13 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         if rule_definition.get("field_comparison"):
             fc = rule_definition["field_comparison"]
             comparison = f"{primary}.{fc['primary_field']} {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} {secondary}.{fc['secondary_field']}"
+            filters.append(comparison)
+            test_condition += f" AND {comparison}"
+        if rule_definition.get("dynamic_relative_date_comparison"):
+            dc = rule_definition["dynamic_relative_date_comparison"]
+            comparison = _describe_dynamic_relative_date(
+                primary, dc["primary_field"], dc["operator"], secondary, dc["secondary_field"], dc.get("direction", -1)
+            )
             filters.append(comparison)
             test_condition += f" AND {comparison}"
         pass_condition = "No joined record satisfies all of the above at once"
@@ -163,6 +192,14 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
             fc = rule_definition["field_comparison"]
             role_obj = {"primary": primary, "secondary": secondary, "tertiary": tertiary}
             comparison = f"{role_obj[fc['left_object']]}.{fc['left_field']} {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} {role_obj[fc['right_object']]}.{fc['right_field']}"
+            filters.append(comparison)
+            test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
+        if rule_definition.get("dynamic_relative_date_comparison"):
+            dc = rule_definition["dynamic_relative_date_comparison"]
+            role_obj = {"primary": primary, "secondary": secondary, "tertiary": tertiary}
+            comparison = _describe_dynamic_relative_date(
+                role_obj[dc["date_object"]], dc["date_field"], dc["operator"], role_obj[dc["offset_object"]], dc["offset_field"], dc.get("direction", -1)
+            )
             filters.append(comparison)
             test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
         pass_condition = "No linked set of records satisfies all of the above at once"

@@ -67,6 +67,39 @@ A third round, orthogonal to the rule shape itself:
     rule_definition — see app/services/rule_parameter_service.py — so
     rule_evaluation.py and gateway/gateway/rule_engine.py need no changes
     at all to support it.
+
+A fourth round, closing two gaps found while re-deriving the remaining 47
+untemplated controls against the CURRENT capability set rather than trusting
+the prior pass's one-line category guesses (see migration 0059's docstring
+for the full re-derivation):
+  - MissingMatchRule.secondary_condition: filters secondary_object rows
+    BEFORE the anti-join, mirroring primary_condition on the other side.
+    Without it, "primary rows with no matching APPROVED secondary row"
+    (e.g. AC-001: an active system_user with no *approved* access_request —
+    a pending one must not count) could only be expressed as "no matching
+    row AT ALL," silently treating an unapproved/pending match as if it
+    satisfied the check. Also resolves the "audit_logs polymorphic
+    entity_type/entity_id" gap (MD-005/DP-002/PY-010): entity_id only means
+    "this specific record" once entity_type is filtered to the ONE entity
+    type the primary object represents — previously an unfiltered anti-join
+    against the whole shared audit_logs table would have matched entity_id
+    values belonging to a completely different entity_type by coincidence.
+  - DynamicRelativeDateComparison (on CrossMatchConditionRule) and its
+    three-way counterpart ThreeWayDynamicRelativeDateComparison (on
+    ThreeWayMatchRule): compares a date field to now() offset by a day
+    count that is itself looked up from a field on the OTHER side of a
+    join, per matched row — e.g. backup_jobs.run_at vs. now() minus
+    backup_retention_rules.retention_days for that SAME system_id.
+    Distinct from RelativeDate, which bakes ONE fixed day count into the
+    template at authoring time (does not vary per row, per system, or per
+    severity); distinct from FieldComparison/ThreeWayFieldComparison, which
+    compare two raw field values with no "now() +/- N days" arithmetic at
+    all. This is the genuine combination of both, and is what 0051/0054
+    catalogued as the recurring "dynamic relative-date" gap blocking
+    BK-004, OP-007, PM-001, VM-002, and DP-004 (each needs a per-row/
+    per-severity/per-dataset day count sourced from data, not a fixed
+    number that would silently go stale the moment a client edits their
+    own retention/SLA table).
 """
 from typing import Annotated, Literal, Union
 
@@ -153,7 +186,13 @@ class MissingMatchRule(BaseModel):
     secondary side). An optional primary_condition filters primary_object
     rows BEFORE the anti-join, so this can express "primary rows matching
     X that ALSO have no match in secondary" instead of only "all primary
-    rows with no match.\""""
+    rows with no match." An optional secondary_condition, symmetrically,
+    filters secondary_object rows BEFORE the anti-join — so "no match AT
+    ALL" can become "no match that ALSO satisfies Y" (e.g. only an
+    *approved* access_request counts; only an audit_logs row for the
+    RIGHT entity_type counts), instead of treating any row that merely
+    shares the join key, regardless of its own status, as satisfying the
+    check."""
 
     rule_type: Literal["missing_match"] = "missing_match"
     primary_object: str
@@ -161,6 +200,7 @@ class MissingMatchRule(BaseModel):
     join_field: str  # canonical field name on primary_object
     secondary_join_field: str | None = None  # defaults to join_field when the two sides share a name
     primary_condition: FieldCondition | None = None
+    secondary_condition: FieldCondition | None = None
 
     def _secondary_field(self) -> str:
         return self.secondary_join_field or self.join_field
@@ -173,6 +213,8 @@ class MissingMatchRule(BaseModel):
         if self.primary_condition is not None:
             primary_fields.add(self.primary_condition.field)
         secondary_fields = {self._secondary_field()}
+        if self.secondary_condition is not None:
+            secondary_fields.add(self.secondary_condition.field)
         # A dict can't hold two entries under the same key — when both
         # sides are the same object (a self-join), the fields must be
         # merged into one entry, or whichever assignment runs second would
@@ -195,13 +237,40 @@ class FieldComparison(BaseModel):
     secondary_field: str
 
 
+class DynamicRelativeDateComparison(BaseModel):
+    """Compares a date field on primary_object to now() offset by a day
+    count that is itself read from a field on secondary_object of the SAME
+    joined row — e.g. backup_jobs.run_at (primary_field) vs. now() minus
+    backup_retention_rules.retention_days (secondary_field) for that same
+    system_id, where retention_days varies per row instead of being one
+    fixed number decided when the template was written. Distinct from
+    RelativeDate (a single offset fixed at template-authoring time, the
+    same for every row) and from FieldComparison (compares two raw values
+    against each other, with no "now() +/- N days" arithmetic at all) —
+    this is the genuine combination of both: a per-row day count used as
+    date arithmetic against "now." direction is the sign applied to the
+    looked-up day count before adding it to now(): -1 (the common case) is
+    a retention/SLA-style "must not be older than N days" check; +1 would
+    be an "expiring within N days, where N itself varies per row" check."""
+
+    primary_field: str  # a date/datetime field on primary_object
+    operator: Literal["lt", "lte", "gt", "gte"]
+    secondary_field: str  # a numeric day-count field on secondary_object
+    direction: Literal[-1, 1] = -1
+
+
 class CrossMatchConditionRule(BaseModel):
     """
     Joined rows where BOTH per-side conditions hold — e.g.
     employee.employment_status == 'terminated' AND user.status == 'active',
     joined on employee_id — AND, if field_comparison is set, an additional
     condition comparing a field from each side against each other (not a
-    literal) is also satisfied.
+    literal) is also satisfied. If dynamic_relative_date_comparison is also
+    set, an additional condition comparing a date field on one side to
+    now() offset by a per-row day count read from the other side must also
+    be satisfied — see DynamicRelativeDateComparison. field_comparison and
+    dynamic_relative_date_comparison are independent and may both be set;
+    when both are set, a joined row must satisfy both to be flagged.
     """
 
     rule_type: Literal["cross_match_condition"] = "cross_match_condition"
@@ -212,6 +281,7 @@ class CrossMatchConditionRule(BaseModel):
     condition_primary: FieldCondition
     condition_secondary: FieldCondition
     field_comparison: FieldComparison | None = None
+    dynamic_relative_date_comparison: DynamicRelativeDateComparison | None = None
 
     def _secondary_field(self) -> str:
         return self.secondary_join_field or self.join_field
@@ -225,6 +295,9 @@ class CrossMatchConditionRule(BaseModel):
         if self.field_comparison is not None:
             primary_fields.add(self.field_comparison.primary_field)
             secondary_fields.add(self.field_comparison.secondary_field)
+        if self.dynamic_relative_date_comparison is not None:
+            primary_fields.add(self.dynamic_relative_date_comparison.primary_field)
+            secondary_fields.add(self.dynamic_relative_date_comparison.secondary_field)
         # Same dict-key-collision hazard as MissingMatchRule above — a
         # self-join (primary_object == secondary_object, e.g. OP-006's
         # "critical AND unresolved" pattern, or field_comparison's SOD
@@ -247,6 +320,25 @@ class ThreeWayFieldComparison(BaseModel):
     right_field: str
 
 
+class ThreeWayDynamicRelativeDateComparison(BaseModel):
+    """Like DynamicRelativeDateComparison, but for ThreeWayMatchRule, where
+    the date field and the day-count field don't always live on "primary"
+    vs "secondary" — e.g. PM-001: the release date lives on secondary
+    (patch_releases.released_at), the SLA day count lives on tertiary
+    (sla_rules.patch_within_days), reached only via a shared severity key
+    one hop away from where the date itself lives. Same semantics as
+    DynamicRelativeDateComparison otherwise: flags rows where operator
+    compares the date field to now() + direction * the looked-up day
+    count."""
+
+    date_object: Literal["primary", "secondary", "tertiary"]
+    date_field: str
+    operator: Literal["lt", "lte", "gt", "gte"]
+    offset_object: Literal["primary", "secondary", "tertiary"]
+    offset_field: str
+    direction: Literal[-1, 1] = -1
+
+
 class ThreeWayMatchRule(BaseModel):
     """Joins three objects in a chain: primary <-> secondary on
     join_field_primary_secondary, then secondary <-> tertiary on
@@ -254,7 +346,11 @@ class ThreeWayMatchRule(BaseModel):
     <-> supplier_invoice, the classic three-way match. Each side may have
     its own FieldCondition pre-filter (all optional — omit for "no filter,
     just join"). An optional field_comparison checks a field from any two
-    of the three sides against each other post-join.
+    of the three sides against each other post-join. An optional
+    dynamic_relative_date_comparison, independent of field_comparison and
+    usable alongside it, checks a date field from any side against now()
+    offset by a per-row day count read from any (possibly different) side
+    — see ThreeWayDynamicRelativeDateComparison.
 
     Also how a dynamic per-row threshold lookup is expressed (e.g. "does
     this payment exceed the approval limit for THIS SPECIFIC approver's
@@ -276,6 +372,7 @@ class ThreeWayMatchRule(BaseModel):
     condition_secondary: FieldCondition | None = None
     condition_tertiary: FieldCondition | None = None
     field_comparison: ThreeWayFieldComparison | None = None
+    dynamic_relative_date_comparison: ThreeWayDynamicRelativeDateComparison | None = None
 
     def _secondary_ps_field(self) -> str:
         return self.secondary_join_field_1 or self.join_field_primary_secondary
@@ -306,6 +403,9 @@ class ThreeWayMatchRule(BaseModel):
         if self.field_comparison is not None:
             add(obj_by_role[self.field_comparison.left_object], self.field_comparison.left_field)
             add(obj_by_role[self.field_comparison.right_object], self.field_comparison.right_field)
+        if self.dynamic_relative_date_comparison is not None:
+            add(obj_by_role[self.dynamic_relative_date_comparison.date_object], self.dynamic_relative_date_comparison.date_field)
+            add(obj_by_role[self.dynamic_relative_date_comparison.offset_object], self.dynamic_relative_date_comparison.offset_field)
         return fields_by_obj
 
 
