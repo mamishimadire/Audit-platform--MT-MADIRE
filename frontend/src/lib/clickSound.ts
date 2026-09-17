@@ -2,6 +2,24 @@ const KEY_ENABLED = 'audit_platform_click_sound'
 const KEY_VOLUME = 'audit_platform_click_sound_volume' // 0-100
 const KEY_PRESET = 'audit_platform_click_sound_preset'
 
+// localStorage is scoped to the BROWSER, not the logged-in account — on a
+// shared machine (or anyone testing multiple accounts in one browser),
+// without this, user A changing the volume or muting it silently changed
+// it for every other user of that same browser too. AuthContext calls
+// setActiveSoundUser with the current user_id right after login/fetchMe
+// (and null on logout), so each account's preferences land under their
+// own key and can never bleed into another's.
+let activeUserId: string | null = null
+
+export function setActiveSoundUser(userId: string | null): void {
+  activeUserId = userId
+  document.dispatchEvent(new CustomEvent('click-sound-changed'))
+}
+
+function scopedKey(base: string): string {
+  return activeUserId ? `${base}:${activeUserId}` : base
+}
+
 /** A few distinct short synthesized tones — no audio files to ship or
  * load, just different oscillator waveforms/pitches/lengths so each one
  * is easy to tell apart. */
@@ -16,7 +34,7 @@ export type SoundPresetKey = keyof typeof SOUND_PRESETS
 
 export function isClickSoundEnabled(): boolean {
   try {
-    return localStorage.getItem(KEY_ENABLED) !== 'off'
+    return localStorage.getItem(scopedKey(KEY_ENABLED)) !== 'off'
   } catch {
     return true
   }
@@ -24,7 +42,7 @@ export function isClickSoundEnabled(): boolean {
 
 export function setClickSoundEnabled(enabled: boolean): void {
   try {
-    localStorage.setItem(KEY_ENABLED, enabled ? 'on' : 'off')
+    localStorage.setItem(scopedKey(KEY_ENABLED), enabled ? 'on' : 'off')
   } catch {
     // Private browsing / storage blocked — the toggle just won't persist across reloads.
   }
@@ -33,7 +51,7 @@ export function setClickSoundEnabled(enabled: boolean): void {
 
 export function getClickVolume(): number {
   try {
-    const raw = localStorage.getItem(KEY_VOLUME)
+    const raw = localStorage.getItem(scopedKey(KEY_VOLUME))
     const n = raw === null ? 60 : Number(raw)
     return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 60
   } catch {
@@ -43,7 +61,7 @@ export function getClickVolume(): number {
 
 export function setClickVolume(volume: number): void {
   try {
-    localStorage.setItem(KEY_VOLUME, String(Math.round(Math.min(100, Math.max(0, volume)))))
+    localStorage.setItem(scopedKey(KEY_VOLUME), String(Math.round(Math.min(100, Math.max(0, volume)))))
   } catch {
     // ignore — see setClickSoundEnabled
   }
@@ -52,7 +70,7 @@ export function setClickVolume(volume: number): void {
 
 export function getClickPreset(): SoundPresetKey {
   try {
-    const raw = localStorage.getItem(KEY_PRESET) as SoundPresetKey | null
+    const raw = localStorage.getItem(scopedKey(KEY_PRESET)) as SoundPresetKey | null
     return raw && raw in SOUND_PRESETS ? raw : 'classic'
   } catch {
     return 'classic'
@@ -61,7 +79,7 @@ export function getClickPreset(): SoundPresetKey {
 
 export function setClickPreset(preset: SoundPresetKey): void {
   try {
-    localStorage.setItem(KEY_PRESET, preset)
+    localStorage.setItem(scopedKey(KEY_PRESET), preset)
   } catch {
     // ignore — see setClickSoundEnabled
   }

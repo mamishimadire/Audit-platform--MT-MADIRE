@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { apiClient, getStoredToken, registerUnauthorizedHandler, setStoredToken } from '../lib/apiClient'
+import { setActiveSoundUser } from '../lib/clickSound'
 import type { UserOut } from '../types/api'
 
 interface AuthContextValue {
@@ -14,8 +15,17 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<UserOut | null>(null)
+  const [user, setUserState] = useState<UserOut | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+
+  // Every place the current user changes goes through this — never the
+  // raw setUserState — so the per-user sound-preference scope (see
+  // clickSound.setActiveSoundUser) can never drift out of sync with who's
+  // actually logged in.
+  const setUser = (next: UserOut | null) => {
+    setUserState(next)
+    setActiveSoundUser(next?.user_id ?? null)
+  }
 
   const fetchMe = async () => {
     const response = await apiClient.get<UserOut>('/auth/me')
