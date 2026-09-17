@@ -18,11 +18,13 @@ from app.schemas.audit_engine import (
     ExceptionExplanationOut,
     ExceptionOut,
     ExceptionRecordOut,
+    ExceptionTraceOut,
     ExceptionUpdate,
 )
 from app.services.evidence_request_service import create_request, list_requests_for_exception, upload_evidence
 from app.services.exception_comment_service import add_comment, list_comments
 from app.services.exception_service import explain_exception, update_exception
+from app.services.exception_trace_service import trace_from_exception
 from app.services.execution_service import list_exceptions_for_organization
 from sqlalchemy import select
 
@@ -83,6 +85,13 @@ def explanation(exception_id: uuid.UUID, db: Session = Depends(get_db), user: Us
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
     return explain_exception(db, exception=exception)
+
+
+@router.get("/exceptions/{exception_id}/trace", response_model=ExceptionTraceOut)
+def trace(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> ExceptionTraceOut:
+    exception, organization_id = _get_exception_with_org(db, exception_id)
+    enforce_same_organization(organization_id, user, db)
+    return trace_from_exception(db, exception=exception)
 
 
 # --- Evidence requests: an auditor asks the client for one specific

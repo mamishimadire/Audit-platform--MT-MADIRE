@@ -158,6 +158,40 @@ class ExceptionExplanationOut(OrmModel):
     last_seen: datetime
 
 
+class TraceFieldOut(OrmModel):
+    field: str
+    value: str
+
+
+class TraceObjectOut(OrmModel):
+    role: str | None  # primary | secondary | tertiary | None (single-object rules)
+    canonical_object: str
+    table_name: str | None  # the physical table this canonical object is mapped to, if any
+    fields: list[TraceFieldOut]
+
+
+class ExceptionTraceOut(OrmModel):
+    """Control -> test run -> physical table/field values -> result — the
+    'why did the system reach this conclusion' lineage view, distinct from
+    ExceptionExplanationOut (a plain-English summary) and from
+    FindingTrace (which walks a Finding UP to its business process)."""
+
+    exception_id: uuid.UUID
+    control_code: str | None
+    control_name: str | None
+    execution_id: uuid.UUID
+    executed_at: datetime
+    rule_type: str | None
+    summary: str
+    objects: list[TraceObjectOut]
+    # Any exception_data key that couldn't be confidently attributed to
+    # one specific object/table — shown, never hidden, but not claimed to
+    # be from a table it might not actually be from.
+    other_fields: list[TraceFieldOut]
+    severity: str | None
+    status: str
+
+
 class EvidenceRequestCreate(OrmModel):
     description: str
     due_date: date | None = None

@@ -6,7 +6,7 @@ import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
-import type { EvidenceRequestOut, ExceptionCommentOut, ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, UserOut } from '../types/api'
+import type { EvidenceRequestOut, ExceptionCommentOut, ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, ExceptionTraceOut, UserOut } from '../types/api'
 
 function userName(orgUsers: UserOut[], userId: string | null): string | null {
   const u = orgUsers.find((x) => x.user_id === userId)
@@ -96,18 +96,39 @@ function ExceptionRow({
   const [newCommentBody, setNewCommentBody] = useState('')
   const [submittingComment, setSubmittingComment] = useState(false)
 
+  const [trace, setTrace] = useState<ExceptionTraceOut | null>(null)
+  const [showTrace, setShowTrace] = useState(false)
+  const [traceLoading, setTraceLoading] = useState(false)
+
   const loadCollaboration = () => {
     apiClient.get<EvidenceRequestOut[]>(`/exceptions/${exception.exception_id}/evidence-requests`).then((res) => setEvidenceRequests(res.data))
     apiClient.get<ExceptionCommentOut[]>(`/exceptions/${exception.exception_id}/comments`).then((res) => setComments(res.data))
   }
 
-  const toggle = () => {
-    if (!open && records === null) {
+  const ensureLoaded = () => {
+    if (records === null) {
       apiClient.get<ExceptionRecordOut[]>(`/exceptions/${exception.exception_id}/records`).then((res) => setRecords(res.data))
       apiClient.get<ExceptionExplanationOut>(`/exceptions/${exception.exception_id}/explanation`).then((res) => setExplanation(res.data))
       loadCollaboration()
     }
+  }
+
+  const toggle = () => {
+    if (!open) ensureLoaded()
     setOpen(!open)
+  }
+
+  const toggleTrace = () => {
+    if (!open) ensureLoaded()
+    if (!showTrace && trace === null) {
+      setTraceLoading(true)
+      apiClient
+        .get<ExceptionTraceOut>(`/exceptions/${exception.exception_id}/trace`)
+        .then((res) => setTrace(res.data))
+        .finally(() => setTraceLoading(false))
+    }
+    setShowTrace(!showTrace)
+    setOpen(true)
   }
 
   const submitEvidenceRequest = async () => {
@@ -224,6 +245,11 @@ function ExceptionRow({
           <button onClick={toggle} className="font-mono text-xs text-accent-ink hover:underline">
             {exception.exception_id.slice(0, 8)}
           </button>
+          <div>
+            <button onClick={toggleTrace} className="text-[11px] font-medium text-ink-soft hover:text-ink hover:underline">
+              Trace evidence
+            </button>
+          </div>
         </td>
         <td className="px-4 py-2 text-sm text-ink">{exception.exception_description ?? '—'}</td>
         <td className="px-4 py-2">
@@ -326,6 +352,71 @@ function ExceptionRow({
       {open && records && (
         <tr className="border-t border-line bg-bg">
           <td colSpan={7} className="px-4 py-3">
+            {showTrace && (
+              <div className="mb-3 rounded-md border border-line bg-surface p-3">
+                <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Trace evidence</div>
+                {traceLoading && <p className="mt-2 text-xs text-ink-soft">Loading…</p>}
+                {trace && (
+                  <div className="mt-2 space-y-2 font-mono text-xs">
+                    <div>
+                      <span className="text-ink-soft">CONTROL</span>{' '}
+                      <span className="font-semibold text-ink">
+                        {trace.control_code ? `${trace.control_code} — ${trace.control_name}` : 'Manually created test'}
+                      </span>
+                    </div>
+                    <div className="text-ink-soft">↓</div>
+                    <div>
+                      <span className="text-ink-soft">TEST RUN</span>{' '}
+                      <span className="font-semibold text-ink">{new Date(trace.executed_at).toLocaleString()}</span>
+                      {trace.rule_type && <span className="text-ink-soft"> ({trace.rule_type})</span>}
+                    </div>
+                    {trace.objects.map((obj, i) => (
+                      <div key={i}>
+                        <div className="text-ink-soft">↓</div>
+                        <div>
+                          <span className="text-ink-soft">{(obj.table_name ?? obj.canonical_object).toUpperCase()} TABLE</span>
+                          {obj.fields.length > 0 && (
+                            <span className="text-ink">
+                              {' → '}
+                              {obj.fields.map((f, j) => (
+                                <span key={j}>
+                                  {j > 0 && ', '}
+                                  {f.field.toLowerCase().replace(/ /g, '_')} = <span className="font-semibold">{f.value}</span>
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {trace.other_fields.length > 0 && (
+                      <div>
+                        <div className="text-ink-soft">↓</div>
+                        <div>
+                          <span className="text-ink-soft">OTHER FIELDS</span>{' '}
+                          <span className="text-ink">
+                            {trace.other_fields.map((f, j) => (
+                              <span key={j}>
+                                {j > 0 && ', '}
+                                {f.field.toLowerCase().replace(/ /g, '_')} = <span className="font-semibold">{f.value}</span>
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <div className="text-ink-soft">↓</div>
+                    <div>
+                      <span className="text-ink-soft">RESULT</span>{' '}
+                      <span className="font-semibold text-red-600">
+                        {trace.severity ? `${trace.severity.toUpperCase()} EXCEPTION` : 'EXCEPTION'}
+                      </span>
+                    </div>
+                    <p className="mt-2 whitespace-normal font-sans text-ink-soft">{trace.summary}</p>
+                  </div>
+                )}
+              </div>
+            )}
             {explanation && (
               <div className="mb-3">
                 <ExceptionExplanationBlock
