@@ -70,14 +70,20 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   // per finding (not tied to `load`, which also re-fires on every add —
   // re-prefilling there would overwrite whatever the auditor just typed).
   useEffect(() => {
-    if (!canManage) return
+    if (!canAssign) return
     apiClient.get<ExceptionOut>(`/exceptions/${finding.exception_id}`).then((res) => {
       const exception = res.data
       setRcDescription((prev) => prev || exception.exception_description || '')
       setActionDescription((prev) => prev || exception.recommended_remediation || '')
       setTargetDate((prev) => prev || inNDays(30))
+      // The client already decided who owns this exception — carry that
+      // straight into "responsible person" instead of making the auditor
+      // re-pick it from scratch just because they're the one creating the
+      // finding. Still an editable dropdown, so it can be corrected if the
+      // exception's owner genuinely isn't who should fix this finding.
+      if (exception.owner_id) setResponsibleUserId((prev) => prev || exception.owner_id!)
     })
-  }, [finding.finding_id, canManage])
+  }, [finding.finding_id, canAssign])
 
   const addRootCause = async () => {
     await apiClient.post(`/findings/${finding.finding_id}/root-causes`, { root_cause_category: rcCategory || null, description: rcDescription || null })
@@ -185,11 +191,16 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
               <input placeholder="Action description" value={actionDescription} onChange={(e) => setActionDescription(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs" />
               <select value={responsibleUserId} onChange={(e) => setResponsibleUserId(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs">
                 <option value="">Responsible person (unassigned)</option>
-                {orgUsers.map((u) => (
-                  <option key={u.user_id} value={u.user_id}>
-                    {u.first_name} {u.last_name}
-                  </option>
-                ))}
+                {/* Same restriction as the exception owner dropdown — only
+                    users who actually hold the Exception Owner role are
+                    offered, not every member of the organization. */}
+                {orgUsers
+                  .filter((u) => u.roles.includes('Exception Owner'))
+                  .map((u) => (
+                    <option key={u.user_id} value={u.user_id}>
+                      {u.first_name} {u.last_name}
+                    </option>
+                  ))}
               </select>
               <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs" />
               <button onClick={addAction} disabled={!actionDescription} className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-60">
