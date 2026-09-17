@@ -1,6 +1,8 @@
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.audit_test import AuditTest, TestDataMapping, TestRule
@@ -8,6 +10,7 @@ from app.models.data_source import DataConnection, DataConnectionChange, DataSou
 from app.models.device import ApprovedSoftware, Device, DevicePolicyChange
 from app.models.evidence_exception import EvidenceRequest, Exception_
 from app.models.monitoring import MonitoringSchedule, TestExecution
+from app.models.notification import NotificationDismissal
 from app.models.rbac import User
 from app.models.risk_control import Control
 from app.schemas.notification import PendingApprovalOut
@@ -302,11 +305,14 @@ def _your_open_exceptions(db: Session, *, organization_id: uuid.UUID, user_id: u
     ]
 
 
-def _evidence_requests_waiting_on_you(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
-    """Any org member can upload against a request (see routes/exceptions.
-    py's evidence-requests comment), so this is shown to everyone in the
-    organization except whoever asked for it — they're the one waiting,
-    not the one being waited on."""
+def _evidence_requests_waiting_on_you(db: Session, *, organization_id: uuid.UUID, user: User) -> list[PendingApprovalOut]:
+    """Only the client side can actually satisfy an evidence request —
+    this exception's own owner, or the client organization's admin for
+    any request in the org (see _require_evidence_uploader in
+    routes/exceptions.py) — never the audit team that asked for it, so
+    this must match that exactly or the bell would advertise something
+    clicking through to it then 403s on."""
+    can_upload_for_any = "exceptions:assign" in get_user_permission_names(db, user.user_id)
     rows = db.execute(
         select(EvidenceRequest, Exception_)
         .join(Exception_, Exception_.exception_id == EvidenceRequest.exception_id)
@@ -315,20 +321,23 @@ def _evidence_requests_waiting_on_you(db: Session, *, organization_id: uuid.UUID
         .where(
             AuditTest.organization_id == organization_id,
             EvidenceRequest.status == "awaiting",
-            EvidenceRequest.requested_by != exclude_user_id,
         )
     )
-    return [
-        PendingApprovalOut(
-            category="evidence_request",
-            entity_id=request.request_id,
-            label=f"Evidence needed: {request.description}",
-            detail=f"Due {request.due_date}" if request.due_date else "No due date set.",
-            requested_at=request.requested_at,
-            link_path="/exceptions",
+    out = []
+    for request, exception in rows:
+        if not can_upload_for_any and exception.owner_id != user.user_id:
+            continue
+        out.append(
+            PendingApprovalOut(
+                category="evidence_request",
+                entity_id=request.request_id,
+                label=f"Evidence needed: {request.description}",
+                detail=f"Due {request.due_date}" if request.due_date else "No due date set.",
+                requested_at=request.requested_at,
+                link_path="/exceptions",
+            )
         )
-        for request, _exception in rows
-    ]
+    return out
 
 
 def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: User) -> list[PendingApprovalOut]:
@@ -360,7 +369,85 @@ def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: Use
     # Not gated by permission — every user sees their own inbox items
     # regardless of what they're eligible to approve.
     items += _your_open_exceptions(db, organization_id=organization_id, user_id=user.user_id)
-    items += _evidence_requests_waiting_on_you(db, organization_id=organization_id, exclude_user_id=user.user_id)
+    items += _evidence_requests_waiting_on_you(db, organization_id=organization_id, user=user)
 
+    items = _exclude_dismissed(db, items, user_id=user.user_id)
     items.sort(key=lambda i: i.requested_at, reverse=True)
     return items
+
+
+def _exclude_dismissed(db: Session, items: list[PendingApprovalOut], *, user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """A dismissal only hides a notification as of the state it was in
+    when cleared — if the same (category, entity_id) comes back with a
+    newer requested_at (something new actually happened, e.g. the
+    exception was re-detected), that's a fresh occurrence and belongs
+    back in "current" rather than staying hidden forever."""
+    if not items:
+        return items
+    dismissed_at_by_key: dict[tuple[str, uuid.UUID], datetime] = {
+        (row.category, row.entity_id): row.dismissed_at
+        for row in db.scalars(select(NotificationDismissal).where(NotificationDismissal.user_id == user_id))
+    }
+    if not dismissed_at_by_key:
+        return items
+    return [
+        item
+        for item in items
+        if (dismissed_at := dismissed_at_by_key.get((item.category, item.entity_id))) is None
+        or item.requested_at.replace(tzinfo=timezone.utc) > dismissed_at.replace(tzinfo=timezone.utc)
+    ]
+
+
+def list_notification_history(db: Session, *, user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Everything this user has ever cleared from their inbox, most
+    recently cleared first — the notification's own text is read back
+    from the snapshot taken at dismissal time (see NotificationDismissal's
+    docstring), not re-derived from live state."""
+    rows = db.scalars(
+        select(NotificationDismissal)
+        .where(NotificationDismissal.user_id == user_id)
+        .order_by(NotificationDismissal.dismissed_at.desc())
+    )
+    return [
+        PendingApprovalOut(
+            category=row.category,
+            entity_id=row.entity_id,
+            label=row.label,
+            detail=row.detail,
+            requested_at=row.notification_at,
+            link_path=row.link_path,
+        )
+        for row in rows
+    ]
+
+
+def dismiss_notification(db: Session, *, user_id: uuid.UUID, item: PendingApprovalOut) -> None:
+    stmt = (
+        pg_insert(NotificationDismissal)
+        .values(
+            user_id=user_id,
+            category=item.category,
+            entity_id=item.entity_id,
+            label=item.label,
+            detail=item.detail,
+            link_path=item.link_path,
+            notification_at=item.requested_at,
+        )
+        .on_conflict_do_update(
+            index_elements=[NotificationDismissal.user_id, NotificationDismissal.category, NotificationDismissal.entity_id],
+            set_={
+                "label": item.label,
+                "detail": item.detail,
+                "link_path": item.link_path,
+                "notification_at": item.requested_at,
+                "dismissed_at": datetime.now(timezone.utc),
+            },
+        )
+    )
+    db.execute(stmt)
+    db.commit()
+
+
+def clear_all_notifications(db: Session, *, organization_id: uuid.UUID, user: User) -> None:
+    for item in list_pending_approvals(db, organization_id=organization_id, user=user):
+        dismiss_notification(db, user_id=user.user_id, item=item)

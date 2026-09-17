@@ -72,11 +72,9 @@ class EvidenceRequest(Base):
     with a due date and its own awaiting/received lifecycle — distinct
     from Evidence above (system-generated proof a test ran) and from
     Exception_.status (the exception's own open/in_progress/... state, which
-    this doesn't touch). file_data is stored inline in Postgres rather than
-    on disk or in object storage — no object storage exists yet (see
-    execution_service.record_execution_report's evidence_location comment),
-    and these are individual documents (tickets, checklists, logs), not
-    something that needs a CDN."""
+    this doesn't touch). The client can attach more than one file to a
+    single request (see EvidenceFile) — status is 'received' once at
+    least one file exists, back to 'awaiting' if every file is deleted."""
 
     __tablename__ = "evidence_requests"
 
@@ -91,15 +89,32 @@ class EvidenceRequest(Base):
         UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
     )
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # All five null together means "still awaiting" — filled in atomically
-    # by upload_evidence, at the same moment status flips to 'received'.
-    file_name: Mapped[str | None] = mapped_column(String(255))
+
+
+class EvidenceFile(Base):
+    """One file the client attached to an EvidenceRequest. A request can
+    have several of these — uploading doesn't replace an earlier file,
+    it adds another, and any one of them can be deleted independently
+    (e.g. to remove one uploaded by mistake) without touching the rest.
+    file_data is stored inline in Postgres rather than on disk or in
+    object storage — no object storage exists yet (see
+    execution_service.record_execution_report's evidence_location
+    comment), and these are individual documents (tickets, checklists,
+    logs), not something that needs a CDN."""
+
+    __tablename__ = "evidence_files"
+
+    evidence_file_id: Mapped[uuid.UUID] = uuid_pk("evidence_file_id")
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("evidence_requests.request_id", ondelete="CASCADE"), nullable=False
+    )
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str | None] = mapped_column(String(100))
-    file_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    file_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
     )
-    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ExceptionComment(Base):

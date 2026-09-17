@@ -52,24 +52,37 @@ function AvatarFor({ name, role }: { name: string | null; role: string | null })
   return <AvatarCircle initials={initials} internal={internal} />
 }
 
-// A small colored file-type badge ("PDF", "XLS", "?" while still
-// awaiting) — the same visual shorthand the product spec's mockup uses,
-// so a list of requests reads at a glance instead of as plain text.
-function fileTypeBadge(fileName: string | null): { label: string; classes: string } {
+// A small file-type icon ("PDF", "XLS", "DOC", "?" while still awaiting)
+// — the same visual shorthand the product spec's mockup uses, so a list
+// of requests reads at a glance instead of as plain text. Drawn as an
+// actual document glyph (folded corner) rather than a flat colored
+// square, so it reads as a file icon instead of a label chip.
+function fileTypeBadge(fileName: string | null): { label: string; textClass: string } {
   const ext = fileName?.split('.').pop()?.toUpperCase() ?? ''
-  if (ext === 'PDF') return { label: 'PDF', classes: 'bg-red-50 text-red-700' }
-  if (ext === 'XLS' || ext === 'XLSX') return { label: 'XLS', classes: 'bg-accent-soft text-accent-ink' }
-  if (ext === 'CSV') return { label: 'CSV', classes: 'bg-accent-soft text-accent-ink' }
-  if (ext === 'DOC' || ext === 'DOCX') return { label: 'DOC', classes: 'bg-blue-50 text-blue-700' }
-  if (ext) return { label: ext.slice(0, 3), classes: 'bg-bg text-ink-soft' }
-  return { label: '?', classes: 'bg-accent-soft text-accent-ink' }
+  if (ext === 'PDF') return { label: 'PDF', textClass: 'text-red-600' }
+  if (ext === 'XLS' || ext === 'XLSX') return { label: 'XLS', textClass: 'text-emerald-600' }
+  if (ext === 'CSV') return { label: 'CSV', textClass: 'text-emerald-600' }
+  if (ext === 'DOC' || ext === 'DOCX') return { label: 'DOC', textClass: 'text-blue-600' }
+  if (ext) return { label: ext.slice(0, 3), textClass: 'text-ink-soft' }
+  return { label: '', textClass: 'text-ink-soft' }
 }
 
 function FileBadge({ fileName }: { fileName: string | null }) {
-  const { label, classes } = fileTypeBadge(fileName)
+  const { label, textClass } = fileTypeBadge(fileName)
   return (
-    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[10px] font-bold ${classes}`}>
-      {label}
+    <span className={`relative flex h-9 w-8 shrink-0 items-start justify-center ${textClass}`}>
+      <svg viewBox="0 0 24 28" className="h-9 w-8" fill="none" aria-hidden="true">
+        <path
+          d="M3.5 2.5c0-.55.45-1 1-1H14l6.5 6.5V25.5c0 .55-.45 1-1 1h-15c-.55 0-1-.45-1-1V2.5z"
+          fill="currentColor"
+          fillOpacity="0.1"
+          stroke="currentColor"
+          strokeWidth="1.25"
+          strokeLinejoin="round"
+        />
+        <path d="M14 1.5V7c0 .55.45 1 1 1h5.5" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+      </svg>
+      {label && <span className="absolute bottom-1.5 text-[7px] font-bold tracking-tight">{label}</span>}
     </span>
   )
 }
@@ -301,8 +314,8 @@ function ExceptionRow({
     }
   }
 
-  const downloadFile = async (requestId: string, fileName: string) => {
-    const res = await apiClient.get(`/evidence-requests/${requestId}/file`, { responseType: 'blob' })
+  const downloadFile = async (requestId: string, fileId: string, fileName: string) => {
+    const res = await apiClient.get(`/evidence-requests/${requestId}/files/${fileId}`, { responseType: 'blob' })
     const url = URL.createObjectURL(res.data as Blob)
     const link = document.createElement('a')
     link.href = url
@@ -311,6 +324,18 @@ function ExceptionRow({
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
+  }
+
+  const [deletingFileId, setDeletingFileId] = useState<string | null>(null)
+
+  const deleteFile = async (requestId: string, fileId: string) => {
+    setDeletingFileId(fileId)
+    try {
+      await apiClient.delete(`/evidence-requests/${requestId}/files/${fileId}`)
+      loadCollaboration()
+    } finally {
+      setDeletingFileId(null)
+    }
   }
 
   const submitComment = async () => {
@@ -652,7 +677,7 @@ function ExceptionRow({
                 <ul className="mt-2 divide-y divide-line">
                   {evidenceRequests.map((r) => (
                     <li key={r.request_id} className="flex items-start gap-3 py-2 text-xs first:pt-2">
-                      <FileBadge fileName={r.status === 'received' ? r.file_name : null} />
+                      <FileBadge fileName={r.files[0]?.file_name ?? null} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
                           <div className="font-medium text-ink">{r.description}</div>
@@ -664,25 +689,48 @@ function ExceptionRow({
                             {r.status === 'received' ? 'Received' : 'Awaiting'}
                           </span>
                         </div>
-                        {r.status === 'awaiting' ? (
-                          <div className="text-ink-soft">
-                            Requested {new Date(r.requested_at).toLocaleDateString()}
-                            {labelFor(r.requested_by_name, r.requested_by_role) && ` by ${labelFor(r.requested_by_name, r.requested_by_role)}`}
-                            {r.due_date && ` · due ${r.due_date}`} · awaiting upload
-                          </div>
-                        ) : (
-                          <div className="text-ink-soft">
-                            Uploaded {labelFor(r.uploaded_by_name, r.uploaded_by_role) ? `by ${labelFor(r.uploaded_by_name, r.uploaded_by_role)}` : ''}
-                            {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
-                          </div>
+                        <div className="text-ink-soft">
+                          Requested {new Date(r.requested_at).toLocaleDateString()}
+                          {labelFor(r.requested_by_name, r.requested_by_role) && ` by ${labelFor(r.requested_by_name, r.requested_by_role)}`}
+                          {r.due_date && ` · due ${r.due_date}`}
+                          {r.status === 'awaiting' && ' · awaiting upload'}
+                        </div>
+
+                        {r.files.length > 0 && (
+                          <ul className="mt-1 space-y-1">
+                            {r.files.map((f) => (
+                              <li key={f.evidence_file_id} className="flex items-center gap-2">
+                                <button
+                                  onClick={() => downloadFile(r.request_id, f.evidence_file_id, f.file_name)}
+                                  className="font-mono text-accent-ink hover:underline"
+                                >
+                                  {f.file_name}
+                                </button>
+                                <span className="text-[10px] text-ink-soft">
+                                  {labelFor(f.uploaded_by_name, f.uploaded_by_role) ? `by ${labelFor(f.uploaded_by_name, f.uploaded_by_role)} · ` : ''}
+                                  {new Date(f.uploaded_at).toLocaleString()}
+                                </span>
+                                {!canManage && (
+                                  <button
+                                    onClick={() => deleteFile(r.request_id, f.evidence_file_id)}
+                                    disabled={deletingFileId === f.evidence_file_id}
+                                    className="text-[10px] font-medium text-red-600 hover:underline disabled:opacity-60"
+                                  >
+                                    {deletingFileId === f.evidence_file_id ? 'Removing…' : 'Remove'}
+                                  </button>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
                         )}
-                        {r.status === 'received' ? (
-                          <button onClick={() => downloadFile(r.request_id, r.file_name ?? 'evidence')} className="mt-1 font-mono text-accent-ink hover:underline">
-                            {r.file_name}
-                          </button>
+
+                        {canManage ? (
+                          r.files.length === 0 && (
+                            <div className="mt-1 text-[11px] text-ink-soft">Awaiting the client to upload supporting evidence.</div>
+                          )
                         ) : (
                           <label className="mt-1 inline-block cursor-pointer rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-bg">
-                            {uploadingRequestId === r.request_id ? 'Uploading…' : 'Upload file'}
+                            {uploadingRequestId === r.request_id ? 'Uploading…' : r.files.length > 0 ? 'Add another file' : 'Upload file'}
                             <input
                               type="file"
                               className="hidden"

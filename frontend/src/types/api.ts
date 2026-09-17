@@ -660,6 +660,17 @@ export interface ExceptionTraceOut {
   status: string
 }
 
+export interface EvidenceFileOut {
+  evidence_file_id: string
+  request_id: string
+  file_name: string
+  content_type: string | null
+  uploaded_by: string | null
+  uploaded_at: string
+  uploaded_by_name: string | null
+  uploaded_by_role: string | null
+}
+
 export interface EvidenceRequestOut {
   request_id: string
   exception_id: string
@@ -668,14 +679,9 @@ export interface EvidenceRequestOut {
   status: 'awaiting' | 'received'
   requested_by: string | null
   requested_at: string
-  file_name: string | null
-  content_type: string | null
-  uploaded_by: string | null
-  uploaded_at: string | null
+  files: EvidenceFileOut[]
   requested_by_name: string | null
   requested_by_role: string | null
-  uploaded_by_name: string | null
-  uploaded_by_role: string | null
 }
 
 export interface ExceptionCommentOut {

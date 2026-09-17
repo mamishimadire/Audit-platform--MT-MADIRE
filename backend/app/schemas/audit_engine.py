@@ -206,6 +206,18 @@ class EvidenceRequestCreate(OrmModel):
     due_date: date | None = None
 
 
+class EvidenceFileOut(OrmModel):
+    evidence_file_id: uuid.UUID
+    request_id: uuid.UUID
+    file_name: str
+    content_type: str | None
+    uploaded_by: uuid.UUID | None
+    uploaded_at: datetime
+    # Same reasoning as EvidenceRequestOut.requested_by_name below.
+    uploaded_by_name: str | None = None
+    uploaded_by_role: str | None = None
+
+
 class EvidenceRequestOut(OrmModel):
     request_id: uuid.UUID
     exception_id: uuid.UUID
@@ -214,10 +226,7 @@ class EvidenceRequestOut(OrmModel):
     status: str  # awaiting | received
     requested_by: uuid.UUID | None
     requested_at: datetime
-    file_name: str | None
-    content_type: str | None
-    uploaded_by: uuid.UUID | None
-    uploaded_at: datetime | None
+    files: list[EvidenceFileOut] = []
     # Resolved server-side (see routes/exceptions.py._resolve_user_display)
     # rather than making the frontend match requested_by/uploaded_by
     # against a users list — an internal auditor viewing/acting on a
@@ -226,8 +235,6 @@ class EvidenceRequestOut(OrmModel):
     # anything the audit team itself did.
     requested_by_name: str | None = None
     requested_by_role: str | None = None
-    uploaded_by_name: str | None = None
-    uploaded_by_role: str | None = None
 
 
 class ExceptionCommentCreate(OrmModel):

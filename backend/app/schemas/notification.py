@@ -17,3 +17,12 @@ class PendingApprovalOut(OrmModel):
     detail: str | None = None
     requested_at: datetime
     link_path: str
+
+
+class NotificationDismissRequest(OrmModel):
+    category: str
+    entity_id: uuid.UUID
+    label: str
+    detail: str | None = None
+    requested_at: datetime
+    link_path: str

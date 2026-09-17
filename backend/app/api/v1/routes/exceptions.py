@@ -7,10 +7,11 @@ from sqlalchemy.orm import Session
 from app.api.deps import enforce_same_organization, get_current_user, require_permissions
 from app.db.session import get_db
 from app.models.audit_test import AuditTest
-from app.models.evidence_exception import EvidenceRequest, Exception_, ExceptionComment, ExceptionRecord
+from app.models.evidence_exception import EvidenceFile, EvidenceRequest, Exception_, ExceptionComment, ExceptionRecord
 from app.models.monitoring import TestExecution
 from app.models.rbac import Role, User, UserRole
 from app.schemas.audit_engine import (
+    EvidenceFileOut,
     EvidenceRequestCreate,
     EvidenceRequestOut,
     ExceptionCommentCreate,
@@ -22,7 +23,12 @@ from app.schemas.audit_engine import (
     ExceptionUpdate,
 )
 from app.services.auth_service import get_user_permission_names
-from app.services.evidence_request_service import create_request, list_requests_for_exception, upload_evidence
+from app.services.evidence_request_service import (
+    create_request,
+    delete_evidence_file as delete_evidence_file_row,
+    list_requests_for_exception,
+    upload_evidence,
+)
 from app.services.exception_comment_service import add_comment, list_comments
 from app.services.exception_service import explain_exception, update_exception
 from app.services.exception_trace_service import trace_from_exception
@@ -54,19 +60,43 @@ def _resolve_user_display(db: Session, user_ids: set[uuid.UUID]) -> dict[uuid.UU
 
 
 def _to_evidence_requests_out(db: Session, requests: list[EvidenceRequest]) -> list[EvidenceRequestOut]:
-    user_ids = {r.requested_by for r in requests if r.requested_by} | {r.uploaded_by for r in requests if r.uploaded_by}
+    request_ids = [r.request_id for r in requests]
+    files_by_request: dict[uuid.UUID, list[EvidenceFile]] = {rid: [] for rid in request_ids}
+    all_files: list[EvidenceFile] = (
+        list(
+            db.scalars(
+                select(EvidenceFile).where(EvidenceFile.request_id.in_(request_ids)).order_by(EvidenceFile.uploaded_at.asc())
+            )
+        )
+        if request_ids
+        else []
+    )
+    for f in all_files:
+        files_by_request[f.request_id].append(f)
+
+    user_ids = {r.requested_by for r in requests if r.requested_by} | {f.uploaded_by for f in all_files if f.uploaded_by}
     display = _resolve_user_display(db, user_ids)
+
     out = []
     for r in requests:
         requested = display.get(r.requested_by) if r.requested_by else None
-        uploaded = display.get(r.uploaded_by) if r.uploaded_by else None
+        file_outs = []
+        for f in files_by_request[r.request_id]:
+            uploaded = display.get(f.uploaded_by) if f.uploaded_by else None
+            file_outs.append(
+                EvidenceFileOut.model_validate(f).model_copy(
+                    update={
+                        "uploaded_by_name": uploaded[0] if uploaded else None,
+                        "uploaded_by_role": uploaded[1] if uploaded else None,
+                    }
+                )
+            )
         out.append(
             EvidenceRequestOut.model_validate(r).model_copy(
                 update={
                     "requested_by_name": requested[0] if requested else None,
                     "requested_by_role": requested[1] if requested else None,
-                    "uploaded_by_name": uploaded[0] if uploaded else None,
-                    "uploaded_by_role": uploaded[1] if uploaded else None,
+                    "files": file_outs,
                 }
             )
         )
@@ -120,6 +150,23 @@ def _require_exception_collaborator(db: Session, *, exception: Exception_, user:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only this exception's assigned owner or the audit team can view or take part in its evidence requests and comments.",
         )
+
+
+def _require_evidence_uploader(db: Session, *, exception: Exception_, user: User) -> None:
+    """Uploading evidence is the client side fulfilling a request the audit
+    team made of them — the auditor who asked for the document can only
+    download what comes back as proof, not supply it themselves. Being a
+    collaborator (already checked by the caller) is necessary but not
+    sufficient here."""
+    if exception.owner_id == user.user_id:
+        return
+    granted = get_user_permission_names(db, user.user_id)
+    if "exceptions:assign" in granted:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the client side (this exception's owner or the client organization's admin) can upload evidence. The audit team can only download it.",
+    )
 
 
 @router.get("/exceptions/{exception_id}", response_model=ExceptionOut)
@@ -201,12 +248,14 @@ def trace(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = D
     return trace_from_exception(db, exception=exception)
 
 
-# --- Evidence requests: an auditor asks the client for one specific
-# document, the client uploads it, done. Requesting is auditor-only.
-# Viewing/uploading is restricted to this exception's own assigned owner
-# plus the audit team (_require_exception_collaborator) — NOT every
-# member of the organization; this is a private, exception-specific
-# conversation, not a shared noticeboard.
+# --- Evidence requests: an auditor asks the client for one or more
+# documents, the client uploads them, done. Requesting is auditor-only;
+# uploading/deleting is client-only (_require_evidence_uploader) — the
+# audit team can only download what comes back as proof. Viewing (both
+# sides) is restricted to this exception's own assigned owner plus the
+# audit team (_require_exception_collaborator) — NOT every member of the
+# organization; this is a private, exception-specific conversation, not
+# a shared noticeboard.
 
 
 def _get_evidence_request_with_org(db: Session, request_id: uuid.UUID) -> tuple[EvidenceRequest, Exception_, uuid.UUID]:
@@ -215,6 +264,16 @@ def _get_evidence_request_with_org(db: Session, request_id: uuid.UUID) -> tuple[
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence request not found")
     exception, organization_id = _get_exception_with_org(db, request.exception_id)
     return request, exception, organization_id
+
+
+def _get_evidence_file_with_org(
+    db: Session, request_id: uuid.UUID, file_id: uuid.UUID
+) -> tuple[EvidenceFile, EvidenceRequest, Exception_, uuid.UUID]:
+    evidence_file = db.get(EvidenceFile, file_id)
+    if evidence_file is None or evidence_file.request_id != request_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence file not found")
+    request, exception, organization_id = _get_evidence_request_with_org(db, request_id)
+    return evidence_file, request, exception, organization_id
 
 
 @router.get("/exceptions/{exception_id}/evidence-requests", response_model=list[EvidenceRequestOut])
@@ -257,6 +316,7 @@ async def upload_evidence_route(
     request, exception, organization_id = _get_evidence_request_with_org(db, request_id)
     enforce_same_organization(organization_id, user, db)
     _require_exception_collaborator(db, exception=exception, user=user)
+    _require_evidence_uploader(db, exception=exception, user=user)
     data = await file.read()
     try:
         updated = upload_evidence(
@@ -268,20 +328,34 @@ async def upload_evidence_route(
     return _to_evidence_requests_out(db, [updated])[0]
 
 
-@router.get("/evidence-requests/{request_id}/file")
+@router.get("/evidence-requests/{request_id}/files/{file_id}")
 def download_evidence_file(
-    request_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    request_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> Response:
-    request, exception, organization_id = _get_evidence_request_with_org(db, request_id)
+    evidence_file, _request, exception, organization_id = _get_evidence_file_with_org(db, request_id, file_id)
     enforce_same_organization(organization_id, user, db)
     _require_exception_collaborator(db, exception=exception, user=user)
-    if request.file_data is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No file has been uploaded for this request yet")
     return Response(
-        content=request.file_data,
-        media_type=request.content_type or "application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{request.file_name or "evidence"}"'},
+        content=evidence_file.file_data,
+        media_type=evidence_file.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{evidence_file.file_name}"'},
     )
+
+
+@router.delete("/evidence-requests/{request_id}/files/{file_id}", response_model=EvidenceRequestOut)
+def delete_evidence_file_route(
+    request_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> EvidenceRequestOut:
+    evidence_file, request, exception, organization_id = _get_evidence_file_with_org(db, request_id, file_id)
+    enforce_same_organization(organization_id, user, db)
+    _require_exception_collaborator(db, exception=exception, user=user)
+    # Only the client side can undo their own upload — same rule as who
+    # can upload in the first place (_require_evidence_uploader).
+    _require_evidence_uploader(db, exception=exception, user=user)
+    updated = delete_evidence_file_row(
+        db, request=request, evidence_file=evidence_file, organization_id=organization_id, deleted_by_user_id=user.user_id
+    )
+    return _to_evidence_requests_out(db, [updated])[0]
 
 
 # --- The auditor/client comment thread on one exception — same
