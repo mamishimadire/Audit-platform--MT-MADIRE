@@ -18,7 +18,7 @@ from app.models.data_source import (
 )
 from app.models.audit_test import AuditTest, ControlAuditTest, TestDataMapping, TestRule
 from app.models.monitoring import MonitoringSchedule, TestExecution
-from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
+from app.models.evidence_exception import Evidence, Exception_, ExceptionComment, ExceptionRecord, EvidenceRequest
 from app.models.finding import Finding, FindingRootCause, RemediationAction, Retest
 from app.models.audit_log import AuditLog
 from app.models.device import Device, DevicePolicyChange, DeviceTelemetry
@@ -58,6 +58,8 @@ __all__ = [
     "Evidence",
     "Exception_",
     "ExceptionRecord",
+    "EvidenceRequest",
+    "ExceptionComment",
     "Finding",
     "FindingRootCause",
     "RemediationAction",

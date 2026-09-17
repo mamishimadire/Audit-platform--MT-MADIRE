@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -57,3 +57,57 @@ class ExceptionRecord(Base):
     )
     record_identifier: Mapped[str | None] = mapped_column(String(255))
     exception_data: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class EvidenceRequest(Base):
+    """A named, tracked ask from an auditor for one specific piece of
+    evidence against an exception ("AD deprovisioning ticket for JSMITH"),
+    with a due date and its own awaiting/received lifecycle — distinct
+    from Evidence above (system-generated proof a test ran) and from
+    Exception_.status (the exception's own open/in_progress/... state, which
+    this doesn't touch). file_data is stored inline in Postgres rather than
+    on disk or in object storage — no object storage exists yet (see
+    execution_service.record_execution_report's evidence_location comment),
+    and these are individual documents (tickets, checklists, logs), not
+    something that needs a CDN."""
+
+    __tablename__ = "evidence_requests"
+
+    request_id: Mapped[uuid.UUID] = uuid_pk("request_id")
+    exception_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exceptions.exception_id", ondelete="CASCADE"), nullable=False
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="awaiting")
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # All five null together means "still awaiting" — filled in atomically
+    # by upload_evidence, at the same moment status flips to 'received'.
+    file_name: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    file_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ExceptionComment(Base):
+    """One message in the auditor/client discussion thread on an exception —
+    plain chronological log, no editing or deleting (an audit trail of who
+    said what, when, is the point)."""
+
+    __tablename__ = "exception_comments"
+
+    comment_id: Mapped[uuid.UUID] = uuid_pk("comment_id")
+    exception_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("exceptions.exception_id", ondelete="CASCADE"), nullable=False
+    )
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

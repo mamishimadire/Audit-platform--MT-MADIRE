@@ -6,7 +6,12 @@ import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
-import type { ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, UserOut } from '../types/api'
+import type { EvidenceRequestOut, ExceptionCommentOut, ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, UserOut } from '../types/api'
+
+function userName(orgUsers: UserOut[], userId: string | null): string | null {
+  const u = orgUsers.find((x) => x.user_id === userId)
+  return u ? `${u.first_name} ${u.last_name}` : null
+}
 
 const SEVERITY_STYLES: Record<string, string> = {
   critical: 'bg-red-50 text-red-700',
@@ -81,12 +86,81 @@ function ExceptionRow({
   const [justCreatedTitle, setJustCreatedTitle] = useState<string | null>(null)
   const [assigning, setAssigning] = useState(false)
 
+  const [evidenceRequests, setEvidenceRequests] = useState<EvidenceRequestOut[]>([])
+  const [comments, setComments] = useState<ExceptionCommentOut[]>([])
+  const [requestingEvidence, setRequestingEvidence] = useState(false)
+  const [newRequestDescription, setNewRequestDescription] = useState('')
+  const [newRequestDueDate, setNewRequestDueDate] = useState('')
+  const [submittingRequest, setSubmittingRequest] = useState(false)
+  const [uploadingRequestId, setUploadingRequestId] = useState<string | null>(null)
+  const [newCommentBody, setNewCommentBody] = useState('')
+  const [submittingComment, setSubmittingComment] = useState(false)
+
+  const loadCollaboration = () => {
+    apiClient.get<EvidenceRequestOut[]>(`/exceptions/${exception.exception_id}/evidence-requests`).then((res) => setEvidenceRequests(res.data))
+    apiClient.get<ExceptionCommentOut[]>(`/exceptions/${exception.exception_id}/comments`).then((res) => setComments(res.data))
+  }
+
   const toggle = () => {
     if (!open && records === null) {
       apiClient.get<ExceptionRecordOut[]>(`/exceptions/${exception.exception_id}/records`).then((res) => setRecords(res.data))
       apiClient.get<ExceptionExplanationOut>(`/exceptions/${exception.exception_id}/explanation`).then((res) => setExplanation(res.data))
+      loadCollaboration()
     }
     setOpen(!open)
+  }
+
+  const submitEvidenceRequest = async () => {
+    if (!newRequestDescription.trim()) return
+    setSubmittingRequest(true)
+    try {
+      await apiClient.post(`/exceptions/${exception.exception_id}/evidence-requests`, {
+        description: newRequestDescription,
+        due_date: newRequestDueDate || null,
+      })
+      setNewRequestDescription('')
+      setNewRequestDueDate('')
+      setRequestingEvidence(false)
+      loadCollaboration()
+    } finally {
+      setSubmittingRequest(false)
+    }
+  }
+
+  const uploadFile = async (requestId: string, file: File) => {
+    setUploadingRequestId(requestId)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      await apiClient.post(`/evidence-requests/${requestId}/upload`, form)
+      loadCollaboration()
+    } finally {
+      setUploadingRequestId(null)
+    }
+  }
+
+  const downloadFile = async (requestId: string, fileName: string) => {
+    const res = await apiClient.get(`/evidence-requests/${requestId}/file`, { responseType: 'blob' })
+    const url = URL.createObjectURL(res.data as Blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const submitComment = async () => {
+    if (!newCommentBody.trim()) return
+    setSubmittingComment(true)
+    try {
+      await apiClient.post(`/exceptions/${exception.exception_id}/comments`, { body: newCommentBody })
+      setNewCommentBody('')
+      loadCollaboration()
+    } finally {
+      setSubmittingComment(false)
+    }
   }
 
   const changeStatus = async (status: string) => {
@@ -275,6 +349,131 @@ function ExceptionRow({
                 )}
               </dl>
             ))}
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-md border border-line bg-surface p-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Evidence requested from client</div>
+                  {canManage && !requestingEvidence && (
+                    <button onClick={() => setRequestingEvidence(true)} className="text-xs font-medium text-accent-ink hover:underline">
+                      Request evidence
+                    </button>
+                  )}
+                </div>
+
+                {requestingEvidence && (
+                  <div className="mt-2 space-y-1 rounded-md border border-line bg-bg p-2">
+                    <input
+                      placeholder="What do you need? e.g. AD deprovisioning ticket for JSMITH"
+                      value={newRequestDescription}
+                      onChange={(e) => setNewRequestDescription(e.target.value)}
+                      className="w-full rounded-md border border-line px-2 py-1 text-xs"
+                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="date"
+                        value={newRequestDueDate}
+                        onChange={(e) => setNewRequestDueDate(e.target.value)}
+                        className="rounded-md border border-line px-2 py-1 text-xs"
+                      />
+                      <button
+                        onClick={submitEvidenceRequest}
+                        disabled={!newRequestDescription.trim() || submittingRequest}
+                        className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-60"
+                      >
+                        {submittingRequest ? 'Requesting…' : 'Submit'}
+                      </button>
+                      <button onClick={() => setRequestingEvidence(false)} className="text-xs font-medium text-ink-soft hover:underline">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <ul className="mt-2 space-y-2">
+                  {evidenceRequests.map((r) => (
+                    <li key={r.request_id} className="text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-medium text-ink">{r.description}</div>
+                          {r.status === 'awaiting' ? (
+                            <div className="text-ink-soft">
+                              Requested {new Date(r.requested_at).toLocaleDateString()}
+                              {userName(orgUsers, r.requested_by) && ` by ${userName(orgUsers, r.requested_by)}`}
+                              {r.due_date && ` · due ${r.due_date}`} · awaiting upload
+                            </div>
+                          ) : (
+                            <div className="text-ink-soft">
+                              Uploaded {userName(orgUsers, r.uploaded_by) ? `by ${userName(orgUsers, r.uploaded_by)}` : ''}
+                              {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
+                            </div>
+                          )}
+                        </div>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            r.status === 'received' ? 'bg-accent-soft text-accent-ink' : 'bg-orange-50 text-orange-700'
+                          }`}
+                        >
+                          {r.status === 'received' ? 'Received' : 'Awaiting'}
+                        </span>
+                      </div>
+                      {r.status === 'received' ? (
+                        <button onClick={() => downloadFile(r.request_id, r.file_name ?? 'evidence')} className="mt-1 font-mono text-accent-ink hover:underline">
+                          {r.file_name}
+                        </button>
+                      ) : (
+                        <label className="mt-1 inline-block cursor-pointer rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-bg">
+                          {uploadingRequestId === r.request_id ? 'Uploading…' : 'Upload file'}
+                          <input
+                            type="file"
+                            className="hidden"
+                            disabled={uploadingRequestId === r.request_id}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0]
+                              if (file) uploadFile(r.request_id, file)
+                              e.target.value = ''
+                            }}
+                          />
+                        </label>
+                      )}
+                    </li>
+                  ))}
+                  {evidenceRequests.length === 0 && !requestingEvidence && <li className="text-xs text-ink-soft">No evidence requested yet.</li>}
+                </ul>
+              </div>
+
+              <div className="rounded-md border border-line bg-surface p-3">
+                <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Comments</div>
+                <ul className="mt-2 space-y-2">
+                  {comments.map((c) => (
+                    <li key={c.comment_id} className="rounded-md bg-bg p-2 text-xs">
+                      <div className="font-medium text-ink">
+                        {userName(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
+                        <span className="font-normal text-ink-soft">{new Date(c.created_at).toLocaleString()}</span>
+                      </div>
+                      <div className="mt-0.5 text-ink">{c.body}</div>
+                    </li>
+                  ))}
+                  {comments.length === 0 && <li className="text-xs text-ink-soft">No comments yet.</li>}
+                </ul>
+                <div className="mt-2 flex gap-2">
+                  <textarea
+                    placeholder="Add a comment…"
+                    value={newCommentBody}
+                    onChange={(e) => setNewCommentBody(e.target.value)}
+                    className="flex-1 rounded-md border border-line px-2 py-1 text-xs"
+                    rows={2}
+                  />
+                  <button
+                    onClick={submitComment}
+                    disabled={!newCommentBody.trim() || submittingComment}
+                    className="self-end rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-60"
+                  >
+                    {submittingComment ? '…' : 'Post'}
+                  </button>
+                </div>
+              </div>
+            </div>
           </td>
         </tr>
       )}

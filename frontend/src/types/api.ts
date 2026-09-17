@@ -626,6 +626,28 @@ export interface ExceptionExplanationOut {
   last_seen: string
 }
 
+export interface EvidenceRequestOut {
+  request_id: string
+  exception_id: string
+  description: string
+  due_date: string | null
+  status: 'awaiting' | 'received'
+  requested_by: string | null
+  requested_at: string
+  file_name: string | null
+  content_type: string | null
+  uploaded_by: string | null
+  uploaded_at: string | null
+}
+
+export interface ExceptionCommentOut {
+  comment_id: string
+  exception_id: string
+  author_id: string | null
+  body: string
+  created_at: string
+}
+
 export interface MappingSuggestion {
   field_id: string
   field_name: string

@@ -158,6 +158,37 @@ class ExceptionExplanationOut(OrmModel):
     last_seen: datetime
 
 
+class EvidenceRequestCreate(OrmModel):
+    description: str
+    due_date: date | None = None
+
+
+class EvidenceRequestOut(OrmModel):
+    request_id: uuid.UUID
+    exception_id: uuid.UUID
+    description: str
+    due_date: date | None
+    status: str  # awaiting | received
+    requested_by: uuid.UUID | None
+    requested_at: datetime
+    file_name: str | None
+    content_type: str | None
+    uploaded_by: uuid.UUID | None
+    uploaded_at: datetime | None
+
+
+class ExceptionCommentCreate(OrmModel):
+    body: str
+
+
+class ExceptionCommentOut(OrmModel):
+    comment_id: uuid.UUID
+    exception_id: uuid.UUID
+    author_id: uuid.UUID | None
+    body: str
+    created_at: datetime
+
+
 # --- Gateway-facing: pulling due work and reporting results ---
 
 
