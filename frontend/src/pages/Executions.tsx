@@ -286,7 +286,21 @@ export function ExecutionsPage() {
           </thead>
           <tbody>
             {filtered.map((e) => {
-              const rowExceptions = e.status === 'exception' ? exceptionsFor(e.execution_id) : []
+              // "Current" (latest run per test) matches by audit_test_id and
+              // open status instead of requiring the exact execution_id — a
+              // currently-open exception's execution_id moves forward to
+              // whichever run most recently re-detected it (see execution_
+              // service.record_execution_report), which can be a beat ahead
+              // of this page's own, separately-fetched executions list on a
+              // fast-cycling schedule. "History" keeps the exact execution_id
+              // match, since each row's own reason should reflect what THAT
+              // specific run found.
+              const rowExceptions =
+                e.status !== 'exception'
+                  ? []
+                  : view === 'current'
+                    ? exceptions.filter((x) => x.audit_test_id === e.audit_test_id && x.status !== 'resolved' && x.status !== 'closed')
+                    : exceptionsFor(e.execution_id)
               const isExpanded = expandedId === e.execution_id
               const preview = rowExceptions[0]?.summary ?? rowExceptions[0]?.exception_description ?? ''
               return (

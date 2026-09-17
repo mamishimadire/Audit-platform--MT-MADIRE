@@ -641,7 +641,23 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                   </thead>
                   <tbody>
                     {filteredExecutions.map((e) => {
-                      const rowExceptions = e.status === 'exception' ? exceptions.filter((x) => x.execution_id === e.execution_id) : []
+                      // "Current" (a single row, the latest execution) matches by
+                      // audit_test_id and open status instead of requiring the
+                      // exact execution_id — a currently-open exception's
+                      // execution_id moves forward to whichever run most recently
+                      // re-detected it (see execution_service.record_execution_
+                      // report), which can be a beat ahead of this panel's own,
+                      // separately-fetched executions list on a fast-cycling
+                      // schedule. "History" (many past rows) keeps the exact
+                      // execution_id match, since each row's own reason should
+                      // reflect what THAT specific run found, not every
+                      // currently-open issue for the test.
+                      const rowExceptions =
+                        e.status !== 'exception'
+                          ? []
+                          : execView === 'current'
+                            ? exceptions.filter((x) => x.audit_test_id === auditTestId && x.status !== 'resolved' && x.status !== 'closed')
+                            : exceptions.filter((x) => x.execution_id === e.execution_id)
                       const isExpanded = expandedExecutionId === e.execution_id
                       const preview = rowExceptions[0]?.summary ?? rowExceptions[0]?.exception_description ?? ''
                       return (

@@ -264,4 +264,5 @@ def list_exceptions_for_organization(db: Session, *, organization_id: uuid.UUID)
         exc.what_to_do = explained["what_to_do"]
         exc.control_code = explained["control_code"]
         exc.control_name = explained["control_name"]
+        exc.audit_test_id = explained["audit_test_id"]
     return exceptions

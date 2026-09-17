@@ -318,6 +318,14 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
         "last_seen": exception.last_detected_at,
         "control_code": control.control_code if control else None,
         "control_name": control.control_name if control else None,
+        # Lets a reader match this exception to "the current status of
+        # THIS test" by audit_test_id rather than by the exact execution_id
+        # it happens to be pointed at right now — more robust for a
+        # frequently re-running test, where execution_id moves forward on
+        # every re-detection (see execution_service.record_execution_report)
+        # and a client fetching executions/exceptions as two separate
+        # requests can otherwise catch them a beat apart.
+        "audit_test_id": audit_test.audit_test_id if audit_test else None,
     }
 
 

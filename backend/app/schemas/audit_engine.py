@@ -112,6 +112,12 @@ class ExceptionOut(OrmModel):
     # no control_library link (nothing to group it under).
     control_code: str | None = None
     control_name: str | None = None
+    # Also only set by list_exceptions_for_organization — lets a UI match
+    # "every currently-open exception for THIS test" by audit_test_id
+    # rather than requiring an exact execution_id match, which moves
+    # forward on every re-detection and can be a request or two ahead of
+    # a separately-fetched executions list on a frequently re-running test.
+    audit_test_id: uuid.UUID | None = None
 
 
 class ExceptionUpdate(OrmModel):

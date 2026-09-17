@@ -589,6 +589,7 @@ export interface ExceptionOut {
   what_to_do: string | null
   control_code: string | null
   control_name: string | null
+  audit_test_id: string | null
 }
 
 export interface ExceptionRecordOut {
