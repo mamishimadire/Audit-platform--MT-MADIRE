@@ -6,10 +6,13 @@ from sqlalchemy.orm import Session
 from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataConnectionChange, DataSource
 from app.models.device import ApprovedSoftware, Device, DevicePolicyChange
+from app.models.evidence_exception import EvidenceRequest, Exception_
+from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.models.rbac import User
 from app.models.risk_control import Control
 from app.schemas.notification import PendingApprovalOut
 from app.services.auth_service import get_user_permission_names
+from app.services.exception_service import OPEN_STATUSES
 
 # Every mapping row that exists was explicitly created by a human — either
 # accepting a suggestion or mapping a field by hand (see mapping_service.
@@ -243,6 +246,91 @@ def _pending_device_lifecycle(db: Session, *, organization_id: uuid.UUID, exclud
     return out
 
 
+def _pending_schedules(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Was missing entirely — added when monitoring schedules got their own
+    maker-checker (migration 0062), but never wired into the bell, so a
+    pending schedule change sat invisible until someone happened to open
+    the audit test that requested it."""
+    rows = db.execute(
+        select(MonitoringSchedule, AuditTest)
+        .join(AuditTest, AuditTest.audit_test_id == MonitoringSchedule.audit_test_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            MonitoringSchedule.status == "pending_approval",
+            MonitoringSchedule.created_by != exclude_user_id,
+        )
+    )
+    return [
+        PendingApprovalOut(
+            category="monitoring_schedule",
+            entity_id=schedule.schedule_id,
+            label=f"New monitoring schedule for {test.test_code or test.test_name}",
+            detail=f"Requested cadence: {schedule.frequency}. It will not run until someone approves it.",
+            requested_at=schedule.created_at,
+            link_path="/audit-tests",
+        )
+        for schedule, test in rows
+    ]
+
+
+def _your_open_exceptions(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Not a maker-checker approval — every user sees their OWN assigned
+    exceptions here, regardless of permission, same as the Exceptions page
+    itself already shows them to their owner. This is what makes the bell
+    a real inbox and not just an approvals queue: an Exception Owner has
+    nothing to approve, but plenty that's genuinely waiting on them."""
+    rows = db.execute(
+        select(Exception_, TestExecution, AuditTest)
+        .join(TestExecution, TestExecution.execution_id == Exception_.execution_id)
+        .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            Exception_.owner_id == user_id,
+            Exception_.status.in_(OPEN_STATUSES),
+        )
+    )
+    return [
+        PendingApprovalOut(
+            category="your_exception",
+            entity_id=exception.exception_id,
+            label=f"Exception assigned to you: {exception.exception_description or test.test_name}",
+            detail=f"Status: {exception.status}. Resolve it (or update its status) once you've looked into it.",
+            requested_at=exception.last_detected_at,
+            link_path="/exceptions",
+        )
+        for exception, _execution, test in rows
+    ]
+
+
+def _evidence_requests_waiting_on_you(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Any org member can upload against a request (see routes/exceptions.
+    py's evidence-requests comment), so this is shown to everyone in the
+    organization except whoever asked for it — they're the one waiting,
+    not the one being waited on."""
+    rows = db.execute(
+        select(EvidenceRequest, Exception_)
+        .join(Exception_, Exception_.exception_id == EvidenceRequest.exception_id)
+        .join(TestExecution, TestExecution.execution_id == Exception_.execution_id)
+        .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            EvidenceRequest.status == "awaiting",
+            EvidenceRequest.requested_by != exclude_user_id,
+        )
+    )
+    return [
+        PendingApprovalOut(
+            category="evidence_request",
+            entity_id=request.request_id,
+            label=f"Evidence needed: {request.description}",
+            detail=f"Due {request.due_date}" if request.due_date else "No due date set.",
+            requested_at=request.requested_at,
+            link_path="/exceptions",
+        )
+        for request, _exception in rows
+    ]
+
+
 def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: User) -> list[PendingApprovalOut]:
     """Everything this specific user is both eligible to decide on (holds
     the permission the approve endpoint itself requires) and did not
@@ -266,6 +354,13 @@ def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: Use
         items += _pending_approved_software(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if _PENDING_PERMISSION["device_revocation"] in granted or _PENDING_PERMISSION["device_deletion"] in granted:
         items += _pending_device_lifecycle(db, organization_id=organization_id, exclude_user_id=user.user_id)
+    if "audit_framework:manage" in granted:
+        items += _pending_schedules(db, organization_id=organization_id, exclude_user_id=user.user_id)
+
+    # Not gated by permission — every user sees their own inbox items
+    # regardless of what they're eligible to approve.
+    items += _your_open_exceptions(db, organization_id=organization_id, user_id=user.user_id)
+    items += _evidence_requests_waiting_on_you(db, organization_id=organization_id, exclude_user_id=user.user_id)
 
     items.sort(key=lambda i: i.requested_at, reverse=True)
     return items

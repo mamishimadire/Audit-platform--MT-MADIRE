@@ -46,6 +46,12 @@ class Exception_(Base):
 
 
 class ExceptionRecord(Base):
+    """One row per time an exception was (re-)detected — a real_time
+    schedule re-detecting the SAME unresolved issue every few minutes
+    accumulates one of these on every run, not just the first. detected_at
+    is what lets a reader ask for just the latest ("current") without the
+    full pile-up; see exception_service.list_records_for_exception."""
+
     __tablename__ = "exception_records"
 
     exception_record_id: Mapped[uuid.UUID] = uuid_pk("exception_record_id")
@@ -57,6 +63,7 @@ class ExceptionRecord(Base):
     )
     record_identifier: Mapped[str | None] = mapped_column(String(255))
     exception_data: Mapped[dict | None] = mapped_column(JSONB)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class EvidenceRequest(Base):

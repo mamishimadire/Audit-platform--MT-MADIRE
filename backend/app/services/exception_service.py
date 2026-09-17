@@ -4,10 +4,12 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from datetime import datetime, timezone
+
 from app.models.audit_test import AuditTest, ControlAuditTest, TestRule
 from app.models.control_library import ControlLibraryEntry
 from app.models.evidence_exception import Exception_, ExceptionRecord
-from app.models.monitoring import TestExecution
+from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.models.organization import OrganizationSetting
 from app.models.risk_control import Control, Risk, RiskControl
 from app.services.audit_log_service import log_action
@@ -429,6 +431,26 @@ def explain_exception(db: Session, *, exception: Exception_) -> dict:
     return explain_exceptions_bulk(db, exceptions=[exception])[exception.exception_id]
 
 
+def _trigger_immediate_retest(db: Session, *, exception: Exception_) -> None:
+    """Marking an exception resolved/closed should prove it, not just say
+    it — bump the underlying test's active schedule so the next Gateway
+    (or direct-execution) poll picks it up right away instead of waiting
+    for its normal cadence. Same 'eligible immediately' mechanism
+    monitoring_service.approve_schedule already uses; a no-op if the test
+    has no active schedule (a device/software-compliance control has none
+    at all — those re-evaluate on their own whenever telemetry arrives)."""
+    execution = db.get(TestExecution, exception.execution_id)
+    if execution is None:
+        return
+    schedule = db.scalar(
+        select(MonitoringSchedule).where(
+            MonitoringSchedule.audit_test_id == execution.audit_test_id, MonitoringSchedule.status == "active"
+        )
+    )
+    if schedule is not None:
+        schedule.next_run = datetime.now(timezone.utc)
+
+
 def update_exception(
     db: Session, *, exception: Exception_, status: str | None, owner_id: uuid.UUID | None, organization_id: uuid.UUID,
     updated_by_user_id: uuid.UUID,
@@ -448,6 +470,8 @@ def update_exception(
         exception.status = status
     if owner_id is not None:
         exception.owner_id = owner_id
+    if status in _CLOSING_STATUSES and old_status != status:
+        _trigger_immediate_retest(db, exception=exception)
     log_action(
         db,
         action=f"Exception status changed: {old_status} -> {exception.status}",

@@ -103,6 +103,7 @@ class ExceptionRecordOut(OrmModel):
     exception_id: uuid.UUID
     record_identifier: str | None
     exception_data: dict | None
+    detected_at: datetime
 
 
 class ExceptionOut(OrmModel):
@@ -217,6 +218,16 @@ class EvidenceRequestOut(OrmModel):
     content_type: str | None
     uploaded_by: uuid.UUID | None
     uploaded_at: datetime | None
+    # Resolved server-side (see routes/exceptions.py._resolve_user_display)
+    # rather than making the frontend match requested_by/uploaded_by
+    # against a users list — an internal auditor viewing/acting on a
+    # client's exception is never IN that client's own /organizations/{id}/
+    # users list, so a client-scoped lookup would show "Unknown user" for
+    # anything the audit team itself did.
+    requested_by_name: str | None = None
+    requested_by_role: str | None = None
+    uploaded_by_name: str | None = None
+    uploaded_by_role: str | None = None
 
 
 class ExceptionCommentCreate(OrmModel):
@@ -229,6 +240,11 @@ class ExceptionCommentOut(OrmModel):
     author_id: uuid.UUID | None
     body: str
     created_at: datetime
+    # Same reasoning as EvidenceRequestOut.requested_by_name — resolved
+    # server-side so an internal auditor's own comment never shows as
+    # "Unknown user" to a client viewing their own organization's thread.
+    author_name: str | None = None
+    author_role: str | None = None
 
 
 # --- Gateway-facing: pulling due work and reporting results ---
