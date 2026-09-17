@@ -17,6 +17,52 @@ function userLabel(orgUsers: UserOut[], userId: string | null): string | null {
   return u.roles.length > 0 ? `${u.first_name} ${u.last_name} (${u.roles[0]})` : `${u.first_name} ${u.last_name}`
 }
 
+// A small "MM" / "TN" avatar circle — dark navy for the internal audit
+// team, teal for the client side — so a thread with both sides posting
+// reads at a glance without having to read every name.
+function userAvatar(orgUsers: UserOut[], userId: string | null): { initials: string; internal: boolean } {
+  const u = orgUsers.find((x) => x.user_id === userId)
+  if (!u) return { initials: '?', internal: false }
+  const initials = `${u.first_name[0] ?? ''}${u.last_name[0] ?? ''}`.toUpperCase()
+  const internal = u.roles.some((r) => (AUDIT_FRAMEWORK_ROLES as readonly string[]).includes(r))
+  return { initials, internal }
+}
+
+function Avatar({ orgUsers, userId }: { orgUsers: UserOut[]; userId: string | null }) {
+  const { initials, internal } = userAvatar(orgUsers, userId)
+  return (
+    <span
+      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white ${
+        internal ? 'bg-ink' : 'bg-teal-600'
+      }`}
+    >
+      {initials}
+    </span>
+  )
+}
+
+// A small colored file-type badge ("PDF", "XLS", "?" while still
+// awaiting) — the same visual shorthand the product spec's mockup uses,
+// so a list of requests reads at a glance instead of as plain text.
+function fileTypeBadge(fileName: string | null): { label: string; classes: string } {
+  const ext = fileName?.split('.').pop()?.toUpperCase() ?? ''
+  if (ext === 'PDF') return { label: 'PDF', classes: 'bg-red-50 text-red-700' }
+  if (ext === 'XLS' || ext === 'XLSX') return { label: 'XLS', classes: 'bg-accent-soft text-accent-ink' }
+  if (ext === 'CSV') return { label: 'CSV', classes: 'bg-accent-soft text-accent-ink' }
+  if (ext === 'DOC' || ext === 'DOCX') return { label: 'DOC', classes: 'bg-blue-50 text-blue-700' }
+  if (ext) return { label: ext.slice(0, 3), classes: 'bg-bg text-ink-soft' }
+  return { label: '?', classes: 'bg-accent-soft text-accent-ink' }
+}
+
+function FileBadge({ fileName }: { fileName: string | null }) {
+  const { label, classes } = fileTypeBadge(fileName)
+  return (
+    <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[10px] font-bold ${classes}`}>
+      {label}
+    </span>
+  )
+}
+
 const SEVERITY_STYLES: Record<string, string> = {
   critical: 'bg-red-50 text-red-700',
   high: 'bg-orange-50 text-orange-700',
@@ -487,68 +533,72 @@ function ExceptionRow({
                   </div>
                 )}
 
-                <ul className="mt-2 space-y-2">
+                <ul className="mt-2 divide-y divide-line">
                   {evidenceRequests.map((r) => (
-                    <li key={r.request_id} className="text-xs">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
+                    <li key={r.request_id} className="flex items-start gap-3 py-2 text-xs first:pt-2">
+                      <FileBadge fileName={r.status === 'received' ? r.file_name : null} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
                           <div className="font-medium text-ink">{r.description}</div>
-                          {r.status === 'awaiting' ? (
-                            <div className="text-ink-soft">
-                              Requested {new Date(r.requested_at).toLocaleDateString()}
-                              {userLabel(orgUsers, r.requested_by) && ` by ${userLabel(orgUsers, r.requested_by)}`}
-                              {r.due_date && ` · due ${r.due_date}`} · awaiting upload
-                            </div>
-                          ) : (
-                            <div className="text-ink-soft">
-                              Uploaded {userLabel(orgUsers, r.uploaded_by) ? `by ${userLabel(orgUsers, r.uploaded_by)}` : ''}
-                              {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
-                            </div>
-                          )}
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                              r.status === 'received' ? 'bg-accent-soft text-accent-ink' : 'bg-purple-50 text-purple-700'
+                            }`}
+                          >
+                            {r.status === 'received' ? 'Received' : 'Awaiting'}
+                          </span>
                         </div>
-                        <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                            r.status === 'received' ? 'bg-accent-soft text-accent-ink' : 'bg-orange-50 text-orange-700'
-                          }`}
-                        >
-                          {r.status === 'received' ? 'Received' : 'Awaiting'}
-                        </span>
+                        {r.status === 'awaiting' ? (
+                          <div className="text-ink-soft">
+                            Requested {new Date(r.requested_at).toLocaleDateString()}
+                            {userLabel(orgUsers, r.requested_by) && ` by ${userLabel(orgUsers, r.requested_by)}`}
+                            {r.due_date && ` · due ${r.due_date}`} · awaiting upload
+                          </div>
+                        ) : (
+                          <div className="text-ink-soft">
+                            Uploaded {userLabel(orgUsers, r.uploaded_by) ? `by ${userLabel(orgUsers, r.uploaded_by)}` : ''}
+                            {r.uploaded_at && ` · ${new Date(r.uploaded_at).toLocaleString()}`}
+                          </div>
+                        )}
+                        {r.status === 'received' ? (
+                          <button onClick={() => downloadFile(r.request_id, r.file_name ?? 'evidence')} className="mt-1 font-mono text-accent-ink hover:underline">
+                            {r.file_name}
+                          </button>
+                        ) : (
+                          <label className="mt-1 inline-block cursor-pointer rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-bg">
+                            {uploadingRequestId === r.request_id ? 'Uploading…' : 'Upload file'}
+                            <input
+                              type="file"
+                              className="hidden"
+                              disabled={uploadingRequestId === r.request_id}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0]
+                                if (file) uploadFile(r.request_id, file)
+                                e.target.value = ''
+                              }}
+                            />
+                          </label>
+                        )}
                       </div>
-                      {r.status === 'received' ? (
-                        <button onClick={() => downloadFile(r.request_id, r.file_name ?? 'evidence')} className="mt-1 font-mono text-accent-ink hover:underline">
-                          {r.file_name}
-                        </button>
-                      ) : (
-                        <label className="mt-1 inline-block cursor-pointer rounded-md border border-line px-2 py-1 text-[11px] font-medium text-ink hover:bg-bg">
-                          {uploadingRequestId === r.request_id ? 'Uploading…' : 'Upload file'}
-                          <input
-                            type="file"
-                            className="hidden"
-                            disabled={uploadingRequestId === r.request_id}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0]
-                              if (file) uploadFile(r.request_id, file)
-                              e.target.value = ''
-                            }}
-                          />
-                        </label>
-                      )}
                     </li>
                   ))}
-                  {evidenceRequests.length === 0 && !requestingEvidence && <li className="text-xs text-ink-soft">No evidence requested yet.</li>}
+                  {evidenceRequests.length === 0 && !requestingEvidence && <li className="py-2 text-xs text-ink-soft">No evidence requested yet.</li>}
                 </ul>
               </div>
 
               <div className="rounded-md border border-line bg-surface p-3">
                 <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Comments</div>
-                <ul className="mt-2 space-y-2">
+                <ul className="mt-2 space-y-3">
                   {comments.map((c) => (
-                    <li key={c.comment_id} className="rounded-md bg-bg p-2 text-xs">
-                      <div className="font-medium text-ink">
-                        {userLabel(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
-                        <span className="font-normal text-ink-soft">{new Date(c.created_at).toLocaleString()}</span>
+                    <li key={c.comment_id} className="flex items-start gap-2 text-xs">
+                      <Avatar orgUsers={orgUsers} userId={c.author_id} />
+                      <div className="min-w-0 flex-1 rounded-md bg-bg p-2">
+                        <div className="font-medium text-ink">
+                          {userLabel(orgUsers, c.author_id) ?? 'Unknown user'}{' '}
+                          <span className="font-normal text-ink-soft">{new Date(c.created_at).toLocaleString()}</span>
+                        </div>
+                        <div className="mt-0.5 text-ink">{c.body}</div>
                       </div>
-                      <div className="mt-0.5 text-ink">{c.body}</div>
                     </li>
                   ))}
                   {comments.length === 0 && <li className="text-xs text-ink-soft">No comments yet.</li>}
