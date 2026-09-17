@@ -304,7 +304,7 @@ export function ColumnMappingGrid({
             : "This control has a rule template, but it doesn't read any columns from this particular table."}
         </div>
       )}
-      <div className="overflow-hidden rounded-lg border border-line bg-surface">
+      <div className="overflow-x-auto rounded-lg border border-line bg-surface">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">

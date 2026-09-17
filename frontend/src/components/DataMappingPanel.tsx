@@ -275,7 +275,7 @@ export function DataMappingPanel({ organizationId, auditTestId, controlId, requi
       )}
 
       {!hasControlChecklist && canManage && suggestions.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-line bg-surface">
+        <div className="overflow-x-auto rounded-lg border border-line bg-surface">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
@@ -324,7 +324,7 @@ export function DataMappingPanel({ organizationId, auditTestId, controlId, requi
       <div>
         <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Mappings for this test</div>
         {approveError && <p className="mt-1 text-xs text-red-600">{approveError}</p>}
-        <div className="mt-2 overflow-hidden rounded-lg border border-line bg-surface">
+        <div className="mt-2 overflow-x-auto rounded-lg border border-line bg-surface">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">

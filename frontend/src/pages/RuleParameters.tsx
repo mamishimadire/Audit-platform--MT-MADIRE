@@ -85,7 +85,7 @@ export function RuleParametersPage() {
       {!parameters ? (
         <p className="mt-6 text-sm text-ink-soft">Loading…</p>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border border-line bg-surface">
+        <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-surface">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">

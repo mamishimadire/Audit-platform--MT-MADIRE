@@ -321,7 +321,7 @@ export function FindingsPage() {
         <span className="text-xs text-ink-soft">{visibleFindings.length} shown</span>
       </div>
 
-      <div className="mt-4 space-y-px overflow-hidden rounded-lg border border-line bg-surface">
+      <div className="mt-4 space-y-px overflow-x-auto rounded-lg border border-line bg-surface">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-line bg-surface text-left text-xs uppercase tracking-wide text-ink-soft">

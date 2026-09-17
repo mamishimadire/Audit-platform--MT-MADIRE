@@ -416,26 +416,28 @@ function CoverageSummary({
             first and the rest will suggest the same binding. Mapping the table below with the most controls
             unblocks the most work in one step.
           </p>
-          <table className="mt-3 w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
-                <th className="py-1.5 pr-4">Table</th>
-                <th className="py-1.5 pr-4">Controls ready</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.table} className="border-t border-line">
-                  <td className="py-1.5 pr-4 font-mono text-xs text-ink">{r.table}</td>
-                  <td className="py-1.5 pr-4 text-xs">
-                    <span className={r.readyControls === r.totalControls ? 'text-accent-ink' : 'text-orange-700'}>
-                      {r.readyControls} of {r.totalControls} controls
-                    </span>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="mt-3 w-full text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
+                  <th className="py-1.5 pr-4">Table</th>
+                  <th className="py-1.5 pr-4">Controls ready</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.table} className="border-t border-line">
+                    <td className="py-1.5 pr-4 font-mono text-xs text-ink">{r.table}</td>
+                    <td className="py-1.5 pr-4 text-xs">
+                      <span className={r.readyControls === r.totalControls ? 'text-accent-ink' : 'text-orange-700'}>
+                        {r.readyControls} of {r.totalControls} controls
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
