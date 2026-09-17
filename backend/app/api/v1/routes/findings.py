@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import enforce_same_organization, get_current_user, require_permissions
+from app.api.deps import enforce_same_organization, get_current_user, require_any_permission, require_permissions
 from app.db.session import get_db
 from app.models.audit_test import AuditTest
 from app.models.evidence_exception import Exception_
@@ -101,7 +101,7 @@ def add_remediation(
     finding_id: uuid.UUID,
     payload: RemediationActionCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permissions("audit_framework:manage")),
+    user: User = Depends(require_any_permission("audit_framework:manage", "exceptions:assign")),
 ):
     finding = _get_finding_or_404(db, finding_id)
     enforce_same_organization(finding.organization_id, user, db)

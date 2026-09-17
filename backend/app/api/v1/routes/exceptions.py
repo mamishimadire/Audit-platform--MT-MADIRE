@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import enforce_same_organization, get_current_user, require_permissions
+from app.api.deps import enforce_same_organization, get_current_user, require_any_permission
 from app.db.session import get_db
 from app.models.audit_test import AuditTest
 from app.models.evidence_exception import Exception_, ExceptionRecord
@@ -46,7 +46,7 @@ def update(
     exception_id: uuid.UUID,
     payload: ExceptionUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permissions("audit_framework:manage")),
+    user: User = Depends(require_any_permission("audit_framework:manage", "exceptions:assign")),
 ) -> Exception_:
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)

@@ -64,6 +64,25 @@ def require_permissions(*required: str):
     return _check
 
 
+def require_any_permission(*acceptable: str):
+    """Dependency factory: 403s unless the current user holds AT LEAST ONE
+    of the listed permissions — require_permissions' AND semantics don't
+    fit an action two independently-scoped roles can each unlock for their
+    own reason (e.g. an internal auditor via audit_framework:manage, a
+    client's own admin via exceptions:assign)."""
+
+    def _check(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+        granted = get_user_permission_names(db, user.user_id)
+        if granted.isdisjoint(acceptable):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of permission(s): {', '.join(sorted(acceptable))}",
+            )
+        return user
+
+    return _check
+
+
 def require_roles(*allowed_role_names: str):
     """Coarser-grained alternative to require_permissions for roles like 'Platform Super Admin'."""
 

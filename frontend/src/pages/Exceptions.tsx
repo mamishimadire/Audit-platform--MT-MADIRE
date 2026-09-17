@@ -6,7 +6,7 @@ import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
-import type { ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut } from '../types/api'
+import type { ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, UserOut } from '../types/api'
 
 const SEVERITY_STYLES: Record<string, string> = {
   critical: 'bg-red-50 text-red-700',
@@ -56,7 +56,19 @@ function humanizeExceptionValue(key: string, value: unknown, data: Record<string
   return String(value)
 }
 
-function ExceptionRow({ exception, canManage, onChanged }: { exception: ExceptionOut; canManage: boolean; onChanged: () => void }) {
+function ExceptionRow({
+  exception,
+  canManage,
+  canAssign,
+  orgUsers,
+  onChanged,
+}: {
+  exception: ExceptionOut
+  canManage: boolean
+  canAssign: boolean
+  orgUsers: UserOut[]
+  onChanged: () => void
+}) {
   const [open, setOpen] = useState(false)
   const [records, setRecords] = useState<ExceptionRecordOut[] | null>(null)
   const [explanation, setExplanation] = useState<ExceptionExplanationOut | null>(null)
@@ -67,6 +79,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [justCreatedTitle, setJustCreatedTitle] = useState<string | null>(null)
+  const [assigning, setAssigning] = useState(false)
 
   const toggle = () => {
     if (!open && records === null) {
@@ -79,6 +92,16 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
   const changeStatus = async (status: string) => {
     await apiClient.patch(`/exceptions/${exception.exception_id}`, { status })
     onChanged()
+  }
+
+  const assignOwner = async (ownerId: string) => {
+    setAssigning(true)
+    try {
+      await apiClient.patch(`/exceptions/${exception.exception_id}`, { owner_id: ownerId || null })
+      onChanged()
+    } finally {
+      setAssigning(false)
+    }
   }
 
   const startEscalating = () => {
@@ -151,6 +174,29 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
             <span className="text-xs text-ink-soft">{exception.status}</span>
           )}
         </td>
+        <td className="px-4 py-2">
+          {canAssign ? (
+            <select
+              value={exception.owner_id ?? ''}
+              onChange={(e) => assignOwner(e.target.value)}
+              disabled={assigning}
+              className="rounded-md border border-line px-2 py-1 text-xs disabled:opacity-60"
+            >
+              <option value="">Unassigned</option>
+              {orgUsers.map((u) => (
+                <option key={u.user_id} value={u.user_id}>
+                  {u.first_name} {u.last_name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-xs text-ink-soft">
+              {orgUsers.find((u) => u.user_id === exception.owner_id)
+                ? `${orgUsers.find((u) => u.user_id === exception.owner_id)!.first_name} ${orgUsers.find((u) => u.user_id === exception.owner_id)!.last_name}`
+                : 'Unassigned'}
+            </span>
+          )}
+        </td>
         <td className="px-4 py-2 text-xs text-ink-soft">
           <div>{new Date(exception.last_detected_at).toLocaleString()}</div>
           {exception.occurrence_count > 1 && (
@@ -175,7 +221,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
       </tr>
       {escalating && (
         <tr className="border-t border-line bg-bg">
-          <td colSpan={6} className="px-4 py-3">
+          <td colSpan={7} className="px-4 py-3">
             <div className="flex flex-wrap items-center gap-2">
               <input placeholder="Finding title" value={title} onChange={(e) => setTitle(e.target.value)} className="flex-1 rounded-md border border-line px-2 py-1 text-xs" />
               <select value={riskRating} onChange={(e) => setRiskRating(e.target.value)} className="rounded-md border border-line px-2 py-1 text-xs">
@@ -205,7 +251,7 @@ function ExceptionRow({ exception, canManage, onChanged }: { exception: Exceptio
       )}
       {open && records && (
         <tr className="border-t border-line bg-bg">
-          <td colSpan={6} className="px-4 py-3">
+          <td colSpan={7} className="px-4 py-3">
             {explanation && (
               <div className="mb-3">
                 <ExceptionExplanationBlock
@@ -261,6 +307,12 @@ export function ExceptionsPage() {
   const [highRiskOnly, setHighRiskOnly] = useState(searchParams.get('risk') === 'high')
 
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
+  // Assigning an exception's owner is opened to Client Organisation Admin
+  // too (see backend migration 0063 — exceptions:assign) — a client
+  // organization has no other way to say who, on their side, is
+  // responsible for an exception.
+  const canAssign = hasRole(...AUDIT_FRAMEWORK_ROLES, 'Client Organisation Admin')
+  const [orgUsers, setOrgUsers] = useState<UserOut[]>([])
 
   const load = (orgId: string) => {
     setLoading(true)
@@ -270,6 +322,7 @@ export function ExceptionsPage() {
       .then((res) => setExceptions(res.data))
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
+    apiClient.get<UserOut[]>(`/organizations/${orgId}/users`).then((res) => setOrgUsers(res.data))
   }
 
   useEffect(() => {
@@ -384,6 +437,7 @@ export function ExceptionsPage() {
               <th className="px-4 py-2">Description</th>
               <th className="px-4 py-2">Severity</th>
               <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2">Owner</th>
               <th className="px-4 py-2">Last detected</th>
               <th className="px-4 py-2"></th>
             </tr>
@@ -392,7 +446,7 @@ export function ExceptionsPage() {
             {groups.map((group) => (
               <Fragment key={group.code}>
                 <tr className="border-t border-line bg-bg">
-                  <td colSpan={6} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                  <td colSpan={7} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
                     {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
                   </td>
                 </tr>
@@ -401,6 +455,8 @@ export function ExceptionsPage() {
                     key={e.exception_id}
                     exception={e}
                     canManage={canManage}
+                    canAssign={canAssign}
+                    orgUsers={orgUsers}
                     onChanged={() => organizationId && load(organizationId)}
                   />
                 ))}
@@ -408,21 +464,21 @@ export function ExceptionsPage() {
             ))}
             {loading && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
+                <td colSpan={7} className="px-4 py-6 text-center text-ink-soft">
                   Loading exceptions…
                 </td>
               </tr>
             )}
             {!loading && loadError && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-red-600">
+                <td colSpan={7} className="px-4 py-6 text-center text-red-600">
                   Could not load exceptions. Try refreshing the page.
                 </td>
               </tr>
             )}
             {!loading && !loadError && visible.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
+                <td colSpan={7} className="px-4 py-6 text-center text-ink-soft">
                   No exceptions.
                 </td>
               </tr>

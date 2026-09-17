@@ -89,6 +89,14 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
         mandatory=True,
     ),
     SodWorkflowOut(
+        action="Exception / finding ownership assignment",
+        states=["unassigned", "assigned to an owner / a remediation's responsible user"],
+        maker="Assigns or reassigns who owns an exception (PATCH /exceptions/{id}) or who is responsible for a finding's remediation (POST /findings/{id}/remediation-actions).",
+        checker="None — a single authorized user acts alone. This is a role/permission boundary, not an identity-based maker/checker dual control.",
+        enforcement="Requires audit_framework:manage (internal audit team) OR exceptions:assign. On the client side, exceptions:assign is granted only to Client Organisation Admin — the one role responsible for deciding who, within their own organization, is assigned to an exception or finding.",
+        mandatory=False,
+    ),
+    SodWorkflowOut(
         action="Remediation verification",
         states=["pending", "in_progress", "completed", "awaiting_retest -> closed / reopened"],
         maker="Marks a remediation action complete.",

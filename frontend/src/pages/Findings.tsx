@@ -5,7 +5,7 @@ import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
-import type { ExceptionExplanationOut, ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode } from '../types/api'
+import type { ExceptionExplanationOut, ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode, UserOut } from '../types/api'
 
 function inNDays(days: number): string {
   const d = new Date()
@@ -31,16 +31,22 @@ const RISK_STYLES: Record<string, string> = {
 function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged: () => void }) {
   const { hasRole } = useAuth()
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
+  // Assigning who's responsible for remediating a finding is opened to
+  // Client Organisation Admin too (see backend migration 0063 —
+  // exceptions:assign) — the same reasoning as exception ownership.
+  const canAssign = hasRole(...AUDIT_FRAMEWORK_ROLES, 'Client Organisation Admin')
   const [trace, setTrace] = useState<TraceNode[]>([])
   const [rootCauses, setRootCauses] = useState<RootCauseOut[]>([])
   const [actions, setActions] = useState<RemediationActionOut[]>([])
   const [retests, setRetests] = useState<RetestOut[]>([])
   const [explanation, setExplanation] = useState<ExceptionExplanationOut | null>(null)
+  const [orgUsers, setOrgUsers] = useState<UserOut[]>([])
 
   const [rcCategory, setRcCategory] = useState('')
   const [rcDescription, setRcDescription] = useState('')
   const [actionDescription, setActionDescription] = useState('')
   const [targetDate, setTargetDate] = useState('')
+  const [responsibleUserId, setResponsibleUserId] = useState('')
   const [retestComments, setRetestComments] = useState('')
 
   const load = () => {
@@ -51,6 +57,7 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
     apiClient
       .get<ExceptionExplanationOut>(`/exceptions/${finding.exception_id}/explanation`)
       .then((res) => setExplanation(res.data))
+    apiClient.get<UserOut[]>(`/organizations/${finding.organization_id}/users`).then((res) => setOrgUsers(res.data))
   }
 
   useEffect(load, [finding.finding_id])
@@ -80,9 +87,14 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
   }
 
   const addAction = async () => {
-    await apiClient.post(`/findings/${finding.finding_id}/remediation-actions`, { action_description: actionDescription, target_date: targetDate || null })
+    await apiClient.post(`/findings/${finding.finding_id}/remediation-actions`, {
+      action_description: actionDescription,
+      target_date: targetDate || null,
+      responsible_user_id: responsibleUserId || null,
+    })
     setActionDescription('')
     setTargetDate('')
+    setResponsibleUserId('')
     load()
     onChanged()
   }
@@ -148,27 +160,39 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
         <div className="rounded-lg border border-line bg-surface p-3">
           <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Remediation actions</div>
           <ul className="mt-2 space-y-1">
-            {actions.map((a) => (
-              <li key={a.remediation_id} className="text-xs">
-                <div className="flex items-center justify-between">
-                  <span>{a.action_description}</span>
-                  {canManage && a.status !== 'completed' && (
-                    <button onClick={() => completeAction(a.remediation_id)} className="text-accent-ink hover:underline">
-                      Mark complete
-                    </button>
-                  )}
-                </div>
-                <span className={`text-ink-soft ${a.is_overdue ? 'text-red-600' : ''}`}>
-                  {a.status} {a.target_date ? `· due ${a.target_date}` : ''} {a.is_overdue ? '· OVERDUE' : ''}
-                </span>
-              </li>
-            ))}
+            {actions.map((a) => {
+              const owner = orgUsers.find((u) => u.user_id === a.responsible_user_id)
+              return (
+                <li key={a.remediation_id} className="text-xs">
+                  <div className="flex items-center justify-between">
+                    <span>{a.action_description}</span>
+                    {canManage && a.status !== 'completed' && (
+                      <button onClick={() => completeAction(a.remediation_id)} className="text-accent-ink hover:underline">
+                        Mark complete
+                      </button>
+                    )}
+                  </div>
+                  <span className={`text-ink-soft ${a.is_overdue ? 'text-red-600' : ''}`}>
+                    {a.status} {a.target_date ? `· due ${a.target_date}` : ''} {a.is_overdue ? '· OVERDUE' : ''} ·{' '}
+                    {owner ? `${owner.first_name} ${owner.last_name}` : 'unassigned'}
+                  </span>
+                </li>
+              )
+            })}
           </ul>
-          {canManage && (finding.status === 'open' || finding.status === 'remediation_in_progress' || finding.status === 'reopened') && (
+          {canAssign && (finding.status === 'open' || finding.status === 'remediation_in_progress' || finding.status === 'reopened') && (
             <div className="mt-2 space-y-1">
               <input placeholder="Action description" value={actionDescription} onChange={(e) => setActionDescription(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs" />
+              <select value={responsibleUserId} onChange={(e) => setResponsibleUserId(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs">
+                <option value="">Responsible person (unassigned)</option>
+                {orgUsers.map((u) => (
+                  <option key={u.user_id} value={u.user_id}>
+                    {u.first_name} {u.last_name}
+                  </option>
+                ))}
+              </select>
               <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs" />
-              <button onClick={addAction} className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white">
+              <button onClick={addAction} disabled={!actionDescription} className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white disabled:opacity-60">
                 Add remediation action
               </button>
             </div>
