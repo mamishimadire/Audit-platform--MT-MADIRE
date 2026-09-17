@@ -88,6 +88,14 @@ class EvidenceOut(OrmModel):
     evidence_location: str | None
     evidence_hash: str | None
     created_at: datetime
+    # Only set by list_evidence_for_organization — a plain-English "what
+    # is this" sentence, plus the control/test it came from, so the
+    # Evidence page never has to show the raw evidence_location JSON as
+    # the primary read.
+    summary: str | None = None
+    test_name: str | None = None
+    control_code: str | None = None
+    control_name: str | None = None
 
 
 class ExceptionRecordOut(OrmModel):

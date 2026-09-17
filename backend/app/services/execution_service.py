@@ -9,7 +9,7 @@ from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.finding import Finding
-from app.services.exception_service import explain_exceptions_bulk, find_open_exception
+from app.services.exception_service import explain_exceptions_bulk, find_open_exception, get_controls_for_audit_tests_bulk
 from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.schemas.audit_engine import DueTest, DueTestObject, ExecutionReport
 from app.schemas.test_rule import required_objects_for
@@ -226,15 +226,74 @@ def list_executions_for_organization(db: Session, *, organization_id: uuid.UUID)
     )
 
 
-def list_evidence_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[Evidence]:
-    return list(
-        db.scalars(
-            select(Evidence)
-            .join(TestExecution, TestExecution.execution_id == Evidence.execution_id)
-            .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
-            .where(AuditTest.organization_id == organization_id)
+def _evidence_summary_sentence(label: str, parsed: dict) -> str:
+    """evidence_location's JSON shape differs by check type (see
+    execution_service.record_execution_report, device_compliance_service,
+    software_compliance_service) — this reads whichever shape is present
+    and always produces a plain sentence, never raw JSON."""
+    records, exceptions = parsed.get("records_analyzed"), parsed.get("exceptions_found")
+    if records is not None and exceptions is not None:
+        return (
+            f"{label}: tested {records} record{'s' if records != 1 else ''}, "
+            f"found {exceptions} exception{'s' if exceptions != 1 else ''}."
         )
+    if exceptions is not None:
+        return f"{label}: no records to test, found {exceptions} exception{'s' if exceptions != 1 else ''}."
+    if "checks" in parsed:
+        hostname = parsed.get("hostname") or "this device"
+        parts = []
+        for key, value in parsed["checks"].items():
+            name = key.replace("_", " ")
+            state = "Yes" if value is True else "No" if value is False else "not reported"
+            parts.append(f"{name}: {state}")
+        return f"{label} on {hostname} — " + ", ".join(parts) + "."
+    if "installed_count" in parsed:
+        hostname = parsed.get("hostname") or "this device"
+        installed = parsed.get("installed_count", 0)
+        flagged = parsed.get("flagged") or []
+        if flagged:
+            return f"{label} on {hostname}: {installed} applications checked against policy, {len(flagged)} flagged ({'; '.join(flagged)})."
+        return f"{label} on {hostname}: {installed} applications checked against policy, none flagged."
+    return f"{label}: test result captured."
+
+
+def list_evidence_for_organization(
+    db: Session, *, organization_id: uuid.UUID, from_date: datetime | None = None, to_date: datetime | None = None
+) -> list[Evidence]:
+    stmt = (
+        select(Evidence, AuditTest)
+        .join(TestExecution, TestExecution.execution_id == Evidence.execution_id)
+        .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
+        .where(AuditTest.organization_id == organization_id)
     )
+    if from_date is not None:
+        stmt = stmt.where(Evidence.created_at >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(Evidence.created_at <= to_date)
+
+    rows = list(db.execute(stmt))
+    controls_by_test = get_controls_for_audit_tests_bulk(db, audit_test_ids={audit_test.audit_test_id for _evidence, audit_test in rows})
+
+    evidence_list: list[Evidence] = []
+    for evidence, audit_test in rows:
+        control = controls_by_test.get(audit_test.audit_test_id)
+        label = f"{control.control_code} — {control.control_name}" if control else audit_test.test_name
+
+        try:
+            parsed = json.loads(evidence.evidence_location) if evidence.evidence_location else {}
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+        evidence.summary = _evidence_summary_sentence(label, parsed)
+
+        # Attached here (not stored) so the Evidence page never needs a
+        # separate audit-tests/controls fetch just to explain what each
+        # record actually is — same convention as Exception_.summary/
+        # control_code in explain_exceptions_bulk.
+        evidence.test_name = audit_test.test_name
+        evidence.control_code = control.control_code if control else None
+        evidence.control_name = control.control_name if control else None
+        evidence_list.append(evidence)
+    return evidence_list
 
 
 def list_exceptions_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[Exception_]:

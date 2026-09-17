@@ -1,4 +1,5 @@
 import uuid
+from datetime import date, datetime, time, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -51,7 +52,13 @@ def list_all_for_organization(
 
 @router.get("/organizations/{organization_id}/evidence", response_model=list[EvidenceOut])
 def list_evidence(
-    organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    organization_id: uuid.UUID,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     enforce_same_organization(organization_id, user, db)
-    return list_evidence_for_organization(db, organization_id=organization_id)
+    from_dt = datetime.combine(from_date, time.min, tzinfo=timezone.utc) if from_date else None
+    to_dt = datetime.combine(to_date, time.max, tzinfo=timezone.utc) if to_date else None
+    return list_evidence_for_organization(db, organization_id=organization_id, from_date=from_dt, to_date=to_dt)

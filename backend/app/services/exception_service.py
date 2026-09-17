@@ -249,6 +249,26 @@ def get_control_for_audit_test(db: Session, *, audit_test_id: uuid.UUID) -> Cont
     return db.get(Control, link.control_id)
 
 
+def get_controls_for_audit_tests_bulk(db: Session, *, audit_test_ids: set[uuid.UUID]) -> dict[uuid.UUID, Control]:
+    """Batched form of get_control_for_audit_test — one joined query for
+    every audit_test_id at once instead of two round trips PER id. A list
+    with hundreds of rows sharing a much smaller set of underlying tests
+    (e.g. Evidence, one row per execution of the same handful of tests)
+    turned calling get_control_for_audit_test per row into hundreds of
+    redundant queries for identical answers; see list_evidence_for_
+    organization, which hit exactly this."""
+    if not audit_test_ids:
+        return {}
+    result: dict[uuid.UUID, Control] = {}
+    for link, control in db.execute(
+        select(ControlAuditTest, Control)
+        .join(Control, Control.control_id == ControlAuditTest.control_id)
+        .where(ControlAuditTest.audit_test_id.in_(audit_test_ids))
+    ):
+        result.setdefault(link.audit_test_id, control)
+    return result
+
+
 def explain_exceptions_bulk(
     db: Session,
     *,

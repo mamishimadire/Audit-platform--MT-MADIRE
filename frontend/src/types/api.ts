@@ -440,6 +440,8 @@ export interface AuditLogOut {
   old_value: Record<string, unknown> | null
   new_value: Record<string, unknown> | null
   timestamp: string
+  user_name: string | null
+  change_summary: string | null
 }
 
 export interface GatewayHealthCounts {
@@ -579,6 +581,10 @@ export interface EvidenceOut {
   evidence_location: string | null
   evidence_hash: string | null
   created_at: string
+  summary: string | null
+  test_name: string | null
+  control_code: string | null
+  control_name: string | null
 }
 
 export interface ExceptionOut {
