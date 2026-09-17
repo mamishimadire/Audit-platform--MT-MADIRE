@@ -22,6 +22,7 @@ from app.schemas.finding import (
     RootCauseCreate,
     RootCauseOut,
 )
+from app.services.auth_service import get_user_permission_names
 from app.services.finding_service import (
     create_finding,
     create_remediation_action,
@@ -133,10 +134,21 @@ def update_remediation(
     remediation_id: uuid.UUID,
     payload: RemediationActionUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permissions("audit_framework:manage")),
+    user: User = Depends(get_current_user),
 ):
     action, organization_id = _get_remediation_with_org(db, remediation_id)
     enforce_same_organization(organization_id, user, db)
+    # Whoever's actually responsible for the action can mark it done, same
+    # as add_remediation already lets audit_framework:manage OR
+    # exceptions:assign create one — this closes the gap where the client
+    # side could see the Remediation page but nothing on it ever worked.
+    granted = get_user_permission_names(db, user.user_id)
+    is_responsible = action.responsible_user_id == user.user_id
+    if granted.isdisjoint({"audit_framework:manage", "exceptions:assign"}) and not is_responsible:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing required permission(s): audit_framework:manage, exceptions:assign",
+        )
     updated = update_remediation_status(db, action=action, status=payload.status, organization_id=organization_id, updated_by_user_id=user.user_id)
     out = RemediationActionOut.model_validate(updated)
     return out.model_copy(update={"is_overdue": is_overdue(updated.target_date, updated.status)})

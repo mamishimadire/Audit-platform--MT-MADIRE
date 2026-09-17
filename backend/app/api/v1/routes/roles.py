@@ -2,16 +2,28 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import require_any_permission, require_permissions
 from app.db.session import get_db
 from app.models.rbac import Permission, Role, RolePermission
 from app.schemas.role import PermissionOut, RoleOut, SodWorkflowOut
 
 router = APIRouter(prefix="/reference", tags=["reference"])
 
+# The full role/permission matrix and every enforced SoD rule is platform
+# administration material, not something every authenticated user (down to
+# Read Only) should be able to pull by navigating straight to the URL —
+# same permission that gates the Administration page itself and the
+# platform-wide users list (see platform_users.py).
+_ADMIN_ONLY = require_permissions("organizations:manage")
+# /roles is also read by Users.tsx to populate the role picker on user
+# creation — users:manage covers that (held by Client Organisation Admin
+# for their own org, not just Platform Admin), so it can't be as narrow
+# as _ADMIN_ONLY above.
+_ROLES_READER = require_any_permission("organizations:manage", "users:manage")
+
 
 @router.get("/roles", response_model=list[RoleOut])
-def list_roles(db: Session = Depends(get_db), _user=Depends(get_current_user)) -> list[RoleOut]:
+def list_roles(db: Session = Depends(get_db), _user=Depends(_ROLES_READER)) -> list[RoleOut]:
     roles = list(db.scalars(select(Role)))
     permission_rows = db.execute(
         select(RolePermission.role_id, Permission.permission_name).join(
@@ -36,7 +48,7 @@ def list_roles(db: Session = Depends(get_db), _user=Depends(get_current_user)) -
 
 
 @router.get("/permissions", response_model=list[PermissionOut])
-def list_permissions(db: Session = Depends(get_db), _user=Depends(get_current_user)) -> list[Permission]:
+def list_permissions(db: Session = Depends(get_db), _user=Depends(_ADMIN_ONLY)) -> list[Permission]:
     return list(db.scalars(select(Permission)))
 
 
@@ -156,5 +168,5 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
 
 
 @router.get("/sod-workflows", response_model=list[SodWorkflowOut])
-def list_sod_workflows(_user=Depends(get_current_user)) -> list[SodWorkflowOut]:
+def list_sod_workflows(_user=Depends(_ADMIN_ONLY)) -> list[SodWorkflowOut]:
     return _SOD_WORKFLOWS

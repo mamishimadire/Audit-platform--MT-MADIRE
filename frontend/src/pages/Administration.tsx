@@ -1,17 +1,36 @@
 import { useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
+import { useAuth } from '../auth/AuthContext'
 import type { PermissionOut, RoleOut, SodWorkflowOut } from '../types/api'
 
 export function AdministrationPage() {
+  const { hasRole } = useAuth()
+  const isPlatformAdmin = hasRole('Platform Super Admin', 'Platform Admin')
   const [roles, setRoles] = useState<RoleOut[]>([])
   const [permissions, setPermissions] = useState<PermissionOut[]>([])
   const [workflows, setWorkflows] = useState<SodWorkflowOut[]>([])
 
   useEffect(() => {
+    // The backend enforces this too (organizations:manage) — this just
+    // avoids firing requests that would 403, and shows a clear message
+    // instead of an empty-looking page for anyone reaching this route
+    // directly (e.g. by URL) without platform-admin access.
+    if (!isPlatformAdmin) return
     apiClient.get<RoleOut[]>('/reference/roles').then((res) => setRoles(res.data))
     apiClient.get<PermissionOut[]>('/reference/permissions').then((res) => setPermissions(res.data))
     apiClient.get<SodWorkflowOut[]>('/reference/sod-workflows').then((res) => setWorkflows(res.data))
-  }, [])
+  }, [isPlatformAdmin])
+
+  if (!isPlatformAdmin) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold text-ink">Administration</h1>
+        <p className="mt-4 rounded-lg border border-line bg-surface p-4 text-sm text-ink-soft">
+          This page is only available to platform administrators.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div>

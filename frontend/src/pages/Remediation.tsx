@@ -9,18 +9,19 @@ import type { FindingOut, RemediationActionOut } from '../types/api'
 const STATUS_OPTIONS = ['pending', 'in_progress', 'completed']
 
 export function RemediationPage() {
-  const { hasRole } = useAuth()
+  const { hasRole, user } = useAuth()
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
   const [actions, setActions] = useState<RemediationActionOut[]>([])
   const [findings, setFindings] = useState<FindingOut[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
 
-  // Client Organisation Admin / Exception Owner were previously included
-  // here but hold no backend permission for this route (audit_framework:manage) —
-  // narrowed to match reality rather than show a control that 403s. Giving
-  // Exception Owner real, narrow remediation rights on their own assigned
-  // items is tracked separately as part of the granular permission catalog.
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
+  // The client organization's own admin can edit any action in their org
+  // (mirrors exceptions:assign); the person actually responsible for one
+  // specific action can edit that one — same is_responsible carve-out the
+  // backend enforces in PATCH /remediation-actions/{id}.
+  const canAssign = hasRole('Client Organisation Admin')
+  const canEdit = (a: RemediationActionOut) => canManage || canAssign || (user !== null && user.user_id === a.responsible_user_id)
 
   const load = (orgId: string) => {
     apiClient.get<RemediationActionOut[]>(`/organizations/${orgId}/remediation-actions`).then((res) => setActions(res.data))
@@ -73,7 +74,7 @@ export function RemediationPage() {
                   {a.is_overdue && <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">overdue</span>}
                 </td>
                 <td className="px-4 py-2">
-                  {canManage ? (
+                  {canEdit(a) ? (
                     <select
                       value={a.status}
                       onChange={(e) => updateStatus(a.remediation_id, e.target.value)}
