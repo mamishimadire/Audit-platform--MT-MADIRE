@@ -445,6 +445,19 @@ _CROSS_OBJECT_FALLBACK_CAP = 55.0
 # ("", 0.0) below this instead, and callers show "no confident match."
 _NO_MATCH_FLOOR = 50.0
 
+# _score_field's SequenceMatcher ratio operates on sorted-token-joined
+# strings, which is character-level, not word-level — for SHORT field
+# names this makes it easy for two genuinely unrelated words to share
+# enough letters by coincidence to look like a real match ("method" vs
+# "payment_id" share m/e/t/d, scoring ~40% before any boost; "company_id"
+# vs "paid_by" similarly). That coincidence is only trustworthy when it's
+# high enough to mean "the same word(s) with the separator removed"
+# (e.g. "employeenumber" vs "employee_number" tokenizes as one blob vs
+# two words, zero token overlap, but scores ~100% here) — not merely
+# "vaguely similar-looking letters." Below this, a zero-token-overlap
+# seq_ratio is discarded rather than trusted as any part of the score.
+_NO_OVERLAP_SEQ_RATIO_FLOOR = 75.0
+
 
 def suggest_canonical_field(
     source_field_name: str, *, is_primary_key: bool = False, preferred_object: str | None = None
@@ -473,10 +486,15 @@ def suggest_canonical_field(
 
     def _score_field(field_name: str, obj_name: str) -> float:
         target_tokens = set(_tokens(field_name))
-        score = _token_overlap_score(source_tokens, target_tokens)
+        overlap_score = _token_overlap_score(source_tokens, target_tokens)
         normalized_target = "".join(sorted(target_tokens))
         seq_ratio = difflib.SequenceMatcher(None, normalized_source, normalized_target).ratio() * 100
-        score = max(score, seq_ratio)
+        if source_tokens & target_tokens:
+            score = max(overlap_score, seq_ratio)
+        elif seq_ratio >= _NO_OVERLAP_SEQ_RATIO_FLOOR:
+            score = seq_ratio
+        else:
+            score = 0.0
         # A primary-key column with an id-like token (NO/CODE/NUM) mapping to
         # this object's own "_id" field is the single strongest real-world signal.
         if treat_as_primary_key and field_name.endswith("_id") and (source_tokens & _ID_LIKE_TOKENS):
