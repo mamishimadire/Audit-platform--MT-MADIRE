@@ -583,11 +583,14 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
               </select>
               <button
                 onClick={createSchedule}
-                disabled={schedulingSubmitting}
+                disabled={schedulingSubmitting || (!!activeSchedule && frequency === activeSchedule.frequency)}
                 className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-60"
               >
                 {schedulingSubmitting ? 'Requesting…' : activeSchedule ? 'Request change' : 'Schedule'}
               </button>
+              {activeSchedule && frequency === activeSchedule.frequency && (
+                <span className="text-[10px] text-ink-soft">Already the active schedule — pick a different cadence to request a change.</span>
+              )}
             </div>
           )}
           {schedulingError && <p className="mt-1 text-xs text-red-600">{schedulingError}</p>}

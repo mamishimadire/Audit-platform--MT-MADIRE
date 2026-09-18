@@ -55,6 +55,12 @@ def create_schedule(
             MonitoringSchedule.audit_test_id == audit_test_id, MonitoringSchedule.status == "active"
         )
     )
+    if (
+        existing_active is not None
+        and existing_active.frequency == payload.frequency
+        and existing_active.is_active == payload.is_active
+    ):
+        raise ValueError(f"'{payload.frequency}' is already the active schedule — nothing to request.")
 
     schedule = MonitoringSchedule(
         audit_test_id=audit_test_id,
