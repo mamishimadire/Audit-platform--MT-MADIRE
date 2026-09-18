@@ -1241,7 +1241,7 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
 
   return (
     <div className="mt-4 rounded-lg border border-line bg-surface p-4">
-      <div className="text-sm font-semibold text-ink">Software policy (AS-004)</div>
+      <div className="text-sm font-semibold text-ink">Software policy (SW-001)</div>
       <p className="mt-1 text-xs text-ink-soft">
         Only <strong>Restricted</strong> software present, or <strong>Required</strong> software missing, ever creates
         an exception. Everything else you install without a policy row shows as "Unknown, review required" in the

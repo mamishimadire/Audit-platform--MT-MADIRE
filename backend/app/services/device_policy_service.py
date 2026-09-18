@@ -209,7 +209,7 @@ def _resolve_exceptions_for_newly_disabled_checks(
 
     resolved_count = 0
     for exc in open_exceptions:
-        # Software-disabled resolves every open AS-004 exception outright.
+        # Software-disabled resolves every open SW-001 exception outright.
         # For endpoint checks (all sharing EP-001), only resolve the ones
         # matching a check that was JUST disabled — a still-enabled check's
         # exception on the same test must never get swept up too.

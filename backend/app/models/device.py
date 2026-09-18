@@ -128,7 +128,7 @@ class DeviceCommand(Base):
 
 class ApprovedSoftware(Base, TimestampMixin):
     """
-    One organization's software policy (AS-004): a per-app classification,
+    One organization's software policy (SW-001): a per-app classification,
     not just a yes/no allowlist. Matching is by app_name (+ optional
     publisher, to resist a lookalike name spoofing a classified one) — see
     software_compliance_service.py for how a device's reported inventory

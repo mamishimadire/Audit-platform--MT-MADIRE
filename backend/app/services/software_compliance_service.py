@@ -1,8 +1,10 @@
 """
 Turns a device's raw software inventory into a real compliance test
-(AS-004) using a classification taxonomy, not a binary allowlist:
-approved, required, restricted, system_component, ignored, review_required
-— plus 'unknown' for anything with no matching policy row at all.
+(SW-001 — see SOFTWARE_TEST_CODE's own comment for why this is its own
+code and not the control library's separate AS-004) using a
+classification taxonomy, not a binary allowlist: approved, required,
+restricted, system_component, ignored, review_required — plus 'unknown'
+for anything with no matching policy row at all.
 
 Critically: 'unknown' does NOT mean non-compliant. An app nobody has
 classified yet is not evidence of anything — it's flagged for visibility
@@ -34,8 +36,19 @@ from app.services.audit_log_service import log_action
 from app.services.exception_service import OPEN_STATUSES, find_open_exception
 from app.core.security import fingerprint
 
-SOFTWARE_TEST_CODE = "AS-004"
 SOFTWARE_TEST_NAME = "Software Compliance (Approved / Required / Restricted)"
+# Deliberately NOT "AS-004" (a real, separate entry in control_library_data.
+# py — "Unauthorised software should be identified", testable against a
+# client's own connected software-inventory database via the generic
+# rule engine) — that AS-004 and this always-on, device-driven check are
+# two genuinely different ways of testing a similar idea, not the same
+# control. Reusing AS-004's code here (migration 0047-era design) meant
+# this auto-created control inherited that library entry's required_
+# tables/rule-template, so the Controls/mapping UI showed a "bind these
+# tables" workflow for a control that's fully auto-evaluated and needs no
+# mapping at all — confusing and wrong. SW-001 is its own standalone code,
+# same as EP-001, with no control_library entry (see _ensure_control_link).
+SOFTWARE_TEST_CODE = "SW-001"
 
 _RISK_SEVERITY = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
 
@@ -347,8 +360,10 @@ def _ensure_control_link(db: Session, *, organization_id: uuid.UUID, test: Audit
     catalog controls (see control_service.activate_control). Auto-creates
     the missing Control the same way this test itself is auto-created — no
     human decides to "turn on" software compliance checking, it starts the
-    moment a device first reports in — sourced from control_library (AS-004
-    has a real entry there). Self-heals on every call rather than a
+    moment a device first reports in. SW-001 has no control_library entry
+    (deliberately — see SOFTWARE_TEST_CODE's own comment), so control_
+    library_id stays None and name/description come from this test's own
+    fields, same as EP-001. Self-heals on every call rather than a
     one-time migration, since this runs on every device check-in anyway.
     Deliberately duplicated from device_compliance_service's identical
     helper rather than imported — that module already imports FROM this

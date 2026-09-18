@@ -146,12 +146,17 @@ def _ensure_control_link(db: Session, *, organization_id: uuid.UUID, test: Audit
     auto-created — no human decides to "turn on" endpoint/software
     compliance checking, it starts the moment a device first reports in —
     so gating it behind the normal activation/approval workflow would be
-    inconsistent with how it already behaves. Sourced from control_library
-    when a matching entry exists (AS-004); EP-001 isn't one of the 157
-    cataloged controls, so its name/description come from this test's own
-    fields instead — still enough to categorize by, just with no linked
-    risk (explain_exception's why_it_matters already falls back sensibly
-    when a control has no library entry or risk to draw from).
+    inconsistent with how it already behaves. Neither EP-001 nor SW-001
+    (software_compliance_service.py's own equivalent) is one of the 157
+    cataloged controls — deliberately: an earlier version of SW-001
+    reused the library's separate, real AS-004 entry for its name/
+    description, which meant this always-on control inherited THAT
+    entry's required_tables/rule-template and showed a "bind these
+    tables" mapping workflow it never needed. Both now source name/
+    description from this test's own fields instead — still enough to
+    categorize by, just with no linked risk (explain_exception's
+    why_it_matters already falls back sensibly when a control has no
+    library entry or risk to draw from).
 
     Self-heals on every call rather than a one-time migration, since this
     runs on every device check-in anyway."""

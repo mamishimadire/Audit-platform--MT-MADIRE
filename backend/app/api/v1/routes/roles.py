@@ -159,7 +159,7 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
     SodWorkflowOut(
         action="Escalate exception to finding",
         states=["open (exception)", "escalated -> Finding created (the exception stays open and linked, it isn't consumed)"],
-        maker="Escalates an open exception — including a non-compliant/restricted-software exception from AS-004, or an endpoint check failure from EP-001 — into a formal Finding (POST /exceptions/{id}/findings).",
+        maker="Escalates an open exception — including a non-compliant/restricted-software exception from SW-001, or an endpoint check failure from EP-001 — into a formal Finding (POST /exceptions/{id}/findings).",
         checker="None — a single authorized user acts alone. No second approver is required to open a Finding.",
         enforcement="Requires audit_framework:manage, held only by internal roles (Platform Super Admin, Audit Manager, Auditor, IT/Audit Technical User, Compliance Manager). No client-side role — including Client IT Admin, who manages the devices themselves — can create a Finding against their own organization's data.",
         mandatory=True,
