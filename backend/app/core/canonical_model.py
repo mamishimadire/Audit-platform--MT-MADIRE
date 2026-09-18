@@ -428,6 +428,23 @@ _PREFERRED_OBJECT_MIN_SCORE = 35.0
 # one, and always sits under AUTO_ACCEPT_THRESHOLD.
 _CROSS_OBJECT_FALLBACK_CAP = 55.0
 
+# Below this, the "best available" match isn't a real candidate at all —
+# just the least-bad of a field of coincidences (e.g. a users table's
+# "gender" or "password_hash" column, which have no corresponding concept
+# anywhere in CANONICAL_MODEL because no control needs one — CANONICAL_MODEL
+# only ever models what the 157 controls actually read, never a full source
+# schema). Only the unconstrained global-search branch can ever score this
+# low — the in-object branch's own floor (_PREFERRED_OBJECT_MIN_SCORE + the
+# fixed +25 boost) never produces anything below 60. Forcing a specific-
+# looking "56% match: some_object.some_field" onto a column that has no real
+# canonical counterpart is worse than admitting there isn't one — it invites
+# an auditor to trust a number that was never measuring a real
+# correspondence, exactly the failure mode reported from a real client
+# schema's users table (password_hash, gender, is_platform_admin, etc. all
+# forced onto unrelated fields in the 40s%). suggest_canonical_field returns
+# ("", 0.0) below this instead, and callers show "no confident match."
+_NO_MATCH_FLOOR = 50.0
+
 
 def suggest_canonical_field(
     source_field_name: str, *, is_primary_key: bool = False, preferred_object: str | None = None
@@ -493,6 +510,9 @@ def suggest_canonical_field(
         and not best_field.startswith(f"{preferred_object}.")
     ):
         best_score = min(best_score, _CROSS_OBJECT_FALLBACK_CAP)
+
+    if best_score < _NO_MATCH_FLOOR:
+        return "", 0.0
 
     return best_field, round(best_score, 2)
 

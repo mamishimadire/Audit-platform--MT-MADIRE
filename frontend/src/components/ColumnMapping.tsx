@@ -195,18 +195,27 @@ export function ColumnMappingGrid({
 
   const renderRow = (s: MappingSuggestion) => {
     const existing = mappingFor(s.field_id)
+    // An empty suggestion means nothing in the canonical model scored
+    // high enough to trust — this column likely has no real canonical
+    // counterpart at all (no control needs one), not that the "best"
+    // match just happens to look unconvincing. Showing a specific-looking
+    // field name and percentage anyway would invite trusting a number
+    // that was never measuring a real correspondence.
+    const noConfidentMatch = !existing && !s.suggested_canonical_field
     return (
       <tr key={s.field_id} className="border-t border-line">
         <td className="px-3 py-1.5 font-mono text-xs">{s.field_name}</td>
-        <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">{existing?.canonical_field ?? s.suggested_canonical_field}</td>
-        <td className="px-3 py-1.5">
-          <ConfidenceBar value={s.confidence_score} />
+        <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">
+          {noConfidentMatch ? <span className="italic text-ink-soft">no confident match</span> : existing?.canonical_field ?? s.suggested_canonical_field}
         </td>
+        <td className="px-3 py-1.5">{!noConfidentMatch && <ConfidenceBar value={s.confidence_score} />}</td>
         <td className="px-3 py-1.5">
           {existing ? (
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[existing.mapping_status] ?? ''}`}>
               {existing.mapping_status === 'approved' ? '✓ Approved' : existing.mapping_status}
             </span>
+          ) : noConfidentMatch ? (
+            <span className="rounded-full bg-bg px-2 py-0.5 text-xs font-medium text-ink-soft">Map manually</span>
           ) : (
             <span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700">Needs review</span>
           )}
@@ -231,6 +240,8 @@ export function ColumnMappingGrid({
               <button onClick={() => setUnmappingId(existing.mapping_id)} className="text-xs font-medium text-red-600 hover:underline">
                 Unmap
               </button>
+            ) : noConfidentMatch ? (
+              <span className="text-xs text-ink-soft">—</span>
             ) : (
               <button
                 onClick={() => accept(s)}

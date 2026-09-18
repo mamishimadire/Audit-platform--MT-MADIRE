@@ -287,9 +287,10 @@ export function DataMappingPanel({ organizationId, auditTestId, controlId, requi
             </thead>
             <tbody>
               {suggestions.map((s) => {
+                const noConfidentMatch = !s.suggested_canonical_field
                 const suggestedName = s.suggested_canonical_field.split('.').pop() ?? s.suggested_canonical_field
                 const canonicalField = targetObject ? `${targetObject}.${suggestedName}` : s.suggested_canonical_field
-                const isRequired = requiredFieldNamesForTarget?.has(suggestedName) ?? false
+                const isRequired = !noConfidentMatch && (requiredFieldNamesForTarget?.has(suggestedName) ?? false)
                 // When targeting a specific object, a field this rule doesn't
                 // actually read is still shown (context is useful) but
                 // de-emphasized — mapping it is harmless, just not necessary.
@@ -297,15 +298,15 @@ export function DataMappingPanel({ organizationId, auditTestId, controlId, requi
                   <tr key={s.field_id} className={`border-t border-line ${targetObject && !isRequired ? 'opacity-50' : ''}`}>
                     <td className="px-3 py-2 font-mono text-xs">{s.field_name}</td>
                     <td className="px-3 py-2 font-mono text-xs text-accent-ink">
-                      {canonicalField}
+                      {noConfidentMatch ? <span className="italic text-ink-soft">no confident match</span> : canonicalField}
                       {targetObject && isRequired && <span className="ml-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-sans text-accent-ink">required</span>}
                     </td>
-                    <td className="px-3 py-2">
-                      <ConfidenceBar value={s.confidence_score} />
-                    </td>
+                    <td className="px-3 py-2">{!noConfidentMatch && <ConfidenceBar value={s.confidence_score} />}</td>
                     <td className="px-3 py-2">
                       {alreadyMapped(s.field_id) ? (
                         <span className="text-xs text-ink-soft">mapped</span>
+                      ) : noConfidentMatch ? (
+                        <span className="text-xs text-ink-soft">map manually below</span>
                       ) : (
                         <button onClick={() => createMapping(s, canonicalField)} className="text-xs font-medium text-accent-ink hover:underline">
                           Map
