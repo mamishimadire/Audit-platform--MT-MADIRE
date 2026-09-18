@@ -172,6 +172,22 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
         enforcement="created_by != approved_by, checked by user identity — the person who added the account can never also be the one who signs off on it. A pending_approval user cannot log in or activate their own account at all until approved.",
         mandatory=True,
     ),
+    SodWorkflowOut(
+        action="User deactivation",
+        states=["active", "pending_deactivation", "inactive"],
+        maker="Requests deactivating a user, with a mandatory reason (POST .../users/{id}/deactivation/request). Holds users:manage (client org) or organizations:manage (platform).",
+        checker="Approves or rejects the request (.../deactivation/approve or /reject), the same permission the maker used.",
+        enforcement="deactivation_requested_by != approved_by, checked by user identity.",
+        mandatory=True,
+    ),
+    SodWorkflowOut(
+        action="User removal",
+        states=["active / inactive / pending / locked", "pending_removal", "removed (soft delete — the row and its history stay)"],
+        maker="Requests removing a user, with a mandatory reason (POST .../users/{id}/removal/request). Holds users:manage (client org) or organizations:manage (platform).",
+        checker="Approves or rejects the request (.../removal/approve or /reject), the same permission the maker used.",
+        enforcement="removal_requested_by != approved_by, checked by user identity. A rejected removal restores whatever status the user was actually in before, not a fixed fallback.",
+        mandatory=True,
+    ),
 ]
 
 

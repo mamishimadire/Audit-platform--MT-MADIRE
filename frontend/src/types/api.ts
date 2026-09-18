@@ -20,12 +20,26 @@ export interface UserOut {
   first_name: string
   last_name: string
   email: string
-  status: 'pending_approval' | 'pending' | 'active' | 'inactive' | 'locked' | 'rejected'
+  status:
+    | 'pending_approval'
+    | 'pending'
+    | 'active'
+    | 'inactive'
+    | 'locked'
+    | 'rejected'
+    | 'pending_deactivation'
+    | 'pending_removal'
+    | 'removed'
   roles: string[]
   temporary_password: string | null
   created_by: string | null
   approved_by: string | null
   approved_at: string | null
+  deactivation_requested_by: string | null
+  deactivation_reason: string | null
+  removal_requested_by: string | null
+  removal_reason: string | null
+  removal_prior_status: string | null
   // Only populated by /auth/me and /auth/change-password (the currently
   // logged-in user's own status) — absent on every other UserOut-shaped
   // response, such as the Users management list.

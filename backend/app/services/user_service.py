@@ -191,3 +191,151 @@ def reject_pending_user(db: Session, *, user: User, reason: str, rejected_by_use
     db.commit()
     db.refresh(user)
     return user
+
+
+def request_deactivation(db: Session, *, user: User, reason: str, requested_by_user_id: uuid.UUID) -> User:
+    """Same dual-control principle as device_service.request_revocation —
+    the person who wants a colleague's access switched off is never the
+    one who gets to make that happen unilaterally."""
+    if user.status != "active":
+        raise ValueError(f"Cannot request deactivation — user is '{user.status}', not active.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to request deactivation.")
+
+    user.status = "pending_deactivation"
+    user.deactivation_requested_by = requested_by_user_id
+    user.deactivation_requested_at = datetime.now(timezone.utc)
+    user.deactivation_reason = reason
+    log_action(
+        db,
+        action=f"Requested deactivation of user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=requested_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "pending_deactivation", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def approve_deactivation(db: Session, *, user: User, approved_by_user_id: uuid.UUID) -> User:
+    if user.status != "pending_deactivation":
+        raise ValueError(f"Cannot approve — user is '{user.status}', not pending deactivation.")
+    if user.deactivation_requested_by is not None and user.deactivation_requested_by == approved_by_user_id:
+        raise ValueError("You requested this deactivation yourself — a different authorized user must approve it.")
+
+    user.status = "inactive"
+    log_action(
+        db,
+        action=f"Approved deactivation of user '{user.email}'",
+        organization_id=user.organization_id,
+        user_id=approved_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "inactive"},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def reject_deactivation(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    if user.status != "pending_deactivation":
+        raise ValueError(f"Cannot reject — user is '{user.status}', not pending deactivation.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to reject a deactivation request.")
+
+    user.status = "active"
+    user.deactivation_requested_by = None
+    user.deactivation_reason = None
+    log_action(
+        db,
+        action=f"Rejected deactivation of user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "active", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+_REMOVABLE_STATUSES = ("active", "inactive", "pending", "locked")
+
+
+def request_removal(db: Session, *, user: User, reason: str, requested_by_user_id: uuid.UUID) -> User:
+    """Same dual-control principle as device_service.request_deletion.
+    'removed' is a soft delete — the row and everything it ever did in
+    the audit log stay; it just can never log in again."""
+    if user.status not in _REMOVABLE_STATUSES:
+        raise ValueError(f"Cannot request removal — user is '{user.status}'.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to request removal.")
+
+    user.removal_prior_status = user.status
+    user.status = "pending_removal"
+    user.removal_requested_by = requested_by_user_id
+    user.removal_requested_at = datetime.now(timezone.utc)
+    user.removal_reason = reason
+    log_action(
+        db,
+        action=f"Requested removal of user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=requested_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "pending_removal", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def approve_removal(db: Session, *, user: User, approved_by_user_id: uuid.UUID) -> User:
+    if user.status != "pending_removal":
+        raise ValueError(f"Cannot approve — user is '{user.status}', not pending removal.")
+    if user.removal_requested_by is not None and user.removal_requested_by == approved_by_user_id:
+        raise ValueError("You requested this removal yourself — a different authorized user must approve it.")
+
+    user.status = "removed"
+    user.removal_prior_status = None
+    log_action(
+        db,
+        action=f"Approved removal of user '{user.email}'",
+        organization_id=user.organization_id,
+        user_id=approved_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "removed"},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def reject_removal(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    if user.status != "pending_removal":
+        raise ValueError(f"Cannot reject — user is '{user.status}', not pending removal.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to reject a removal request.")
+
+    user.status = user.removal_prior_status or "active"
+    user.removal_prior_status = None
+    user.removal_requested_by = None
+    user.removal_reason = None
+    log_action(
+        db,
+        action=f"Rejected removal of user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": user.status, "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user

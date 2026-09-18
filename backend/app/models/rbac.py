@@ -34,6 +34,26 @@ class User(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Deactivation/removal — same dual-control shape as device revocation/
+    # deletion (see device_service.py). active -> pending_deactivation ->
+    # inactive, or active/inactive/pending/locked -> pending_removal ->
+    # removed (a soft delete; the row and its history stay, it just can
+    # never log in again). Both identity-checked: requested_by !=
+    # whoever approves, in user_service.approve_deactivation/approve_removal.
+    deactivation_requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    deactivation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deactivation_reason: Mapped[str | None] = mapped_column(Text)
+    removal_requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    removal_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    removal_reason: Mapped[str | None] = mapped_column(Text)
+    # What status to restore if the removal request is rejected — a user
+    # has no self-correcting heartbeat like a device does, so this has to
+    # be remembered explicitly rather than falling back to a fixed value.
+    removal_prior_status: Mapped[str | None] = mapped_column(String(20))
     # Visible/copyable in the UI until this user activates their account and
     # sets their own password — cleared the moment that happens (see
     # auth_service.activate_pending_user). Explicit product decision, not an

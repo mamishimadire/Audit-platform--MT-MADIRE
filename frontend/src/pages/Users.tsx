@@ -34,7 +34,12 @@ const STATUS_LABELS: Record<string, { label: string; tone: string }> = {
   inactive: { label: 'Inactive', tone: 'bg-bg text-ink-soft' },
   locked: { label: 'Locked', tone: 'bg-red-50 text-red-700' },
   rejected: { label: 'Rejected', tone: 'bg-red-50 text-red-700' },
+  pending_deactivation: { label: 'Pending deactivation', tone: 'bg-orange-50 text-orange-700' },
+  pending_removal: { label: 'Pending removal', tone: 'bg-orange-50 text-orange-700' },
+  removed: { label: 'Removed', tone: 'bg-red-50 text-red-700' },
 }
+
+const REMOVABLE_STATUSES = ['active', 'inactive', 'pending', 'locked']
 
 function StatusBadge({ status }: { status: string }) {
   const { label, tone } = STATUS_LABELS[status] ?? { label: status, tone: 'bg-bg text-ink-soft' }
@@ -47,12 +52,18 @@ function UsersTable({
   canApprove,
   onApprove,
   onReject,
+  onRequestAction,
+  onApproveAction,
+  onRejectAction,
 }: {
   users: UserOut[]
   currentUserId: string | undefined
   canApprove: boolean
   onApprove: (userId: string) => void
   onReject: (userId: string) => void
+  onRequestAction: (userId: string, kind: 'deactivation' | 'removal') => void
+  onApproveAction: (userId: string, kind: 'deactivation' | 'removal') => void
+  onRejectAction: (userId: string, kind: 'deactivation' | 'removal') => void
 }) {
   return (
     <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-surface">
@@ -105,6 +116,68 @@ function UsersTable({
                         </button>
                       </div>
                     )
+                  )}
+                  {u.status === 'pending_deactivation' &&
+                    canApprove &&
+                    (u.deactivation_requested_by === currentUserId ? (
+                      <span className="text-xs text-ink-faint" title="You requested this — someone else must approve it">
+                        Awaiting another approver
+                      </span>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => onApproveAction(u.user_id, 'deactivation')}
+                          className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => onRejectAction(u.user_id, 'deactivation')}
+                          className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ))}
+                  {u.status === 'pending_removal' &&
+                    canApprove &&
+                    (u.removal_requested_by === currentUserId ? (
+                      <span className="text-xs text-ink-faint" title="You requested this — someone else must approve it">
+                        Awaiting another approver
+                      </span>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => onApproveAction(u.user_id, 'removal')}
+                          className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-white"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() => onRejectAction(u.user_id, 'removal')}
+                          className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ))}
+                  {canApprove && REMOVABLE_STATUSES.includes(u.status) && (
+                    <div className="flex gap-2">
+                      {u.status === 'active' && (
+                        <button
+                          onClick={() => onRequestAction(u.user_id, 'deactivation')}
+                          className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                        >
+                          Deactivate
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onRequestAction(u.user_id, 'removal')}
+                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-red-600 hover:bg-bg"
+                      >
+                        Remove
+                      </button>
+                    </div>
                   )}
                 </td>
               </tr>
@@ -223,6 +296,43 @@ export function UsersPage() {
     }
   }
 
+  const reload = () => (view === 'internal' ? loadInternalUsers() : selectedOrgId && loadClientUsers(selectedOrgId))
+  const lifecyclePath = (userId: string, kind: 'deactivation' | 'removal', action: 'request' | 'approve' | 'reject') =>
+    view === 'internal' ? `/platform/users/${userId}/${kind}/${action}` : `/organizations/${selectedOrgId}/users/${userId}/${kind}/${action}`
+
+  const requestUserAction = async (userId: string, kind: 'deactivation' | 'removal') => {
+    const reason = window.prompt(
+      `Why are you requesting ${kind === 'deactivation' ? 'deactivation' : 'removal'} of this user? This is recorded in the audit trail.`,
+    )
+    if (!reason || !reason.trim()) return
+    try {
+      await apiClient.post(lifecyclePath(userId, kind, 'request'), { reason })
+      reload()
+    } catch {
+      setError(`Could not request ${kind} — try again.`)
+    }
+  }
+
+  const approveUserAction = async (userId: string, kind: 'deactivation' | 'removal') => {
+    try {
+      await apiClient.post(lifecyclePath(userId, kind, 'approve'))
+      reload()
+    } catch {
+      setError(`Could not approve this ${kind} request — try again.`)
+    }
+  }
+
+  const rejectUserAction = async (userId: string, kind: 'deactivation' | 'removal') => {
+    const reason = window.prompt(`Why are you rejecting this ${kind} request? This is recorded in the audit trail.`)
+    if (!reason || !reason.trim()) return
+    try {
+      await apiClient.post(lifecyclePath(userId, kind, 'reject'), { reason })
+      reload()
+    } catch {
+      setError(`Could not reject this ${kind} request — try again.`)
+    }
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-ink">Users</h1>
@@ -272,6 +382,9 @@ export function UsersPage() {
           canApprove={canManageClientUsers}
           onApprove={approveUser}
           onReject={rejectUser}
+          onRequestAction={requestUserAction}
+          onApproveAction={approveUserAction}
+          onRejectAction={rejectUserAction}
         />
       ) : (
         <UsersTable
@@ -280,6 +393,9 @@ export function UsersPage() {
           canApprove={canManageInternalUsers}
           onApprove={approveUser}
           onReject={rejectUser}
+          onRequestAction={requestUserAction}
+          onApproveAction={approveUserAction}
+          onRejectAction={rejectUserAction}
         />
       )}
 

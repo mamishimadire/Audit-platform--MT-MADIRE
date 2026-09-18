@@ -7,9 +7,19 @@ from sqlalchemy.orm import Session
 from app.api.deps import enforce_same_organization, get_current_user, require_permissions
 from app.db.session import get_db
 from app.models.rbac import User
-from app.schemas.user import UserCreate, UserOut, UserRejectRequest
+from app.schemas.user import UserCreate, UserOut, UserReasonRequest
 from app.services.auth_service import get_role_names_bulk, get_user_permission_names, get_user_role_names
-from app.services.user_service import approve_pending_user, create_user_in_organization, reject_pending_user
+from app.services.user_service import (
+    approve_deactivation,
+    approve_pending_user,
+    approve_removal,
+    create_user_in_organization,
+    reject_deactivation,
+    reject_pending_user,
+    reject_removal,
+    request_deactivation,
+    request_removal,
+)
 
 router = APIRouter(prefix="/organizations/{organization_id}/users", tags=["users"])
 
@@ -91,7 +101,7 @@ def approve_user(
 def reject_user(
     organization_id: uuid.UUID,
     user_id: uuid.UUID,
-    payload: UserRejectRequest,
+    payload: UserReasonRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("users:manage")),
 ) -> UserOut:
@@ -102,3 +112,103 @@ def reject_user(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _to_out(db, rejected)
+
+
+@router.post("/{user_id}/deactivation/request", response_model=UserOut)
+def request_user_deactivation(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = request_deactivation(db, user=target, reason=payload.reason, requested_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/deactivation/approve", response_model=UserOut)
+def approve_user_deactivation(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = approve_deactivation(db, user=target, approved_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/deactivation/reject", response_model=UserOut)
+def reject_user_deactivation(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = reject_deactivation(db, user=target, reason=payload.reason, rejected_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/removal/request", response_model=UserOut)
+def request_user_removal(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = request_removal(db, user=target, reason=payload.reason, requested_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/removal/approve", response_model=UserOut)
+def approve_user_removal(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = approve_removal(db, user=target, approved_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/removal/reject", response_model=UserOut)
+def reject_user_removal(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = reject_removal(db, user=target, reason=payload.reason, rejected_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)

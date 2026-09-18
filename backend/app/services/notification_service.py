@@ -275,6 +275,47 @@ def _pending_user_approvals(db: Session, *, organization_id: uuid.UUID, exclude_
     ]
 
 
+def _pending_user_lifecycle(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """Deactivation and removal requests — same shape as _pending_device_
+    lifecycle, and the same reason: someone else has to actually see the
+    request to approve or reject it."""
+    rows = db.scalars(
+        select(User).where(
+            User.organization_id == organization_id,
+            User.status.in_(("pending_deactivation", "pending_removal")),
+        )
+    )
+    out = []
+    for row in rows:
+        if row.status == "pending_deactivation":
+            if row.deactivation_requested_by == exclude_user_id:
+                continue
+            out.append(
+                PendingApprovalOut(
+                    category="user_deactivation",
+                    entity_id=row.user_id,
+                    label=f"Deactivate user “{row.first_name} {row.last_name}”?",
+                    detail=f"They said: {row.deactivation_reason}" if row.deactivation_reason else "Someone wants to switch this user off.",
+                    requested_at=row.deactivation_requested_at or row.updated_at,
+                    link_path="/users",
+                )
+            )
+        else:
+            if row.removal_requested_by == exclude_user_id:
+                continue
+            out.append(
+                PendingApprovalOut(
+                    category="user_removal",
+                    entity_id=row.user_id,
+                    label=f"Remove user “{row.first_name} {row.last_name}”?",
+                    detail=f"They said: {row.removal_reason}" if row.removal_reason else "Someone wants to remove this user for good.",
+                    requested_at=row.removal_requested_at or row.updated_at,
+                    link_path="/users",
+                )
+            )
+    return out
+
+
 def _pending_schedules(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
     """Was missing entirely — added when monitoring schedules got their own
     maker-checker (migration 0062), but never wired into the bell, so a
@@ -426,6 +467,7 @@ def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: Use
         items += _pending_schedules(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if _PENDING_PERMISSION["user_approval"] in granted:
         items += _pending_user_approvals(db, organization_id=organization_id, exclude_user_id=user.user_id)
+        items += _pending_user_lifecycle(db, organization_id=organization_id, exclude_user_id=user.user_id)
 
     # Not gated by permission — every user sees their own inbox items
     # regardless of what they're eligible to approve.

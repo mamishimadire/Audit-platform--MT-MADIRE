@@ -29,6 +29,8 @@ const CATEGORY_GROUP: Record<string, CategoryGroup> = {
   device_deletion: 'approval',
   monitoring_schedule: 'approval',
   user_approval: 'approval',
+  user_deactivation: 'approval',
+  user_removal: 'approval',
   your_exception: 'exception',
   evidence_request: 'evidence',
   evidence_received: 'evidence',

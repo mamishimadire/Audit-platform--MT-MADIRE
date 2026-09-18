@@ -6,7 +6,10 @@ from pydantic import EmailStr, Field
 
 from app.schemas.common import OrmModel
 
-UserStatus = Literal["pending_approval", "pending", "active", "inactive", "locked", "rejected"]
+UserStatus = Literal[
+    "pending_approval", "pending", "active", "inactive", "locked", "rejected",
+    "pending_deactivation", "pending_removal", "removed",
+]
 
 
 class UserCreate(OrmModel):
@@ -28,7 +31,10 @@ class PlatformUserCreate(OrmModel):
     role_names: list[str] = Field(default_factory=list)
 
 
-class UserRejectRequest(OrmModel):
+class UserReasonRequest(OrmModel):
+    """Any user-lifecycle action that needs a reason recorded — rejecting
+    a pending user, or requesting/rejecting deactivation or removal."""
+
     reason: str
 
 
@@ -57,3 +63,8 @@ class UserOut(OrmModel):
     created_by: uuid.UUID | None = None
     approved_by: uuid.UUID | None = None
     approved_at: datetime | None = None
+    deactivation_requested_by: uuid.UUID | None = None
+    deactivation_reason: str | None = None
+    removal_requested_by: uuid.UUID | None = None
+    removal_reason: str | None = None
+    removal_prior_status: str | None = None
