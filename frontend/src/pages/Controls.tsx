@@ -454,6 +454,7 @@ export function ControlsPage() {
   const [search, setSearch] = useState('')
   const [activatingId, setActivatingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [activatedMessage, setActivatedMessage] = useState<string | null>(null)
   const [dataSources, setDataSources] = useState<DataSourceOut[]>([])
   const [auditTests, setAuditTests] = useState<AuditTestOut[]>([])
   const [bindingProgress, setBindingProgress] = useState<Record<string, TableBindingProgressOut>>({})
@@ -548,9 +549,12 @@ export function ControlsPage() {
   const handleActivate = async (controlLibraryId: string) => {
     if (!organizationId) return
     setError(null)
+    setActivatedMessage(null)
     setActivatingId(controlLibraryId)
     try {
       await apiClient.post(`/organizations/${organizationId}/controls/activate`, { control_library_id: controlLibraryId })
+      const entry = library.find((l) => l.control_library_id === controlLibraryId)
+      setActivatedMessage(entry ? `${entry.control_code} activated — see it under "Activated".` : 'Control activated.')
       load(organizationId)
     } catch {
       setError('Could not activate this control — it may already be active.')
@@ -590,6 +594,7 @@ export function ControlsPage() {
       </div>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+      {activatedMessage && <p className="mt-3 text-sm text-accent-ink">{activatedMessage}</p>}
 
       {view === 'activated' && organizationId && <CoverageSummary controls={controls} bindingProgress={bindingProgress} />}
 
