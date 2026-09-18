@@ -111,14 +111,24 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         rows = records[rule["object"]]
         group_cols = rule["group_by"]
         condition = rule.get("condition")
+        distinct_field = rule.get("distinct_field")
         candidates = rows
         if condition is not None:
             candidates = [r for r in candidates if _matches(r, condition["field"], condition["operator"], condition.get("value"))]
-        counts: dict[tuple, int] = {}
-        for r in candidates:
-            key = tuple(r.get(c) for c in group_cols)
-            counts[key] = counts.get(key, 0) + 1
-        hits = [r for r in candidates if counts[tuple(r.get(c) for c in group_cols)] > 1]
+        if distinct_field:
+            distinct_values: dict[tuple, set] = {}
+            for r in candidates:
+                key = tuple(r.get(c) for c in group_cols)
+                value = r.get(distinct_field)
+                if value is not None:
+                    distinct_values.setdefault(key, set()).add(value)
+            hits = [r for r in candidates if len(distinct_values.get(tuple(r.get(c) for c in group_cols), set())) > 1]
+        else:
+            counts: dict[tuple, int] = {}
+            for r in candidates:
+                key = tuple(r.get(c) for c in group_cols)
+                counts[key] = counts.get(key, 0) + 1
+            hits = [r for r in candidates if counts[tuple(r.get(c) for c in group_cols)] > 1]
         return RuleResult(
             len(rows), [{"record_identifier": _record_identifier(r, group_cols), "exception_data": r} for r in hits]
         )

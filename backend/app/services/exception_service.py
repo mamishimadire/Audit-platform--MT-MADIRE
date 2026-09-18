@@ -207,6 +207,10 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
     if rule_type == "duplicate":
         obj = _humanize_object(rule_definition["object"])
         group_by = ", ".join(_humanize_field_name(f).lower() for f in rule_definition["group_by"])
+        distinct_field = rule_definition.get("distinct_field")
+        if distinct_field:
+            distinct_label = _humanize_field_name(distinct_field).lower()
+            return f"This {obj} record ({ident}) has the same {group_by} as other {obj} records with a different {distinct_label}."
         return f"This {obj} record ({ident}) shares the same {group_by} with at least one other {obj} record."
 
     if rule_type == "three_way_match":

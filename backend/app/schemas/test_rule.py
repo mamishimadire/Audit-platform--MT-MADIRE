@@ -164,10 +164,23 @@ class ThresholdRule(BaseModel):
 
 
 class DuplicateRule(BaseModel):
+    """Flags every row whose group_by key combination isn't unique.
+
+    When distinct_field is set, the check changes from "this exact
+    group_by combination repeats" to "this group_by key has more than one
+    DISTINCT value of distinct_field" — e.g. AC-008: group_by=["user_id"],
+    distinct_field="ip_address" flags a login_history row when that
+    account's own logins came from more than one distinct IP, a proxy for
+    the account being used by more than one person. Plain row-count
+    duplication (the default, distinct_field unset) would be the wrong
+    check here — the same person logging in twice from the same IP is
+    normal, not a finding."""
+
     rule_type: Literal["duplicate"] = "duplicate"
     object: str
     group_by: list[str] = Field(min_length=1)
     condition: FieldCondition | None = None  # filters rows before duplicate-detection
+    distinct_field: str | None = None
 
     def required_objects(self) -> set[str]:
         return {self.object}
@@ -176,6 +189,8 @@ class DuplicateRule(BaseModel):
         fields = set(self.group_by)
         if self.condition is not None:
             fields.add(self.condition.field)
+        if self.distinct_field is not None:
+            fields.add(self.distinct_field)
         return {self.object: fields}
 
 

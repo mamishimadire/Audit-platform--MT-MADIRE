@@ -128,8 +128,13 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         joins = []
         group_by = ", ".join(f"{obj}.{f}" for f in rule_definition["group_by"])
         filters = [_describe_condition(obj, rule_definition["condition"], parameters)] if rule_definition.get("condition") else []
-        test_condition = f"More than one {obj} record shares the same {group_by}"
-        pass_condition = f"Every {group_by} combination is unique"
+        distinct_field = rule_definition.get("distinct_field")
+        if distinct_field:
+            test_condition = f"{group_by} has more than one distinct {obj}.{distinct_field} value"
+            pass_condition = f"Every {group_by} has a single {obj}.{distinct_field} value"
+        else:
+            test_condition = f"More than one {obj} record shares the same {group_by}"
+            pass_condition = f"Every {group_by} combination is unique"
 
     elif rule_type == "missing_match":
         primary, secondary = rule_definition["primary_object"], rule_definition["secondary_object"]

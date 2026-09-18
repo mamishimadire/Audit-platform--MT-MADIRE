@@ -121,7 +121,7 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     # only this transactional-document case is a genuine like-for-like gap.
     "supplier_invoices": ["invoice_number", "supplier_id", "po_number", "amount", "quantity", "received_at", "processed_by"],
     "invoice_approvals": ["invoice_number", "approved_by", "approved_at"],
-    "payments": ["payment_id", "invoice_number", "supplier_id", "amount", "paid_by", "paid_at"],
+    "payments": ["payment_id", "invoice_number", "supplier_id", "amount", "paid_by", "paid_at", "status"],
     "payment_approvals": ["payment_id", "approved_by", "approved_at"],
     "customer_approvals": ["customer_id", "approved_by", "approved_at"],
     "credit_approvals": ["customer_id", "credit_limit", "approved_by", "approved_at"],
@@ -412,6 +412,22 @@ def infer_object_for_entity(entity_name: str) -> str | None:
 # the final score either way).
 _PREFERRED_OBJECT_MIN_SCORE = 35.0
 
+# Caps a global-search result when preferred_object is known but none of
+# ITS OWN fields cleared _PREFERRED_OBJECT_MIN_SCORE. This is the case that
+# actually matters most: we have a real signal for what this column's table
+# represents (e.g. a "payments" table), and that object genuinely has no
+# field shaped like this one (e.g. "status" — payments has no status-like
+# concept in CANONICAL_MODEL). Without a cap, the unconstrained search below
+# can still find an EXACT name match on a totally unrelated object (e.g.
+# "user.status") and return it at 100 — confident enough to auto-accept
+# with no human ever reviewing it. That is precisely backwards: an exact
+# name hit on the WRONG object, for a table we already know is something
+# else, is a coincidence, not a correspondence. Set below the weakest
+# possible in-object result (_PREFERRED_OBJECT_MIN_SCORE + 25 = 60) so a
+# cross-object fallback guess never outranks even a mediocre same-object
+# one, and always sits under AUTO_ACCEPT_THRESHOLD.
+_CROSS_OBJECT_FALLBACK_CAP = 55.0
+
 
 def suggest_canonical_field(
     source_field_name: str, *, is_primary_key: bool = False, preferred_object: str | None = None
@@ -470,6 +486,13 @@ def suggest_canonical_field(
             score = _score_field(field_name, obj_name)
             if score > best_score:
                 best_score, best_field = score, f"{obj_name}.{field_name}"
+
+    if (
+        preferred_object is not None
+        and best_field
+        and not best_field.startswith(f"{preferred_object}.")
+    ):
+        best_score = min(best_score, _CROSS_OBJECT_FALLBACK_CAP)
 
     return best_field, round(best_score, 2)
 

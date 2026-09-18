@@ -106,9 +106,16 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
         df = dataframes[rule["object"]]
         group_cols = rule["group_by"]
         condition = rule.get("condition")
+        distinct_field = rule.get("distinct_field")
         candidates = df if condition is None else df[_apply_condition(df, condition["field"], condition["operator"], condition.get("value"))]
-        counts = candidates.groupby(group_cols)[group_cols[0]].transform("size")
-        hits = candidates[counts > 1]
+        if distinct_field:
+            # nunique() ignores NaN by default, matching the "missing values
+            # don't count toward distinctness" rule in the pure-Python evaluator.
+            distinct_counts = candidates.groupby(group_cols)[distinct_field].transform("nunique")
+            hits = candidates[distinct_counts > 1]
+        else:
+            counts = candidates.groupby(group_cols)[group_cols[0]].transform("size")
+            hits = candidates[counts > 1]
         return RuleResult(
             records_analyzed=len(df),
             exceptions=[{"record_identifier": _record_identifier(row, group_cols), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
