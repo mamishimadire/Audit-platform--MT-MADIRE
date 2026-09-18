@@ -15,3 +15,8 @@ class AuditTestOut(OrmModel):
     control_ids: list[uuid.UUID] = []
     domain: str | None = None
     required_tables: list[str] = []
+    # "not_mapped" / "pending_approval" / "rejected" / "approved" — see
+    # mapping_service.get_mapping_status_for_tests. Separate from `status`
+    # above, which is this test's own lifecycle state (draft/active/...),
+    # not its data mapping's approval state.
+    mapping_status: str = "not_mapped"

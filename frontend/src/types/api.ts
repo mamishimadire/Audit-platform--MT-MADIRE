@@ -822,4 +822,5 @@ export interface AuditTestOut {
   control_ids: string[]
   domain: string | null
   required_tables: string[]
+  mapping_status: string
 }

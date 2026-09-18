@@ -14,6 +14,25 @@ const STATUS_STYLES: Record<string, string> = {
   disabled: 'bg-bg text-ink-soft',
 }
 
+// The test's own lifecycle status (above) says nothing about whether its
+// DATA is mapped, let alone whether that mapping has actually been signed
+// off — a test can sit at "draft" indefinitely with its mapping fully
+// approved, or "active" with mappings still awaiting a second person.
+// This is the separate, maker-checker-flow status for that.
+const MAPPING_STATUS_LABELS: Record<string, string> = {
+  not_mapped: 'Not mapped',
+  pending_approval: 'Mapped — awaiting approval',
+  rejected: 'Mapping rejected',
+  approved: 'Mapped & approved',
+}
+
+const MAPPING_STATUS_STYLES: Record<string, string> = {
+  not_mapped: 'bg-bg text-ink-soft',
+  pending_approval: 'bg-orange-50 text-orange-700',
+  rejected: 'bg-red-50 text-red-700',
+  approved: 'bg-accent-soft text-accent-ink',
+}
+
 export function AuditTestsPage() {
   const { organizationId, setOrganizationId, organizations, needsPicker } = useActiveOrganization()
   const [tests, setTests] = useState<AuditTestOut[]>([])
@@ -44,6 +63,7 @@ export function AuditTestsPage() {
               <th className="px-4 py-2">Domain</th>
               <th className="px-4 py-2">Frequency</th>
               <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2">Mapping</th>
               <th className="px-4 py-2"></th>
             </tr>
           </thead>
@@ -62,6 +82,11 @@ export function AuditTestsPage() {
                       {t.status}
                     </span>
                   </td>
+                  <td className="px-4 py-2">
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${MAPPING_STATUS_STYLES[t.mapping_status] ?? ''}`}>
+                      {MAPPING_STATUS_LABELS[t.mapping_status] ?? t.mapping_status}
+                    </span>
+                  </td>
                   <td className="px-4 py-2 text-right">
                     <button
                       onClick={() => setExpandedTestId(expandedTestId === t.audit_test_id ? null : t.audit_test_id)}
@@ -73,7 +98,7 @@ export function AuditTestsPage() {
                 </tr>
                 {expandedTestId === t.audit_test_id && organizationId && (
                   <tr>
-                    <td colSpan={5} className="space-y-px p-0">
+                    <td colSpan={6} className="space-y-px p-0">
                       <DataMappingPanel
                         organizationId={organizationId}
                         auditTestId={t.audit_test_id}
@@ -88,7 +113,7 @@ export function AuditTestsPage() {
             ))}
             {tests.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-ink-soft">
+                <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
                   No audit tests yet — activate a control from the{' '}
                   <Link to="/controls" className="font-medium text-accent-ink hover:underline">
                     Controls

@@ -165,6 +165,55 @@ def list_mapping_history(db: Session, *, audit_test_id: uuid.UUID) -> list[TestD
     )
 
 
+def get_mapping_status_for_tests(db: Session, *, audit_test_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """One of "not_mapped" / "pending_approval" / "rejected" / "approved"
+    per test — a single query regardless of test count, same batching
+    pattern as audit_test_service.describe_tests (see its own docstring
+    on why: N round trips for an N-test list turns a sub-second load into
+    a multi-second one).
+
+    Distinct from MappingReadinessOut.ready, which only asks "does every
+    field this test's rule needs have SOME mapping" and says nothing
+    about approval. This is specifically where each test's mappings sit
+    in the maker-checker flow — for the Audit Tests list page, which
+    otherwise only showed the test's own lifecycle status (draft/active),
+    with no visibility into whether its data was mapped at all, mapped
+    but still awaiting a second person's approval, or mapped and then
+    kicked back for a reason. reject_mapping doesn't set a literal
+    "rejected" mapping_status (it resets to "needs_review" so the field
+    stays editable — see its own docstring); "rejected" here means
+    specifically needs_review rows carrying an unresolved rejected_at,
+    the same signal the mapping screen itself uses to show why a row was
+    kicked back.
+    """
+    if not audit_test_ids:
+        return {}
+
+    rows = db.execute(
+        select(TestDataMapping.audit_test_id, TestDataMapping.mapping_status, TestDataMapping.rejected_at).where(
+            TestDataMapping.audit_test_id.in_(audit_test_ids),
+            TestDataMapping.mapping_status != "superseded",
+        )
+    ).all()
+
+    by_test: dict[uuid.UUID, list[tuple[str, object]]] = {}
+    for test_id, status, rejected_at in rows:
+        by_test.setdefault(test_id, []).append((status, rejected_at))
+
+    result: dict[uuid.UUID, str] = {}
+    for test_id in audit_test_ids:
+        mappings = by_test.get(test_id)
+        if not mappings:
+            result[test_id] = "not_mapped"
+        elif all(status == "approved" for status, _ in mappings):
+            result[test_id] = "approved"
+        elif any(status == "needs_review" and rejected_at is not None for status, rejected_at in mappings):
+            result[test_id] = "rejected"
+        else:
+            result[test_id] = "pending_approval"
+    return result
+
+
 def update_mapping_field(db: Session, *, mapping: TestDataMapping, canonical_field: str, updated_by_user_id: uuid.UUID | None = None) -> TestDataMapping:
     """A human overriding the suggestion is always 'manually_mapped', regardless of what confidence produced it.
 
