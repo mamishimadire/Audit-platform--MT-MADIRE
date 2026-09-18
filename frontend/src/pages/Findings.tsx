@@ -82,9 +82,13 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
       // re-pick it from scratch just because they're the one creating the
       // finding. Still an editable dropdown, so it can be corrected if the
       // exception's owner genuinely isn't who should fix this finding.
-      if (exception.owner_id) setResponsibleUserId((prev) => prev || exception.owner_id!)
+      // Only prefilled if that owner can actually be assigned right now
+      // (active) — otherwise this would silently submit a responsible
+      // person who's deactivated, removed, or still awaiting approval.
+      const owner = orgUsers.find((u) => u.user_id === exception.owner_id)
+      if (owner && owner.status === 'active') setResponsibleUserId((prev) => prev || owner.user_id)
     })
-  }, [finding.finding_id, canAssign])
+  }, [finding.finding_id, canAssign, orgUsers])
 
   const addRootCause = async () => {
     await apiClient.post(`/findings/${finding.finding_id}/root-causes`, { root_cause_category: rcCategory || null, description: rcDescription || null })
@@ -202,10 +206,12 @@ function FindingDetail({ finding, onChanged }: { finding: FindingOut; onChanged:
               <select value={responsibleUserId} onChange={(e) => setResponsibleUserId(e.target.value)} className="w-full rounded-md border border-line px-2 py-1 text-xs">
                 <option value="">Responsible person (unassigned)</option>
                 {/* Same restriction as the exception owner dropdown — only
-                    users who actually hold the Exception Owner role are
-                    offered, not every member of the organization. */}
+                    users who actually hold the Exception Owner role AND
+                    can actually log in (active) are offered, not every
+                    member of the organization and not someone still
+                    awaiting approval/activation or already deactivated. */}
                 {orgUsers
-                  .filter((u) => u.roles.includes('Exception Owner'))
+                  .filter((u) => u.roles.includes('Exception Owner') && u.status === 'active')
                   .map((u) => (
                     <option key={u.user_id} value={u.user_id}>
                       {u.first_name} {u.last_name}

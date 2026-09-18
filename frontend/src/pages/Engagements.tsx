@@ -36,7 +36,7 @@ export function EngagementsPage() {
 
   const assignedUserIds = useMemo(() => new Set(grants.map((g) => g.user_id)), [grants])
   const assignableUsers = internalUsers.filter(
-    (u) => !assignedUserIds.has(u.user_id) && !u.roles.includes('Platform Super Admin'),
+    (u) => !assignedUserIds.has(u.user_id) && !u.roles.includes('Platform Super Admin') && u.status === 'active',
   )
 
   const grant = async () => {

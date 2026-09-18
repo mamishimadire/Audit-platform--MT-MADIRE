@@ -52,6 +52,11 @@ def grant(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Scope can only be granted to a platform user (no organization_id)"
         )
+    if target_user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Scope can only be granted to an active user — this one is still awaiting approval/activation, or is deactivated/removed.",
+        )
     return grant_organization_scope(db, user_id=payload.user_id, organization_id=organization_id, granted_by_user_id=user.user_id)
 
 

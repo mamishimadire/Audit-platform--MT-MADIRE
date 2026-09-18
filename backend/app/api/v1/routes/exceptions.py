@@ -212,17 +212,41 @@ def update(
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
 
+    # owner_id=None alone can't tell "the caller didn't send this field"
+    # apart from "the caller explicitly wants it cleared" — model_fields_set
+    # is that signal. Without it, selecting "Unassigned" in the owner
+    # dropdown would silently do nothing (owner_id already None either way).
+    owner_id_provided = "owner_id" in payload.model_fields_set
+    clear_owner = owner_id_provided and payload.owner_id is None
+
     granted = get_user_permission_names(db, user.user_id)
-    # Assigning who owns an exception is the client organization's own
-    # call, not the internal audit team's — exceptions:assign is granted
-    # only to Client Organisation Admin (see migration 0063). Status
-    # changes are a separate, broader action both sides legitimately do,
-    # so audit_framework:manage still covers those.
-    if payload.owner_id is not None and "exceptions:assign" not in granted:
+    # Assigning (or clearing) who owns an exception is the client
+    # organization's own call, not the internal audit team's —
+    # exceptions:assign is granted only to Client Organisation Admin (see
+    # migration 0063). Status changes are a separate, broader action both
+    # sides legitimately do, so audit_framework:manage still covers those.
+    if owner_id_provided and "exceptions:assign" not in granted:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the client organization's own admin (exceptions:assign) can assign an exception's owner.",
         )
+    if payload.owner_id is not None:
+        # Belt-and-braces server-side check to match the Exceptions page's
+        # own dropdown filtering — a direct API call could otherwise
+        # assign ownership to someone who can't even log in yet (still
+        # awaiting approval/activation) or not at all anymore (deactivated,
+        # removed), or who never holds the Exception Owner role to begin with.
+        candidate = db.get(User, payload.owner_id)
+        if (
+            candidate is None
+            or candidate.organization_id != organization_id
+            or candidate.status != "active"
+            or "Exception Owner" not in get_user_role_names(db, candidate.user_id)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The exception's owner must be an active user in this organization who holds the Exception Owner role.",
+            )
     # The exception's own assigned owner can always move its status —
     # they're the one actually doing the work, and this is how "I fixed
     # it, mark it resolved" gets recorded at all for a role that holds
@@ -238,8 +262,8 @@ def update(
 
     try:
         return update_exception(
-            db, exception=exception, status=payload.status, owner_id=payload.owner_id, organization_id=organization_id,
-            updated_by_user_id=user.user_id,
+            db, exception=exception, status=payload.status, owner_id=payload.owner_id, clear_owner=clear_owner,
+            organization_id=organization_id, updated_by_user_id=user.user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc

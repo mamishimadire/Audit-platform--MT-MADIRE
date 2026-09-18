@@ -452,12 +452,15 @@ function ExceptionRow({
               className="rounded-md border border-line px-2 py-1 text-xs disabled:opacity-60"
             >
               <option value="">Unassigned</option>
-              {/* Only users who actually hold the Exception Owner role are
-                  offered — anyone else in the org (a Read Only viewer, a
-                  Control Owner, etc.) isn't who this exception should be
-                  handed to, even though they're a valid org member. */}
+              {/* Only users who actually hold the Exception Owner role AND
+                  can actually log in (active — not still awaiting
+                  approval/activation, and not deactivated or removed) are
+                  offered as NEW choices. The exception's current owner
+                  always stays in the list even if they've since been
+                  deactivated, so the dropdown never silently misrepresents
+                  who it's actually assigned to. */}
               {orgUsers
-                .filter((u) => u.roles.includes('Exception Owner'))
+                .filter((u) => u.roles.includes('Exception Owner') && (u.status === 'active' || u.user_id === exception.owner_id))
                 .map((u) => (
                   <option key={u.user_id} value={u.user_id}>
                     {u.first_name} {u.last_name}

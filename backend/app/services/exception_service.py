@@ -452,8 +452,8 @@ def _trigger_immediate_retest(db: Session, *, exception: Exception_) -> None:
 
 
 def update_exception(
-    db: Session, *, exception: Exception_, status: str | None, owner_id: uuid.UUID | None, organization_id: uuid.UUID,
-    updated_by_user_id: uuid.UUID,
+    db: Session, *, exception: Exception_, status: str | None, owner_id: uuid.UUID | None, clear_owner: bool = False,
+    organization_id: uuid.UUID, updated_by_user_id: uuid.UUID,
 ) -> Exception_:
     old_status = exception.status
     if (
@@ -470,6 +470,13 @@ def update_exception(
         exception.status = status
     if owner_id is not None:
         exception.owner_id = owner_id
+    elif clear_owner:
+        # owner_id=None alone can't tell "the caller didn't touch this
+        # field" apart from "the caller explicitly wants it cleared" —
+        # clear_owner is that explicit signal (see routes/exceptions.py's
+        # use of payload.model_fields_set), otherwise "Unassigned" in the
+        # owner dropdown could never actually take effect.
+        exception.owner_id = None
     if status in _CLOSING_STATUSES and old_status != status:
         _trigger_immediate_retest(db, exception=exception)
     log_action(

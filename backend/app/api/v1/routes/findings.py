@@ -22,7 +22,7 @@ from app.schemas.finding import (
     RootCauseCreate,
     RootCauseOut,
 )
-from app.services.auth_service import get_user_permission_names
+from app.services.auth_service import get_user_permission_names, get_user_role_names
 from app.services.finding_service import (
     create_finding,
     create_remediation_action,
@@ -106,6 +106,22 @@ def add_remediation(
 ):
     finding = _get_finding_or_404(db, finding_id)
     enforce_same_organization(finding.organization_id, user, db)
+    if payload.responsible_user_id is not None:
+        # Matches the Findings page's own dropdown filtering — a direct API
+        # call could otherwise hand responsibility to someone who can't log
+        # in yet (still awaiting approval/activation) or not anymore
+        # (deactivated, removed), or who never holds Exception Owner at all.
+        candidate = db.get(User, payload.responsible_user_id)
+        if (
+            candidate is None
+            or candidate.organization_id != finding.organization_id
+            or candidate.status != "active"
+            or "Exception Owner" not in get_user_role_names(db, candidate.user_id)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The responsible person must be an active user in this organization who holds the Exception Owner role.",
+            )
     action = create_remediation_action(db, finding_id=finding_id, payload=payload, organization_id=finding.organization_id, created_by_user_id=user.user_id)
     out = RemediationActionOut.model_validate(action)
     return out.model_copy(update={"is_overdue": is_overdue(action.target_date, action.status)})
