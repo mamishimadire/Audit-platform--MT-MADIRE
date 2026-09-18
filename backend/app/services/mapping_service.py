@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.canonical_model import infer_object_for_entity, mapping_status_for_confidence, suggest_canonical_field
-from app.models.audit_test import TestDataMapping, TestRule
+from app.models.audit_test import ControlAuditTest, TestDataMapping, TestRule
+from app.models.control_library import ControlRuleTemplate
 from app.models.data_source import DataEntity, DataField, DataSource
+from app.models.risk_control import Control
 from app.schemas.data_mapping import (
     MappingSuggestion,
     RequiredFieldStatus,
@@ -167,50 +169,93 @@ def list_mapping_history(db: Session, *, audit_test_id: uuid.UUID) -> list[TestD
 
 def get_mapping_status_for_tests(db: Session, *, audit_test_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
     """One of "not_mapped" / "pending_approval" / "rejected" / "approved"
-    per test — a single query regardless of test count, same batching
-    pattern as audit_test_service.describe_tests (see its own docstring
-    on why: N round trips for an N-test list turns a sub-second load into
-    a multi-second one).
+    per test — a handful of queries total regardless of test count, same
+    batching pattern as audit_test_service.describe_tests (see its own
+    docstring on why: N round trips for an N-test list turns a sub-second
+    load into a multi-second one).
 
-    Distinct from MappingReadinessOut.ready, which only asks "does every
-    field this test's rule needs have SOME mapping" and says nothing
-    about approval. This is specifically where each test's mappings sit
-    in the maker-checker flow — for the Audit Tests list page, which
-    otherwise only showed the test's own lifecycle status (draft/active),
-    with no visibility into whether its data was mapped at all, mapped
-    but still awaiting a second person's approval, or mapped and then
-    kicked back for a reason. reject_mapping doesn't set a literal
-    "rejected" mapping_status (it resets to "needs_review" so the field
-    stays editable — see its own docstring); "rejected" here means
-    specifically needs_review rows carrying an unresolved rejected_at,
-    the same signal the mapping screen itself uses to show why a row was
-    kicked back.
+    "approved" requires BOTH that every field the test's own rule (or,
+    if none is active yet, its control's template) actually reads is
+    mapped, AND that every one of those mappings is approved — not just
+    that whichever mappings happen to exist are all approved. The first
+    version of this function only checked the latter, which reported
+    "Mapped & approved" for a test that had genuinely never mapped a
+    field its rule reads at all (MD-004: payments.supplier_id was never
+    mapped, but the one field that WAS mapped — payments.payment_id —
+    was approved, so every EXISTING mapping was "approved" even though
+    the rule was nowhere near ready). A test with no active rule and no
+    template at all has no fields to check completeness against, so it
+    falls back to "every existing mapping is approved" — there's no
+    contract yet to be complete against. reject_mapping doesn't set a
+    literal "rejected" mapping_status (it resets to "needs_review" so
+    the field stays editable — see its own docstring); "rejected" here
+    means specifically needs_review rows carrying an unresolved
+    rejected_at, the same signal the mapping screen itself uses to show
+    why a row was kicked back.
     """
     if not audit_test_ids:
         return {}
 
-    rows = db.execute(
-        select(TestDataMapping.audit_test_id, TestDataMapping.mapping_status, TestDataMapping.rejected_at).where(
+    mapping_rows = db.execute(
+        select(TestDataMapping.audit_test_id, TestDataMapping.canonical_field, TestDataMapping.mapping_status, TestDataMapping.rejected_at).where(
             TestDataMapping.audit_test_id.in_(audit_test_ids),
             TestDataMapping.mapping_status != "superseded",
         )
     ).all()
+    mappings_by_test: dict[uuid.UUID, list[tuple[str | None, str, object]]] = {}
+    for test_id, canonical_field, status, rejected_at in mapping_rows:
+        mappings_by_test.setdefault(test_id, []).append((canonical_field, status, rejected_at))
 
-    by_test: dict[uuid.UUID, list[tuple[str, object]]] = {}
-    for test_id, status, rejected_at in rows:
-        by_test.setdefault(test_id, []).append((status, rejected_at))
+    # Active rule's own rule_definition wins when one exists; otherwise
+    # fall back to the control's template — same precedence
+    # get_control_rule_template uses for one test at a time.
+    active_rules = db.execute(
+        select(TestRule.audit_test_id, TestRule.rule_definition).where(
+            TestRule.audit_test_id.in_(audit_test_ids), TestRule.status == "active"
+        )
+    ).all()
+    rule_definition_by_test: dict[uuid.UUID, dict] = {test_id: json.loads(rule_def) for test_id, rule_def in active_rules}
+
+    remaining_ids = [tid for tid in audit_test_ids if tid not in rule_definition_by_test]
+    if remaining_ids:
+        links = db.execute(
+            select(ControlAuditTest.audit_test_id, ControlAuditTest.control_id).where(ControlAuditTest.audit_test_id.in_(remaining_ids))
+        ).all()
+        control_id_by_test = dict(links)
+        controls = (
+            db.scalars(select(Control).where(Control.control_id.in_(control_id_by_test.values()))) if control_id_by_test else []
+        )
+        library_id_by_control = {c.control_id: c.control_library_id for c in controls if c.control_library_id is not None}
+        library_ids = set(library_id_by_control.values())
+        templates = (
+            db.scalars(select(ControlRuleTemplate).where(ControlRuleTemplate.control_library_id.in_(library_ids))) if library_ids else []
+        )
+        template_by_library_id = {t.control_library_id: t for t in templates}
+        for test_id in remaining_ids:
+            control_id = control_id_by_test.get(test_id)
+            library_id = library_id_by_control.get(control_id) if control_id else None
+            template = template_by_library_id.get(library_id) if library_id else None
+            if template is not None:
+                rule_definition_by_test[test_id] = json.loads(template.rule_definition)
 
     result: dict[uuid.UUID, str] = {}
     for test_id in audit_test_ids:
-        mappings = by_test.get(test_id)
+        mappings = mappings_by_test.get(test_id)
         if not mappings:
             result[test_id] = "not_mapped"
-        elif all(status == "approved" for status, _ in mappings):
-            result[test_id] = "approved"
-        elif any(status == "needs_review" and rejected_at is not None for status, rejected_at in mappings):
+            continue
+        if any(status == "needs_review" and rejected_at is not None for _, status, rejected_at in mappings):
             result[test_id] = "rejected"
+            continue
+
+        rule_definition = rule_definition_by_test.get(test_id)
+        if rule_definition is not None:
+            required = required_fields_by_object_for(rule_definition)
+            required_canonical_fields = {f"{obj}.{field}" for obj, fields in required.items() for field in fields}
+            approved_canonical_fields = {canonical_field for canonical_field, status, _ in mappings if status == "approved"}
+            result[test_id] = "approved" if required_canonical_fields <= approved_canonical_fields else "pending_approval"
         else:
-            result[test_id] = "pending_approval"
+            result[test_id] = "approved" if all(status == "approved" for _, status, _ in mappings) else "pending_approval"
     return result
 
 

@@ -83,29 +83,47 @@ export function AuditTestsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-2">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${MAPPING_STATUS_STYLES[t.mapping_status] ?? ''}`}>
-                      {MAPPING_STATUS_LABELS[t.mapping_status] ?? t.mapping_status}
-                    </span>
+                    {t.test_type === 'endpoint_compliance' ? (
+                      <span className="rounded-full bg-bg px-2 py-0.5 text-xs font-medium text-ink-soft">Not applicable</span>
+                    ) : (
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${MAPPING_STATUS_STYLES[t.mapping_status] ?? ''}`}>
+                        {MAPPING_STATUS_LABELS[t.mapping_status] ?? t.mapping_status}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-right">
                     <button
                       onClick={() => setExpandedTestId(expandedTestId === t.audit_test_id ? null : t.audit_test_id)}
                       className="text-xs font-medium text-accent-ink hover:underline"
                     >
-                      {expandedTestId === t.audit_test_id ? 'Hide mapping' : 'Map data'}
+                      {expandedTestId === t.audit_test_id
+                        ? 'Hide details'
+                        : t.test_type === 'endpoint_compliance'
+                          ? 'Details'
+                          : 'Map data'}
                     </button>
                   </td>
                 </tr>
                 {expandedTestId === t.audit_test_id && organizationId && (
                   <tr>
                     <td colSpan={6} className="space-y-px p-0">
-                      <DataMappingPanel
-                        organizationId={organizationId}
-                        auditTestId={t.audit_test_id}
-                        controlId={t.control_ids[0] ?? null}
-                        requiredTables={t.required_tables}
-                      />
-                      <TestEnginePanel organizationId={organizationId} auditTestId={t.audit_test_id} />
+                      {t.test_type === 'endpoint_compliance' ? (
+                        <p className="rounded-md border border-line bg-surface px-3 py-2 text-xs text-ink-soft">
+                          This test runs automatically in real time whenever a device reports in — it's evaluated by its
+                          own built-in logic, not the generic mapping/rule engine, so there's no data to map, no rule to
+                          generate, and no schedule to set here.
+                        </p>
+                      ) : (
+                        <>
+                          <DataMappingPanel
+                            organizationId={organizationId}
+                            auditTestId={t.audit_test_id}
+                            controlId={t.control_ids[0] ?? null}
+                            requiredTables={t.required_tables}
+                          />
+                          <TestEnginePanel organizationId={organizationId} auditTestId={t.audit_test_id} />
+                        </>
+                      )}
                     </td>
                   </tr>
                 )}

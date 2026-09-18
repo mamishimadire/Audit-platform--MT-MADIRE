@@ -77,6 +77,7 @@ _RULE_TYPE_RECOMMENDATION = {
     "balance": "Add up every line in this group and find which one is missing, wrong, or extra — the debit and credit totals don't match.",
     "baseline_comparison": "Compare this record's setting to the approved baseline and either fix the setting or get an exception approved.",
     "reconciliation": "Compare this ledger balance to the underlying transactions and find which one is missing, wrong, or extra.",
+    "conflict_matrix": "This role holds two permissions that should never sit with the same person — split them across two roles or two people.",
 }
 
 
@@ -233,6 +234,12 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
         ledger_obj = _humanize_object(rule_definition["ledger_object"])
         subledger_obj = _humanize_object(rule_definition["subledger_object"])
         return f"This {ledger_obj} record ({ident}) does not reconcile to its {subledger_obj} total."
+
+    if rule_type == "conflict_matrix":
+        role_label = _humanize_field_name(rule_definition["role_field"]).lower()
+        pair = exception_data.get(rule_definition["conflict_field"], [])
+        pair_text = " and ".join(str(p) for p in pair)
+        return f"This {role_label} ({ident}) holds both conflicting permissions: {pair_text}."
 
     if rule_type == "three_way_match":
         primary_obj = _humanize_object(rule_definition["primary_object"])

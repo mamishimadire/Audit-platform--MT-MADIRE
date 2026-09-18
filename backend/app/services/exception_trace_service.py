@@ -45,6 +45,8 @@ def _object_roles(rule_definition: dict) -> list[tuple[str | None, str]]:
         return [("primary", rule_definition["object"]), ("secondary", rule_definition["baseline_object"])]
     if rule_type == "reconciliation":
         return [("primary", rule_definition["ledger_object"]), ("secondary", rule_definition["subledger_object"])]
+    if rule_type == "conflict_matrix":
+        return [("primary", rule_definition["role_permission_object"]), ("secondary", rule_definition["rules_object"])]
     return []
 
 

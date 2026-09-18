@@ -147,6 +147,19 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                 r for r in candidates if _matches(r, primary_condition["field"], primary_condition["operator"], primary_condition.get("value"))
             ]
 
+        gate_object = rule.get("gate_object")
+        gate_join_field = rule.get("gate_join_field")
+        if gate_object is not None and gate_join_field is not None:
+            gate_rows = records[gate_object]
+            gate_secondary_field = rule.get("gate_secondary_join_field") or gate_join_field
+            gate_condition = rule.get("gate_condition")
+            if gate_condition is not None:
+                gate_rows = [
+                    r for r in gate_rows if _matches(r, gate_condition["field"], gate_condition["operator"], gate_condition.get("value"))
+                ]
+            gated_keys = {r[gate_secondary_field] for r in gate_rows if r.get(gate_secondary_field) is not None}
+            candidates = [r for r in candidates if r.get(gate_join_field) in gated_keys]
+
         secondary_candidates = secondary
         if secondary_condition is not None:
             secondary_candidates = [
@@ -326,6 +339,33 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
         return RuleResult(
             len(rows), [{"record_identifier": _record_identifier(r, group_cols), "exception_data": r} for r in hits]
         )
+
+    if rule_type == "conflict_matrix":
+        role_permission_rows = records[rule["role_permission_object"]]
+        rules_rows = records[rule["rules_object"]]
+        role_field = rule["role_field"]
+        permission_field = rule["permission_field"]
+        conflict_field = rule["conflict_field"]
+
+        perms_by_role: dict[Any, set] = {}
+        for r in role_permission_rows:
+            perms_by_role.setdefault(r.get(role_field), set()).add(r.get(permission_field))
+
+        hits = []
+        for rule_row in rules_rows:
+            pair = rule_row.get(conflict_field)
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            perm_a, perm_b = pair
+            for role, perms in perms_by_role.items():
+                if perm_a in perms and perm_b in perms:
+                    hits.append(
+                        {
+                            "record_identifier": str(role),
+                            "exception_data": {role_field: role, conflict_field: list(pair)},
+                        }
+                    )
+        return RuleResult(len(role_permission_rows), hits)
 
     if rule_type == "baseline_comparison":
         rows = records[rule["object"]]

@@ -143,6 +143,13 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         source = primary
         joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
         filters = [_describe_condition(primary, rule_definition["primary_condition"], parameters)] if rule_definition.get("primary_condition") else []
+        if rule_definition.get("gate_object"):
+            gate_obj = rule_definition["gate_object"]
+            gate_field = rule_definition["gate_join_field"]
+            gate_secondary_field = rule_definition.get("gate_secondary_join_field") or gate_field
+            joins.append(f"{primary}.{gate_field} = {gate_obj}.{gate_secondary_field}")
+            if rule_definition.get("gate_condition"):
+                filters.append(_describe_condition(gate_obj, rule_definition["gate_condition"], parameters))
         if rule_definition.get("secondary_condition"):
             filters.append(_describe_condition(secondary, rule_definition["secondary_condition"], parameters))
             test_condition = f"A {primary} record has no matching {secondary} record where " + _describe_condition(
@@ -283,6 +290,14 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
             f"SUM({subledger_obj}.{rule_definition['subledger_value_field']}) for the same {rule_definition['ledger_key_field']}"
         )
         pass_condition = f"Every {ledger_obj} record reconciles to its {subledger_obj} total"
+
+    elif rule_type == "conflict_matrix":
+        role_perm_obj, rules_obj = rule_definition["role_permission_object"], rule_definition["rules_object"]
+        source = role_perm_obj
+        joins = [f"{role_perm_obj}.{rule_definition['role_field']} matched against every pair in {rules_obj}.{rule_definition['conflict_field']}"]
+        filters = []
+        test_condition = f"A {role_perm_obj}.{rule_definition['role_field']} holds BOTH permissions of some {rules_obj} conflict pair"
+        pass_condition = f"No role holds both permissions of any {rules_obj} conflict pair"
 
     else:
         source = "—"

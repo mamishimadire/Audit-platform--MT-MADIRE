@@ -216,27 +216,51 @@ class MissingMatchRule(BaseModel):
     secondary_join_field: str | None = None  # defaults to join_field when the two sides share a name
     primary_condition: FieldCondition | None = None
     secondary_condition: FieldCondition | None = None
+    # A third object, INNER-joined to primary before the secondary
+    # anti-join even runs — e.g. RA-007: only the primary rows belonging
+    # to a PRIVILEGED user (gate_object=user_roles, gate_condition=role
+    # matches an admin-like pattern) should ever be anti-joined against
+    # privileged_access_approvals; without this, the anti-join alone can
+    # only ask "does ANY primary row lack a secondary match," not "does
+    # any row satisfying a THIRD object's condition lack one." All three
+    # fields are required together or not at all.
+    gate_object: str | None = None
+    gate_join_field: str | None = None  # canonical field name on primary_object, joining to gate_object
+    gate_secondary_join_field: str | None = None  # field name on gate_object; defaults to gate_join_field
+    gate_condition: FieldCondition | None = None
 
     def _secondary_field(self) -> str:
         return self.secondary_join_field or self.join_field
 
+    def _gate_field(self) -> str | None:
+        if self.gate_join_field is None:
+            return None
+        return self.gate_secondary_join_field or self.gate_join_field
+
     def required_objects(self) -> set[str]:
-        return {self.primary_object, self.secondary_object}
+        objects = {self.primary_object, self.secondary_object}
+        if self.gate_object is not None:
+            objects.add(self.gate_object)
+        return objects
 
     def required_fields_by_object(self) -> dict[str, set[str]]:
-        primary_fields = {self.join_field}
+        fields_by_obj: dict[str, set[str]] = {}
+
+        def add(obj: str, field: str) -> None:
+            fields_by_obj.setdefault(obj, set()).add(field)
+
+        add(self.primary_object, self.join_field)
         if self.primary_condition is not None:
-            primary_fields.add(self.primary_condition.field)
-        secondary_fields = {self._secondary_field()}
+            add(self.primary_object, self.primary_condition.field)
+        add(self.secondary_object, self._secondary_field())
         if self.secondary_condition is not None:
-            secondary_fields.add(self.secondary_condition.field)
-        # A dict can't hold two entries under the same key — when both
-        # sides are the same object (a self-join), the fields must be
-        # merged into one entry, or whichever assignment runs second would
-        # silently overwrite the first and drop half the real requirement.
-        if self.primary_object == self.secondary_object:
-            return {self.primary_object: primary_fields | secondary_fields}
-        return {self.primary_object: primary_fields, self.secondary_object: secondary_fields}
+            add(self.secondary_object, self.secondary_condition.field)
+        if self.gate_object is not None and self.gate_join_field is not None:
+            add(self.primary_object, self.gate_join_field)
+            add(self.gate_object, self._gate_field())
+            if self.gate_condition is not None:
+                add(self.gate_object, self.gate_condition.field)
+        return fields_by_obj
 
 
 class FieldComparison(BaseModel):
@@ -522,6 +546,39 @@ class FourWayMatchRule(BaseModel):
         return fields_by_obj
 
 
+class ConflictMatrixRule(BaseModel):
+    """SOD-007 "compare user roles against a PREDEFINED conflict matrix" —
+    unlike SOD-001/005/006, which each hard-code ONE specific conflicting
+    permission pair, this checks EVERY pair listed in a rules table
+    (rules_object, e.g. sod_rules) at execution time. Each rules_object
+    row's conflict_field must hold exactly a 2-element list of permission
+    names, e.g. ["create_employee", "process_payroll"] — the same values
+    role_permission_object.permission_field would hold. Flags every role
+    in role_permission_object that holds BOTH permissions of any pair
+    from rules_object. This is the one genuinely different shape from
+    every other rule here: every other rule_definition is static (the
+    same literal check every run); this one's actual check is DATA
+    (whatever rows rules_object holds right now), so the org can add a
+    new conflict pair to their own sod_rules table without anyone
+    editing or regenerating this rule at all."""
+
+    rule_type: Literal["conflict_matrix"] = "conflict_matrix"
+    role_permission_object: str
+    role_field: str
+    permission_field: str
+    rules_object: str
+    conflict_field: str
+
+    def required_objects(self) -> set[str]:
+        return {self.role_permission_object, self.rules_object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        return {
+            self.role_permission_object: {self.role_field, self.permission_field},
+            self.rules_object: {self.conflict_field},
+        }
+
+
 class BaselineComparisonRule(BaseModel):
     """Compares object.field against a value looked up from a SEPARATE
     lookup/config object that has no per-row join key at all — e.g.
@@ -544,7 +601,7 @@ class BaselineComparisonRule(BaseModel):
     rule_type: Literal["baseline_comparison"] = "baseline_comparison"
     object: str
     field: str
-    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte"]
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in"]
     baseline_object: str
     baseline_value_field: str
     baseline_key_field: str | None = None
@@ -622,7 +679,7 @@ class BalanceRule(BaseModel):
 TestRuleDefinition = Annotated[
     Union[
         ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule,
-        BalanceRule, BaselineComparisonRule, ReconciliationRule,
+        BalanceRule, BaselineComparisonRule, ReconciliationRule, ConflictMatrixRule,
     ],
     Field(discriminator="rule_type"),
 ]
@@ -638,6 +695,7 @@ _RULE_CLASSES = {
     "balance": BalanceRule,
     "baseline_comparison": BaselineComparisonRule,
     "reconciliation": ReconciliationRule,
+    "conflict_matrix": ConflictMatrixRule,
 }
 
 

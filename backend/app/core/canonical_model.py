@@ -261,7 +261,7 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "web_filter_status": ["asset_id", "filtering_active", "on_network"],
     "web_filter_policies": ["policy_id", "category", "blocked"],
     "web_filter_logs": ["user_id", "url", "action", "occurred_at"],
-    "security_logs": ["log_id", "event", "logged_at"],
+    "security_logs": ["log_id", "event", "logged_at", "user_id"],
     "web_filter_exceptions": ["exception_id", "user_id", "reason", "granted_at"],
     "exception_approvals": ["exception_id", "approved_by", "approved_at"],
     "web_filter_config": ["config_id", "category_db_version", "updated_at"],
