@@ -236,6 +236,8 @@ function ConnectionRow({
   const [busyChangeId, setBusyChangeId] = useState<string | null>(null)
   const [rejectingChangeId, setRejectingChangeId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [cancellingChangeId, setCancellingChangeId] = useState<string | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
   const [editForm, setEditForm] = useState({
     connection_name: connection.connection_name ?? '',
     host: connection.host ?? '',
@@ -379,6 +381,27 @@ function ConnectionRow({
     }
   }
 
+  // The requester withdrawing their OWN still-pending change — distinct
+  // from rejecting someone else's, which the backend never allows the
+  // requester to do themselves.
+  const submitCancel = async () => {
+    if (!cancellingChangeId) return
+    const id = cancellingChangeId
+    setBusyChangeId(id)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/${id}/cancel`, { reason: cancelReason })
+      setCancellingChangeId(null)
+      setCancelReason('')
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not cancel this change.')
+    } finally {
+      setBusyChangeId(null)
+    }
+  }
+
   return (
     <div className={`mt-2 rounded-md border border-line px-3 py-2 ${connection.is_hidden ? 'opacity-50' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -426,7 +449,13 @@ function ConnectionRow({
       {pending && (
         <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <div className="font-semibold">{describeConnectionChange(pending)} — awaiting approval from {approverNames}</div>
-          {canApproveChange && pending.requested_by !== user?.user_id ? (
+          {pending.requested_by === user?.user_id ? (
+            <div className="mt-2">
+              <button onClick={() => setCancellingChangeId(pending.change_id)} disabled={busyChangeId === pending.change_id} className="rounded-md border border-line bg-white px-2.5 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60">
+                Cancel request
+              </button>
+            </div>
+          ) : canApproveChange ? (
             <div className="mt-2 flex gap-2">
               <button onClick={() => approveChange(pending.change_id)} disabled={busyChangeId === pending.change_id} className="rounded-md border border-transparent bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-ink disabled:opacity-60">
                 {busyChangeId === pending.change_id ? 'Approving…' : 'Approve'}
@@ -436,11 +465,7 @@ function ConnectionRow({
               </button>
             </div>
           ) : (
-            <p className="mt-1 text-amber-700">
-              {pending.requested_by === user?.user_id
-                ? 'You submitted this change — a different authorized approver must approve or reject it.'
-                : 'Awaiting review by an authorized approver.'}
-            </p>
+            <p className="mt-1 text-amber-700">Awaiting review by an authorized approver.</p>
           )}
         </div>
       )}
@@ -597,6 +622,22 @@ function ConnectionRow({
         onCancel={() => {
           setRejectingChangeId(null)
           setRejectReason('')
+        }}
+      />
+      <ConfirmDialog
+        open={cancellingChangeId !== null}
+        title="Cancel your change request"
+        message="Withdraw your own still-pending connection change? You can resubmit it afterward."
+        confirmLabel="Cancel request"
+        danger
+        reasonRequired
+        reasonValue={cancelReason}
+        onReasonChange={setCancelReason}
+        reasonPlaceholder="Why are you cancelling this request?"
+        onConfirm={submitCancel}
+        onCancel={() => {
+          setCancellingChangeId(null)
+          setCancelReason('')
         }}
       />
     </div>

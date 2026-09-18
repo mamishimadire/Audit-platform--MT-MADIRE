@@ -11,10 +11,12 @@ import type { AuditTestOut, ControlLibraryOut, ControlOut, DataSourceOut, RiskOu
 /**
  * Activation and deactivation each go through a request/approve pair, with
  * deactivation approval mandatory (never skippable) — the same identity
- * check the backend enforces (requester != approver). This component
- * doesn't try to guess whether the current viewer is allowed to approve
- * their own request; it just attempts the action and surfaces the
- * backend's rejection if so, same as everywhere else in this app.
+ * check the backend enforces (requester != approver, and, separately,
+ * only the requester may cancel their own still-pending request). The
+ * requester sees "Cancel request" instead of "Approve"/"Reject" for
+ * their own pending request — the backend blocks both of those for them
+ * either way, so showing buttons that would only ever error is worse
+ * than just not showing them.
  */
 function ControlLifecycleActions({
   control,
@@ -27,6 +29,7 @@ function ControlLifecycleActions({
   onChanged: () => void
   progress?: TableBindingProgressOut
 }) {
+  const { user: currentUser } = useAuth()
   const [busy, setBusy] = useState(false)
   // Only block on readiness once we actually know it (progress loaded) —
   // never render the button live-and-clickable only to fail after the
@@ -37,8 +40,10 @@ function ControlLifecycleActions({
     ? progress!.required_tables.filter((t) => !progress!.bindings.some((b) => b.canonical_table_name === t))
     : []
   const [error, setError] = useState<string | null>(null)
-  const [mode, setMode] = useState<'deactivate' | 'reject-activation' | 'reject-deactivation' | null>(null)
+  const [mode, setMode] = useState<'deactivate' | 'reject-activation' | 'reject-deactivation' | 'cancel-activation' | 'cancel-deactivation' | null>(null)
   const [reason, setReason] = useState('')
+  const isActivationRequester = control.activation_requested_by !== null && control.activation_requested_by === currentUser?.user_id
+  const isDeactivationRequester = control.deactivation_requested_by !== null && control.deactivation_requested_by === currentUser?.user_id
 
   const post = async (action: string, body?: object) => {
     setBusy(true)
@@ -84,6 +89,8 @@ function ControlLifecycleActions({
   if (mode === 'deactivate') return reasonBox('Confirm request', () => post('deactivation/request', { reason }))
   if (mode === 'reject-activation') return reasonBox('Confirm rejection', () => post('activation/reject', { reason }))
   if (mode === 'reject-deactivation') return reasonBox('Confirm rejection', () => post('deactivation/reject', { reason }))
+  if (mode === 'cancel-activation') return reasonBox('Confirm cancellation', () => post('activation/cancel', { reason }))
+  if (mode === 'cancel-deactivation') return reasonBox('Confirm cancellation', () => post('deactivation/cancel', { reason }))
 
   return (
     <div className="text-right">
@@ -106,12 +113,20 @@ function ControlLifecycleActions({
       )}
       {control.status === 'pending_activation' && (
         <div className="flex justify-end gap-2">
-          <button onClick={() => post('activation/approve')} disabled={busy} className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60">
-            {busy ? 'Approving…' : 'Approve activation'}
-          </button>
-          <button onClick={() => setMode('reject-activation')} className="text-xs font-medium text-red-600 hover:underline">
-            Reject
-          </button>
+          {isActivationRequester ? (
+            <button onClick={() => setMode('cancel-activation')} className="text-xs font-medium text-red-600 hover:underline">
+              Cancel request
+            </button>
+          ) : (
+            <>
+              <button onClick={() => post('activation/approve')} disabled={busy} className="text-xs font-medium text-accent-ink hover:underline disabled:opacity-60">
+                {busy ? 'Approving…' : 'Approve activation'}
+              </button>
+              <button onClick={() => setMode('reject-activation')} className="text-xs font-medium text-red-600 hover:underline">
+                Reject
+              </button>
+            </>
+          )}
         </div>
       )}
       {control.status === 'active' && (
@@ -121,12 +136,20 @@ function ControlLifecycleActions({
       )}
       {control.status === 'pending_deactivation' && (
         <div className="flex justify-end gap-2">
-          <button onClick={() => post('deactivation/approve')} disabled={busy} className="text-xs font-medium text-red-600 hover:underline disabled:opacity-60">
-            {busy ? 'Approving…' : 'Approve deactivation'}
-          </button>
-          <button onClick={() => setMode('reject-deactivation')} className="text-xs font-medium text-ink-soft hover:underline">
-            Reject
-          </button>
+          {isDeactivationRequester ? (
+            <button onClick={() => setMode('cancel-deactivation')} className="text-xs font-medium text-red-600 hover:underline">
+              Cancel request
+            </button>
+          ) : (
+            <>
+              <button onClick={() => post('deactivation/approve')} disabled={busy} className="text-xs font-medium text-red-600 hover:underline disabled:opacity-60">
+                {busy ? 'Approving…' : 'Approve deactivation'}
+              </button>
+              <button onClick={() => setMode('reject-deactivation')} className="text-xs font-medium text-ink-soft hover:underline">
+                Reject
+              </button>
+            </>
+          )}
         </div>
       )}
       {control.status === 'inactive' && (

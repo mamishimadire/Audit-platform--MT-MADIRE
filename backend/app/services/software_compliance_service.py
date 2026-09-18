@@ -243,12 +243,15 @@ def approve_classification(db: Session, *, entry: ApprovedSoftware, approved_by_
 
 
 def reject_classification(db: Session, *, entry: ApprovedSoftware, reason: str, rejected_by_user_id: uuid.UUID) -> ApprovedSoftware:
+    """A different person from whoever submitted this classification —
+    the submitter withdraws their own submission via
+    cancel_classification instead, never this."""
     if entry.approval_status != "pending_approval":
         raise ValueError(f"Cannot reject — this classification is '{entry.approval_status}', not pending approval.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a classification.")
     if entry.created_by is not None and entry.created_by == rejected_by_user_id:
-        raise ValueError("You submitted this classification yourself — a different authorized user must reject it.")
+        raise ValueError("You submitted this classification yourself — a different authorized user must reject it, or cancel your own submission instead.")
 
     entry.approval_status = "rejected"
     entry.rejected_by = rejected_by_user_id
@@ -259,6 +262,34 @@ def reject_classification(db: Session, *, entry: ApprovedSoftware, reason: str, 
         action=f"Rejected classification of '{entry.app_name}' as {entry.classification}: {reason}",
         organization_id=entry.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="approved_software",
+        entity_id=entry.approved_software_id,
+        new_value={"approval_status": "rejected", "reason": reason},
+    )
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def cancel_classification(db: Session, *, entry: ApprovedSoftware, reason: str, cancelled_by_user_id: uuid.UUID) -> ApprovedSoftware:
+    """The submitter withdrawing their OWN still-pending classification —
+    only they may do this, no one else."""
+    if entry.approval_status != "pending_approval":
+        raise ValueError(f"Cannot cancel — this classification is '{entry.approval_status}', not pending approval.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a classification submission.")
+    if entry.created_by != cancelled_by_user_id:
+        raise ValueError("Only the person who submitted this classification can cancel it.")
+
+    entry.approval_status = "rejected"
+    entry.rejected_by = cancelled_by_user_id
+    entry.rejected_at = datetime.now(timezone.utc)
+    entry.rejected_reason = reason
+    log_action(
+        db,
+        action=f"Cancelled own classification submission of '{entry.app_name}' as {entry.classification}: {reason}",
+        organization_id=entry.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="approved_software",
         entity_id=entry.approved_software_id,
         new_value={"approval_status": "rejected", "reason": reason},

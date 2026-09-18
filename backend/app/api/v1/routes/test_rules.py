@@ -12,6 +12,7 @@ from app.models.rbac import User
 from app.schemas.audit_engine import RuleDeleteRequest, RuleRejectRequest, TestRuleCreate, TestRuleOut
 from app.services.test_rule_service import (
     approve_rule,
+    cancel_rule,
     create_test_rule,
     delete_test_rule,
     generate_rule_from_template,
@@ -164,6 +165,22 @@ def reject(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _to_out(rejected)
+
+
+@router.post("/test-rules/{rule_id}/cancel", response_model=TestRuleOut)
+def cancel(
+    rule_id: uuid.UUID,
+    payload: RuleRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("audit_framework:manage")),
+) -> TestRuleOut:
+    rule, organization_id = _get_rule_with_org(db, rule_id)
+    enforce_same_organization(organization_id, user, db)
+    try:
+        cancelled = cancel_rule(db, rule=rule, reason=payload.reason, cancelled_by_user_id=user.user_id, organization_id=organization_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(cancelled)
 
 
 @router.delete("/test-rules/{rule_id}", response_model=TestRuleOut)

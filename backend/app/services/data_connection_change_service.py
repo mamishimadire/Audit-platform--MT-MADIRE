@@ -202,10 +202,13 @@ def approve_connection_change(
 def reject_connection_change(
     db: Session, *, change: DataConnectionChange, reason: str, rejected_by_user_id: uuid.UUID, organization_id: uuid.UUID,
 ) -> DataConnectionChange:
+    """A different person from whoever requested this change — the
+    requester withdraws their own request via cancel_connection_change
+    instead, never this."""
     if change.approval_status != "pending_approval":
         raise ValueError(f"Cannot reject — this change is '{change.approval_status}', not pending approval.")
     if change.requested_by is not None and change.requested_by == rejected_by_user_id:
-        raise ValueError("You requested this change yourself — a different authorized user must reject it.")
+        raise ValueError("You requested this change yourself — a different authorized user must reject it, or cancel your own request instead.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a data connection change.")
 
@@ -218,6 +221,36 @@ def reject_connection_change(
         action=f"Rejected data connection {change.change_type}: {change.rejected_reason}",
         organization_id=organization_id,
         user_id=rejected_by_user_id,
+        entity_type="data_connection_changes",
+        entity_id=change.change_id,
+        new_value={"approval_status": "rejected", "reason": change.rejected_reason},
+    )
+    db.commit()
+    db.refresh(change)
+    return change
+
+
+def cancel_connection_change(
+    db: Session, *, change: DataConnectionChange, reason: str, cancelled_by_user_id: uuid.UUID, organization_id: uuid.UUID,
+) -> DataConnectionChange:
+    """The requester withdrawing their OWN still-pending data connection
+    change request — only they may do this, no one else."""
+    if change.approval_status != "pending_approval":
+        raise ValueError(f"Cannot cancel — this change is '{change.approval_status}', not pending approval.")
+    if change.requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this change can cancel it.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a data connection change request.")
+
+    change.approval_status = "rejected"
+    change.rejected_by = cancelled_by_user_id
+    change.rejected_at = datetime.now(timezone.utc)
+    change.rejected_reason = reason.strip()
+    log_action(
+        db,
+        action=f"Cancelled own data connection {change.change_type} request: {change.rejected_reason}",
+        organization_id=organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="data_connection_changes",
         entity_id=change.change_id,
         new_value={"approval_status": "rejected", "reason": change.rejected_reason},

@@ -45,6 +45,7 @@ from app.services.device_command_service import (
 from app.services.device_compliance_service import get_compliance_check_details, record_telemetry_and_check_compliance
 from app.services.device_policy_service import (
     approve_device_policy_change,
+    cancel_device_policy_change,
     get_device_policy,
     list_device_policy_changes,
     reject_device_policy_change,
@@ -52,6 +53,7 @@ from app.services.device_policy_service import (
 )
 from app.services.software_compliance_service import (
     approve_classification,
+    cancel_classification,
     create_approved_software,
     delete_approved_software,
     enrich_installed_software,
@@ -62,6 +64,8 @@ from app.services.software_compliance_service import (
 from app.services.device_service import (
     approve_deletion,
     approve_revocation,
+    cancel_deletion,
+    cancel_revocation,
     compliance_status_from_telemetry,
     create_device,
     get_latest_telemetry,
@@ -280,6 +284,24 @@ def reject_policy_change(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
+@router.post(
+    "/organizations/{organization_id}/device-policy/changes/{policy_change_id}/cancel",
+    response_model=DevicePolicyChangeOut,
+)
+def cancel_policy_change(
+    organization_id: uuid.UUID,
+    policy_change_id: uuid.UUID,
+    payload: DevicePolicyRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("devices:manage_policy")),
+) -> DevicePolicyChange:
+    change = _get_device_policy_change_or_404(db, organization_id, policy_change_id, user)
+    try:
+        return cancel_device_policy_change(db, change=change, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 @router.get("/organizations/{organization_id}/approved-software", response_model=list[ApprovedSoftwareOut])
 def list_approved_software_route(
     organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
@@ -358,6 +380,18 @@ def reject_approved_software_route(
     entry = _get_approved_software_or_404(db, organization_id, approved_software_id, user)
     try:
         return reject_classification(db, entry=entry, reason=payload.reason, rejected_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.post("/organizations/{organization_id}/approved-software/{approved_software_id}/cancel", response_model=ApprovedSoftwareOut)
+def cancel_approved_software_route(
+    organization_id: uuid.UUID, approved_software_id: uuid.UUID, payload: ApprovedSoftwareRejectRequest,
+    db: Session = Depends(get_db), user: User = Depends(require_permissions("devices:manage_policy")),
+) -> ApprovedSoftware:
+    entry = _get_approved_software_or_404(db, organization_id, approved_software_id, user)
+    try:
+        return cancel_classification(db, entry=entry, reason=payload.reason, cancelled_by_user_id=user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
@@ -486,6 +520,19 @@ def reject_device_revocation(
     return _to_out(db, updated)
 
 
+@router.post("/devices/{device_id}/revocation/cancel", response_model=DeviceOut)
+def cancel_device_revocation(
+    device_id: uuid.UUID, payload: DeviceLifecycleRequest, db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("devices:request_revoke")),
+) -> DeviceOut:
+    device = _get_device_or_404(db, device_id, user)
+    try:
+        updated = cancel_revocation(db, device=device, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
 @router.post("/devices/{device_id}/deletion/request", response_model=DeviceOut)
 def request_device_deletion(
     device_id: uuid.UUID, payload: DeviceLifecycleRequest, db: Session = Depends(get_db),
@@ -521,6 +568,19 @@ def reject_device_deletion(
         updated = reject_deletion(db, device=device, reason=payload.reason, rejected_by_user_id=user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/devices/{device_id}/deletion/cancel", response_model=DeviceOut)
+def cancel_device_deletion(
+    device_id: uuid.UUID, payload: DeviceLifecycleRequest, db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("devices:request_delete")),
+) -> DeviceOut:
+    device = _get_device_or_404(db, device_id, user)
+    try:
+        updated = cancel_deletion(db, device=device, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return _to_out(db, updated)
 
 

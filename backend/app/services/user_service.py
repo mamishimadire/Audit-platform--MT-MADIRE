@@ -173,10 +173,15 @@ def approve_pending_user(db: Session, *, user: User, approved_by_user_id: uuid.U
 
 
 def reject_pending_user(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    """A different person from whoever added this user — the adder
+    withdraws their own submission via cancel_pending_user instead,
+    never this."""
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a new user.")
     if user.status != "pending_approval":
         raise ValueError(f"This user is '{user.status}', not pending approval.")
+    if user.created_by is not None and user.created_by == rejected_by_user_id:
+        raise ValueError("You added this user yourself — a different authorized user must reject them, or cancel your own submission instead.")
 
     user.status = "rejected"
     log_action(
@@ -184,6 +189,31 @@ def reject_pending_user(db: Session, *, user: User, reason: str, rejected_by_use
         action=f"Rejected new user '{user.email}': {reason}",
         organization_id=user.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "rejected", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def cancel_pending_user(db: Session, *, user: User, reason: str, cancelled_by_user_id: uuid.UUID) -> User:
+    """The adder withdrawing their OWN still-pending new-user submission —
+    only they may do this, no one else."""
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a new user submission.")
+    if user.status != "pending_approval":
+        raise ValueError(f"This user is '{user.status}', not pending approval.")
+    if user.created_by != cancelled_by_user_id:
+        raise ValueError("Only the person who added this user can cancel it.")
+
+    user.status = "rejected"
+    log_action(
+        db,
+        action=f"Cancelled own new-user submission '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="users",
         entity_id=user.user_id,
         new_value={"status": "rejected", "reason": reason},
@@ -242,10 +272,15 @@ def approve_deactivation(db: Session, *, user: User, approved_by_user_id: uuid.U
 
 
 def reject_deactivation(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    """A different person from whoever requested this deactivation — the
+    requester withdraws their own request via cancel_deactivation
+    instead, never this."""
     if user.status != "pending_deactivation":
         raise ValueError(f"Cannot reject — user is '{user.status}', not pending deactivation.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a deactivation request.")
+    if user.deactivation_requested_by is not None and user.deactivation_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this deactivation yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     user.status = "active"
     user.deactivation_requested_by = None
@@ -255,6 +290,33 @@ def reject_deactivation(db: Session, *, user: User, reason: str, rejected_by_use
         action=f"Rejected deactivation of user '{user.email}': {reason}",
         organization_id=user.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "active", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def cancel_deactivation(db: Session, *, user: User, reason: str, cancelled_by_user_id: uuid.UUID) -> User:
+    """The requester withdrawing their OWN still-pending deactivation
+    request — only they may do this, no one else."""
+    if user.status != "pending_deactivation":
+        raise ValueError(f"Cannot cancel — user is '{user.status}', not pending deactivation.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a deactivation request.")
+    if user.deactivation_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this deactivation can cancel it.")
+
+    user.status = "active"
+    user.deactivation_requested_by = None
+    user.deactivation_reason = None
+    log_action(
+        db,
+        action=f"Cancelled own deactivation request for user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="users",
         entity_id=user.user_id,
         new_value={"status": "active", "reason": reason},
@@ -318,10 +380,15 @@ def approve_removal(db: Session, *, user: User, approved_by_user_id: uuid.UUID) 
 
 
 def reject_removal(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    """A different person from whoever requested this removal — the
+    requester withdraws their own request via cancel_removal instead,
+    never this."""
     if user.status != "pending_removal":
         raise ValueError(f"Cannot reject — user is '{user.status}', not pending removal.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a removal request.")
+    if user.removal_requested_by is not None and user.removal_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this removal yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     user.status = user.removal_prior_status or "active"
     user.removal_prior_status = None
@@ -332,6 +399,34 @@ def reject_removal(db: Session, *, user: User, reason: str, rejected_by_user_id:
         action=f"Rejected removal of user '{user.email}': {reason}",
         organization_id=user.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": user.status, "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def cancel_removal(db: Session, *, user: User, reason: str, cancelled_by_user_id: uuid.UUID) -> User:
+    """The requester withdrawing their OWN still-pending removal
+    request — only they may do this, no one else."""
+    if user.status != "pending_removal":
+        raise ValueError(f"Cannot cancel — user is '{user.status}', not pending removal.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a removal request.")
+    if user.removal_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this removal can cancel it.")
+
+    user.status = user.removal_prior_status or "active"
+    user.removal_prior_status = None
+    user.removal_requested_by = None
+    user.removal_reason = None
+    log_action(
+        db,
+        action=f"Cancelled own removal request for user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="users",
         entity_id=user.user_id,
         new_value={"status": user.status, "reason": reason},

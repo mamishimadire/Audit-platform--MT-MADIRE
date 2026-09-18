@@ -218,10 +218,15 @@ def approve_revocation(db: Session, *, device: Device, approved_by_user_id: uuid
 
 
 def reject_revocation(db: Session, *, device: Device, reason: str, rejected_by_user_id: uuid.UUID) -> Device:
+    """A different person from whoever requested this revocation — the
+    requester withdraws their own request via cancel_revocation instead,
+    never this."""
     if device.status != "pending_revocation":
         raise ValueError(f"Cannot reject — device is '{device.status}', not pending revocation.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a revocation request.")
+    if device.revocation_requested_by is not None and device.revocation_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this revocation yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     # Falls back to 'offline' rather than trying to remember the exact prior
     # status — the next heartbeat (if the device is still reporting) flips
@@ -234,6 +239,33 @@ def reject_revocation(db: Session, *, device: Device, reason: str, rejected_by_u
         action=f"Rejected revocation of device '{device.device_name}': {reason}",
         organization_id=device.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="devices",
+        entity_id=device.device_id,
+        new_value={"status": "offline", "reason": reason},
+    )
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+def cancel_revocation(db: Session, *, device: Device, reason: str, cancelled_by_user_id: uuid.UUID) -> Device:
+    """The requester withdrawing their OWN still-pending revocation
+    request — only they may do this, no one else."""
+    if device.status != "pending_revocation":
+        raise ValueError(f"Cannot cancel — device is '{device.status}', not pending revocation.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a revocation request.")
+    if device.revocation_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this revocation can cancel it.")
+
+    device.status = "offline"
+    device.revocation_requested_by = None
+    device.revocation_reason = None
+    log_action(
+        db,
+        action=f"Cancelled own revocation request for device '{device.device_name}': {reason}",
+        organization_id=device.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="devices",
         entity_id=device.device_id,
         new_value={"status": "offline", "reason": reason},
@@ -362,10 +394,15 @@ def approve_deletion(db: Session, *, device: Device, approved_by_user_id: uuid.U
 
 
 def reject_deletion(db: Session, *, device: Device, reason: str, rejected_by_user_id: uuid.UUID) -> Device:
+    """A different person from whoever requested this deletion — the
+    requester withdraws their own request via cancel_deletion instead,
+    never this."""
     if device.status != "pending_deletion":
         raise ValueError(f"Cannot reject — device is '{device.status}', not pending deletion.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a deletion request.")
+    if device.deletion_requested_by is not None and device.deletion_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this deletion yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     device.status = "offline"
     device.deletion_requested_by = None
@@ -375,6 +412,33 @@ def reject_deletion(db: Session, *, device: Device, reason: str, rejected_by_use
         action=f"Rejected deletion of device '{device.device_name}': {reason}",
         organization_id=device.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="devices",
+        entity_id=device.device_id,
+        new_value={"status": "offline", "reason": reason},
+    )
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+def cancel_deletion(db: Session, *, device: Device, reason: str, cancelled_by_user_id: uuid.UUID) -> Device:
+    """The requester withdrawing their OWN still-pending deletion
+    request — only they may do this, no one else."""
+    if device.status != "pending_deletion":
+        raise ValueError(f"Cannot cancel — device is '{device.status}', not pending deletion.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a deletion request.")
+    if device.deletion_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this deletion can cancel it.")
+
+    device.status = "offline"
+    device.deletion_requested_by = None
+    device.deletion_reason = None
+    log_action(
+        db,
+        action=f"Cancelled own deletion request for device '{device.device_name}': {reason}",
+        organization_id=device.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="devices",
         entity_id=device.device_id,
         new_value={"status": "offline", "reason": reason},

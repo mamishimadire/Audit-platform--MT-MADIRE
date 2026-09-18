@@ -11,6 +11,7 @@ from app.models.rbac import User
 from app.schemas.audit_engine import MonitoringScheduleCreate, MonitoringScheduleOut, ScheduleRejectRequest
 from app.services.monitoring_service import (
     approve_schedule,
+    cancel_schedule,
     create_schedule,
     list_schedules,
     list_schedules_for_organization,
@@ -84,6 +85,21 @@ def reject(
         return reject_schedule(db, schedule=schedule, reason=payload.reason, rejected_by_user_id=user.user_id, organization_id=organization_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/schedules/{schedule_id}/cancel", response_model=MonitoringScheduleOut)
+def cancel(
+    schedule_id: uuid.UUID,
+    payload: ScheduleRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("audit_framework:manage")),
+) -> MonitoringSchedule:
+    schedule, organization_id = _get_schedule_with_org(db, schedule_id)
+    enforce_same_organization(organization_id, user, db)
+    try:
+        return cancel_schedule(db, schedule=schedule, reason=payload.reason, cancelled_by_user_id=user.user_id, organization_id=organization_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
 @router.get("/organizations/{organization_id}/audit-tests/{audit_test_id}/schedules", response_model=list[MonitoringScheduleOut])

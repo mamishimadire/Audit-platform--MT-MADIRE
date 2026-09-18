@@ -13,6 +13,9 @@ from app.services.user_service import (
     approve_deactivation,
     approve_pending_user,
     approve_removal,
+    cancel_deactivation,
+    cancel_pending_user,
+    cancel_removal,
     create_user_in_organization,
     reject_deactivation,
     reject_pending_user,
@@ -114,6 +117,23 @@ def reject_user(
     return _to_out(db, rejected)
 
 
+@router.post("/{user_id}/cancel", response_model=UserOut)
+def cancel_user(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        cancelled = cancel_pending_user(db, user=target, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, cancelled)
+
+
 @router.post("/{user_id}/deactivation/request", response_model=UserOut)
 def request_user_deactivation(
     organization_id: uuid.UUID,
@@ -164,6 +184,23 @@ def reject_user_deactivation(
     return _to_out(db, updated)
 
 
+@router.post("/{user_id}/deactivation/cancel", response_model=UserOut)
+def cancel_user_deactivation(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = cancel_deactivation(db, user=target, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
 @router.post("/{user_id}/removal/request", response_model=UserOut)
 def request_user_removal(
     organization_id: uuid.UUID,
@@ -211,4 +248,21 @@ def reject_user_removal(
         updated = reject_removal(db, user=target, reason=payload.reason, rejected_by_user_id=user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{user_id}/removal/cancel", response_model=UserOut)
+def cancel_user_removal(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserReasonRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        updated = cancel_removal(db, user=target, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return _to_out(db, updated)

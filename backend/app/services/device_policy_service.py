@@ -148,10 +148,13 @@ def approve_device_policy_change(
 def reject_device_policy_change(
     db: Session, *, change: DevicePolicyChange, reason: str, rejected_by_user_id: uuid.UUID
 ) -> DevicePolicyChange:
+    """A different person from whoever requested this policy change —
+    the requester withdraws their own request via
+    cancel_device_policy_change instead, never this."""
     if change.approval_status != "pending_approval":
         raise ValueError(f"Cannot reject — this policy change is '{change.approval_status}', not pending approval.")
     if change.requested_by is not None and change.requested_by == rejected_by_user_id:
-        raise ValueError("You requested this policy change yourself — a different authorized user must reject it.")
+        raise ValueError("You requested this policy change yourself — a different authorized user must reject it, or cancel your own request instead.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a device compliance policy change.")
 
@@ -164,6 +167,36 @@ def reject_device_policy_change(
         action=f"Rejected device compliance policy change: {change.rejected_reason}",
         organization_id=change.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="device_policy_changes",
+        entity_id=change.policy_change_id,
+        new_value={"approval_status": "rejected", "reason": change.rejected_reason},
+    )
+    db.commit()
+    db.refresh(change)
+    return change
+
+
+def cancel_device_policy_change(
+    db: Session, *, change: DevicePolicyChange, reason: str, cancelled_by_user_id: uuid.UUID
+) -> DevicePolicyChange:
+    """The requester withdrawing their OWN still-pending policy change
+    request — only they may do this, no one else."""
+    if change.approval_status != "pending_approval":
+        raise ValueError(f"Cannot cancel — this policy change is '{change.approval_status}', not pending approval.")
+    if change.requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this policy change can cancel it.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a device compliance policy change request.")
+
+    change.approval_status = "rejected"
+    change.rejected_by = cancelled_by_user_id
+    change.rejected_at = datetime.now(timezone.utc)
+    change.rejected_reason = reason.strip()
+    log_action(
+        db,
+        action=f"Cancelled own device compliance policy change request: {change.rejected_reason}",
+        organization_id=change.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="device_policy_changes",
         entity_id=change.policy_change_id,
         new_value={"approval_status": "rejected", "reason": change.rejected_reason},

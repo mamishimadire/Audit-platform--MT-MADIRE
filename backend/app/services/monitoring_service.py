@@ -125,10 +125,15 @@ def approve_schedule(
 def reject_schedule(
     db: Session, *, schedule: MonitoringSchedule, reason: str, rejected_by_user_id: uuid.UUID, organization_id: uuid.UUID
 ) -> MonitoringSchedule:
+    """A different person from whoever requested this schedule change —
+    the requester withdraws their own request via cancel_schedule
+    instead, never this."""
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a monitoring schedule.")
     if schedule.status != "pending_approval":
         raise ValueError(f"This schedule is '{schedule.status}', not pending approval.")
+    if schedule.created_by is not None and schedule.created_by == rejected_by_user_id:
+        raise ValueError("You requested this schedule yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     schedule.status = "rejected"
     schedule.rejected_reason = reason.strip()
@@ -137,6 +142,35 @@ def reject_schedule(
         action=f"Rejected monitoring schedule: {schedule.rejected_reason}",
         organization_id=organization_id,
         user_id=rejected_by_user_id,
+        entity_type="monitoring_schedules",
+        entity_id=schedule.schedule_id,
+        new_value={"status": "rejected", "reason": schedule.rejected_reason},
+    )
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+
+def cancel_schedule(
+    db: Session, *, schedule: MonitoringSchedule, reason: str, cancelled_by_user_id: uuid.UUID, organization_id: uuid.UUID
+) -> MonitoringSchedule:
+    """The requester withdrawing their OWN still-pending request — the
+    mirror image of reject_schedule's restriction: only the requester
+    may do this, no one else."""
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a monitoring schedule request.")
+    if schedule.status != "pending_approval":
+        raise ValueError(f"This schedule is '{schedule.status}', not pending approval.")
+    if schedule.created_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this schedule change can cancel it.")
+
+    schedule.status = "rejected"
+    schedule.rejected_reason = reason.strip()
+    log_action(
+        db,
+        action=f"Cancelled own monitoring schedule request: {schedule.rejected_reason}",
+        organization_id=organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="monitoring_schedules",
         entity_id=schedule.schedule_id,
         new_value={"status": "rejected", "reason": schedule.rejected_reason},

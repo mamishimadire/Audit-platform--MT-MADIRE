@@ -68,7 +68,7 @@ interface Props {
 }
 
 export function TestEnginePanel({ organizationId, auditTestId }: Props) {
-  const { hasRole } = useAuth()
+  const { hasRole, user: currentUser } = useAuth()
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
   const [rules, setRules] = useState<TestRuleOut[]>([])
   const [schedules, setSchedules] = useState<MonitoringScheduleOut[]>([])
@@ -118,11 +118,15 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const [approveError, setApproveError] = useState<string | null>(null)
   const [rejectingRuleId, setRejectingRuleId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [cancellingRuleId, setCancellingRuleId] = useState<string | null>(null)
+  const [ruleCancelReason, setRuleCancelReason] = useState('')
 
   const [schedulingError, setSchedulingError] = useState<string | null>(null)
   const [approvingScheduleId, setApprovingScheduleId] = useState<string | null>(null)
   const [rejectingScheduleId, setRejectingScheduleId] = useState<string | null>(null)
   const [scheduleRejectReason, setScheduleRejectReason] = useState('')
+  const [cancellingScheduleId, setCancellingScheduleId] = useState<string | null>(null)
+  const [scheduleCancelReason, setScheduleCancelReason] = useState('')
 
   const [ruleName, setRuleName] = useState('')
   const [ruleType, setRuleType] = useState<RuleType>('cross_match_condition')
@@ -264,6 +268,17 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
     load()
   }
 
+  // The author withdrawing their OWN still-pending submission — distinct
+  // from rejecting someone else's, which the backend never allows the
+  // author to do themselves.
+  const confirmCancelRule = async () => {
+    if (!cancellingRuleId || !ruleCancelReason.trim()) return
+    await apiClient.post(`/test-rules/${cancellingRuleId}/cancel`, { reason: ruleCancelReason })
+    setCancellingRuleId(null)
+    setRuleCancelReason('')
+    load()
+  }
+
   const createSchedule = async () => {
     if (schedulingSubmitting) return
     setSchedulingSubmitting(true)
@@ -296,6 +311,17 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
     await apiClient.post(`/schedules/${rejectingScheduleId}/reject`, { reason: scheduleRejectReason })
     setRejectingScheduleId(null)
     setScheduleRejectReason('')
+    await load()
+  }
+
+  // The requester withdrawing their OWN still-pending request — distinct
+  // from rejecting someone else's, which the backend never allows the
+  // requester to do themselves.
+  const confirmCancelSchedule = async () => {
+    if (!cancellingScheduleId || !scheduleCancelReason.trim()) return
+    await apiClient.post(`/schedules/${cancellingScheduleId}/cancel`, { reason: scheduleCancelReason })
+    setCancellingScheduleId(null)
+    setScheduleCancelReason('')
     await load()
   }
 
@@ -361,7 +387,12 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                     </span>
                     {canManage && (
                       <div className="flex items-center gap-2">
-                        {r.status === 'pending_approval' && (
+                        {r.status === 'pending_approval' && r.created_by === currentUser?.user_id && (
+                          <button onClick={() => setCancellingRuleId(r.rule_id)} className="text-xs font-medium text-red-600 hover:underline">
+                            Cancel request
+                          </button>
+                        )}
+                        {r.status === 'pending_approval' && r.created_by !== currentUser?.user_id && (
                           <>
                             <button
                               onClick={() => approveRule(r.rule_id)}
@@ -538,7 +569,15 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                     {activeSchedule ? '— proposed change, awaiting approval' : '— awaiting approval'}
                   </span>
                 </span>
-                {canManage && (
+                {canManage && pendingSchedule.created_by === currentUser?.user_id && (
+                  <button
+                    onClick={() => setCancellingScheduleId(pendingSchedule.schedule_id)}
+                    className="text-xs font-medium text-red-600 hover:underline"
+                  >
+                    Cancel request
+                  </button>
+                )}
+                {canManage && pendingSchedule.created_by !== currentUser?.user_id && (
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => approveSchedule(pendingSchedule.schedule_id)}
@@ -874,6 +913,41 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
         </div>
       )}
 
+      {cancellingRuleId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setCancellingRuleId(null)}>
+          <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold text-ink">Cancel your rule submission</div>
+            <p className="mt-2 text-sm text-ink-soft">A reason is required — you can edit and resubmit it afterward.</p>
+            <textarea
+              autoFocus
+              placeholder="e.g. Noticed a mistake in the join field, withdrawing to fix it."
+              value={ruleCancelReason}
+              onChange={(e) => setRuleCancelReason(e.target.value)}
+              className="mt-2 w-full rounded-md border border-line px-2 py-1 text-sm"
+              rows={3}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setCancellingRuleId(null)
+                  setRuleCancelReason('')
+                }}
+                className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-bg"
+              >
+                Never mind
+              </button>
+              <button
+                onClick={confirmCancelRule}
+                disabled={!ruleCancelReason.trim()}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                Cancel request
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {rejectingScheduleId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setRejectingScheduleId(null)}>
           <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
@@ -905,6 +979,41 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                 className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
               >
                 Reject
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cancellingScheduleId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setCancellingScheduleId(null)}>
+          <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold text-ink">Cancel your schedule request</div>
+            <p className="mt-2 text-sm text-ink-soft">A reason is required — you can submit a new request afterward.</p>
+            <textarea
+              autoFocus
+              placeholder="e.g. Requested the wrong cadence by mistake."
+              value={scheduleCancelReason}
+              onChange={(e) => setScheduleCancelReason(e.target.value)}
+              className="mt-2 w-full rounded-md border border-line px-2 py-1 text-sm"
+              rows={3}
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setCancellingScheduleId(null)
+                  setScheduleCancelReason('')
+                }}
+                className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-ink hover:bg-bg"
+              >
+                Never mind
+              </button>
+              <button
+                onClick={confirmCancelSchedule}
+                disabled={!scheduleCancelReason.trim()}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                Cancel request
               </button>
             </div>
           </div>

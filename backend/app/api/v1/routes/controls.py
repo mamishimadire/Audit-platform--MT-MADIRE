@@ -25,6 +25,8 @@ from app.services.control_service import (
     activate_control,
     approve_activation,
     approve_deactivation,
+    cancel_activation,
+    cancel_deactivation,
     describe_controls,
     get_domain_and_tables,
     get_risk_ids_for_control,
@@ -129,6 +131,20 @@ def activation_reject(
     return _to_out(db, updated)
 
 
+@router.post("/{control_id}/activation/cancel", response_model=ControlOut)
+def activation_cancel(
+    organization_id: uuid.UUID, control_id: uuid.UUID, payload: ControlRejectRequest, db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("audit_framework:manage")),
+) -> ControlOut:
+    enforce_same_organization(organization_id, user, db)
+    control = _get_control_or_404(db, organization_id, control_id)
+    try:
+        updated = cancel_activation(db, control=control, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
 @router.post("/{control_id}/deactivation/request", response_model=ControlOut)
 def deactivation_request(
     organization_id: uuid.UUID, control_id: uuid.UUID, payload: ControlDeactivationRequest, db: Session = Depends(get_db),
@@ -168,6 +184,20 @@ def deactivation_reject(
         updated = reject_deactivation(db, control=control, reason=payload.reason, rejected_by_user_id=user.user_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, updated)
+
+
+@router.post("/{control_id}/deactivation/cancel", response_model=ControlOut)
+def deactivation_cancel(
+    organization_id: uuid.UUID, control_id: uuid.UUID, payload: ControlRejectRequest, db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("audit_framework:manage")),
+) -> ControlOut:
+    enforce_same_organization(organization_id, user, db)
+    control = _get_control_or_404(db, organization_id, control_id)
+    try:
+        updated = cancel_deactivation(db, control=control, reason=payload.reason, cancelled_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return _to_out(db, updated)
 
 

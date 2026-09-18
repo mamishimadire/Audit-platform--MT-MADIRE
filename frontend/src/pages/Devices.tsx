@@ -203,13 +203,17 @@ function DeviceRow({
   const [classificationBusyId, setClassificationBusyId] = useState<string | null>(null)
   const [rejectingClassificationId, setRejectingClassificationId] = useState<string | null>(null)
   const [classificationRejectReason, setClassificationRejectReason] = useState('')
+  const [cancellingClassificationId, setCancellingClassificationId] = useState<string | null>(null)
+  const [classificationCancelReason, setClassificationCancelReason] = useState('')
   const [classificationError, setClassificationError] = useState<string | null>(null)
   const [commands, setCommands] = useState<DeviceCommandOut[]>([])
   const [issuingCommand, setIssuingCommand] = useState<DeviceCommandType | null>(null)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
   const [lifecycleAction, setLifecycleAction] = useState<
-    'request-revocation' | 'reject-revocation' | 'request-deletion' | 'reject-deletion' | null
+    | 'request-revocation' | 'reject-revocation' | 'cancel-revocation'
+    | 'request-deletion' | 'reject-deletion' | 'cancel-deletion'
+    | null
   >(null)
   const [lifecycleReason, setLifecycleReason] = useState('')
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
@@ -240,8 +244,10 @@ function DeviceRow({
   const submitLifecycleDialog = () => {
     if (lifecycleAction === 'request-revocation') return runLifecycleAction('revocation/request', { reason: lifecycleReason })
     if (lifecycleAction === 'reject-revocation') return runLifecycleAction('revocation/reject', { reason: lifecycleReason })
+    if (lifecycleAction === 'cancel-revocation') return runLifecycleAction('revocation/cancel', { reason: lifecycleReason })
     if (lifecycleAction === 'request-deletion') return runLifecycleAction('deletion/request', { reason: lifecycleReason })
     if (lifecycleAction === 'reject-deletion') return runLifecycleAction('deletion/reject', { reason: lifecycleReason })
+    if (lifecycleAction === 'cancel-deletion') return runLifecycleAction('deletion/cancel', { reason: lifecycleReason })
   }
 
   const approveRevocation = () => runLifecycleAction('revocation/approve')
@@ -397,6 +403,26 @@ function DeviceRow({
     }
   }
 
+  // The submitter withdrawing their OWN still-pending classification —
+  // distinct from rejecting someone else's, which the backend never
+  // allows the submitter to do themselves.
+  const submitCancelClassification = async () => {
+    if (!cancellingClassificationId) return
+    const id = cancellingClassificationId
+    setClassificationBusyId(id)
+    setClassificationError(null)
+    try {
+      await apiClient.post(`/organizations/${device.organization_id}/approved-software/${id}/cancel`, { reason: classificationCancelReason })
+      setCancellingClassificationId(null)
+      setClassificationCancelReason('')
+      await Promise.all([loadApprovedSoftware(), loadSoftware()])
+    } catch (err: any) {
+      setClassificationError(err?.response?.data?.detail ?? 'Could not cancel this classification.')
+    } finally {
+      setClassificationBusyId(null)
+    }
+  }
+
   const searchedSoftware =
     software && software !== 'none'
       ? software.items.filter((item) => item.name.toLowerCase().includes(softwareSearch.trim().toLowerCase()))
@@ -473,7 +499,11 @@ function DeviceRow({
               )}
               <div className="flex items-center justify-end gap-2">
                 {device.status === 'pending_revocation' ? (
-                  canApproveRevoke && device.revocation_requested_by !== currentUserId ? (
+                  device.revocation_requested_by === currentUserId ? (
+                    <button onClick={() => setLifecycleAction('cancel-revocation')} disabled={actionBusy} className={BTN_SECONDARY}>
+                      Cancel request
+                    </button>
+                  ) : canApproveRevoke ? (
                     <>
                       <button onClick={approveRevocation} disabled={actionBusy} className={BTN_PRIMARY}>
                         Approve revocation
@@ -483,12 +513,14 @@ function DeviceRow({
                       </button>
                     </>
                   ) : (
-                    <span className="text-xs text-ink-faint">
-                      {canApproveRevoke ? 'You requested this — a different approver is needed' : 'Awaiting approval'}
-                    </span>
+                    <span className="text-xs text-ink-faint">Awaiting approval</span>
                   )
                 ) : device.status === 'pending_deletion' ? (
-                  canApproveDelete && device.deletion_requested_by !== currentUserId ? (
+                  device.deletion_requested_by === currentUserId ? (
+                    <button onClick={() => setLifecycleAction('cancel-deletion')} disabled={actionBusy} className={BTN_SECONDARY}>
+                      Cancel request
+                    </button>
+                  ) : canApproveDelete ? (
                     <>
                       <button onClick={approveDeletion} disabled={actionBusy} className={BTN_PRIMARY}>
                         Approve deletion
@@ -498,9 +530,7 @@ function DeviceRow({
                       </button>
                     </>
                   ) : (
-                    <span className="text-xs text-ink-faint">
-                      {canApproveDelete ? 'You requested this — a different approver is needed' : 'Awaiting approval'}
-                    </span>
+                    <span className="text-xs text-ink-faint">Awaiting approval</span>
                   )
                 ) : (
                   <>
@@ -562,6 +592,22 @@ function DeviceRow({
         }}
       />
       <ConfirmDialog
+        open={lifecycleAction === 'cancel-revocation'}
+        title="Cancel your revocation request"
+        message={`Withdraw your own revocation request for "${device.device_name}"? You can submit a new request afterward.`}
+        confirmLabel="Cancel request"
+        danger
+        reasonRequired
+        reasonValue={lifecycleReason}
+        onReasonChange={setLifecycleReason}
+        reasonPlaceholder="Why are you cancelling this request?"
+        onConfirm={submitLifecycleDialog}
+        onCancel={() => {
+          setLifecycleAction(null)
+          setLifecycleReason('')
+        }}
+      />
+      <ConfirmDialog
         open={lifecycleAction === 'request-deletion'}
         title="Request device deletion"
         message={`Request deletion of "${device.device_name}"? This goes to ${deleteApproverNames} for approval — you won't be able to approve your own request. Once approved, the device stops reporting and moves to Deleted devices; its history and past exceptions/findings are kept, but it can never be remediated again.`}
@@ -593,6 +639,22 @@ function DeviceRow({
         }}
       />
       <ConfirmDialog
+        open={lifecycleAction === 'cancel-deletion'}
+        title="Cancel your deletion request"
+        message={`Withdraw your own deletion request for "${device.device_name}"? You can submit a new request afterward.`}
+        confirmLabel="Cancel request"
+        danger
+        reasonRequired
+        reasonValue={lifecycleReason}
+        onReasonChange={setLifecycleReason}
+        reasonPlaceholder="Why are you cancelling this request?"
+        onConfirm={submitLifecycleDialog}
+        onCancel={() => {
+          setLifecycleAction(null)
+          setLifecycleReason('')
+        }}
+      />
+      <ConfirmDialog
         open={rejectingClassificationId !== null}
         title="Reject classification"
         message="Reject this classification? It will never take effect — the person who submitted it can see why and resubmit if appropriate."
@@ -605,6 +667,22 @@ function DeviceRow({
         onCancel={() => {
           setRejectingClassificationId(null)
           setClassificationRejectReason('')
+        }}
+      />
+      <ConfirmDialog
+        open={cancellingClassificationId !== null}
+        title="Cancel your classification submission"
+        message="Withdraw your own still-pending classification? You can resubmit it afterward."
+        confirmLabel="Cancel submission"
+        danger
+        reasonRequired
+        reasonValue={classificationCancelReason}
+        onReasonChange={setClassificationCancelReason}
+        reasonPlaceholder="Why are you cancelling this submission?"
+        onConfirm={submitCancelClassification}
+        onCancel={() => {
+          setCancellingClassificationId(null)
+          setClassificationCancelReason('')
         }}
       />
       {newCode && (
@@ -811,7 +889,15 @@ function DeviceRow({
                                           ) : (
                                             canManagePolicy &&
                                             pending.created_by === currentUserId && (
-                                              <div className="mt-0.5 text-[10px] text-ink-faint">You submitted this — a different approver must decide it.</div>
+                                              <div className="mt-1 flex justify-end">
+                                                <button
+                                                  onClick={() => setCancellingClassificationId(pending.approved_software_id)}
+                                                  disabled={classificationBusyId === pending.approved_software_id}
+                                                  className={BTN_SECONDARY}
+                                                >
+                                                  Cancel submission
+                                                </button>
+                                              </div>
                                             )
                                           )}
                                         </div>
@@ -914,6 +1000,8 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const canApprove = hasRole('Platform Super Admin', 'Audit Manager')
@@ -986,6 +1074,25 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
     }
   }
 
+  // The requester withdrawing their OWN still-pending policy change —
+  // distinct from rejecting someone else's, which the backend never
+  // allows the requester to do themselves.
+  const cancel = async () => {
+    if (!cancellingId) return
+    setBusyId(cancellingId)
+    setError(null)
+    try {
+      await apiClient.post(`/organizations/${organizationId}/device-policy/changes/${cancellingId}/cancel`, { reason: cancelReason })
+      setCancellingId(null)
+      setCancelReason('')
+      await load()
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? 'Could not cancel this policy change.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   if (!policy || !draft) return null
 
   const changedKeys = pending
@@ -1015,7 +1122,17 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
               ))}
             </ul>
           )}
-          {canApprove && pending.requested_by !== user?.user_id ? (
+          {pending.requested_by === user?.user_id ? (
+            <div className="mt-2">
+              <button
+                onClick={() => setCancellingId(pending.policy_change_id)}
+                disabled={busyId === pending.policy_change_id}
+                className={BTN_SECONDARY}
+              >
+                Cancel request
+              </button>
+            </div>
+          ) : canApprove ? (
             <div className="mt-2 flex gap-2">
               <button onClick={() => approve(pending.policy_change_id)} disabled={busyId === pending.policy_change_id} className={BTN_PRIMARY}>
                 {busyId === pending.policy_change_id ? 'Approving…' : 'Approve'}
@@ -1029,11 +1146,7 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
               </button>
             </div>
           ) : (
-            <p className="mt-1 text-amber-700">
-              {pending.requested_by === user?.user_id
-                ? "You submitted this change — a different authorized approver must approve or reject it."
-                : 'Awaiting review by an authorized approver.'}
-            </p>
+            <p className="mt-1 text-amber-700">Awaiting review by an authorized approver.</p>
           )}
         </div>
       )}
@@ -1106,6 +1219,22 @@ function DevicePolicyPanel({ organizationId }: { organizationId: string }) {
         onCancel={() => {
           setRejectingId(null)
           setRejectReason('')
+        }}
+      />
+      <ConfirmDialog
+        open={cancellingId !== null}
+        title="Cancel your policy change request"
+        message="Withdraw your own still-pending compliance policy change? You can resubmit it afterward."
+        confirmLabel="Cancel request"
+        danger
+        reasonRequired
+        reasonValue={cancelReason}
+        onReasonChange={setCancelReason}
+        reasonPlaceholder="Why are you cancelling this request?"
+        onConfirm={cancel}
+        onCancel={() => {
+          setCancellingId(null)
+          setCancelReason('')
         }}
       />
     </div>
@@ -1228,6 +1357,28 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
     }
   }
 
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
+  // The submitter withdrawing their OWN still-pending classification —
+  // distinct from rejecting someone else's, which the backend never
+  // allows the submitter to do themselves.
+  const cancel = async () => {
+    if (!cancellingId) return
+    const id = cancellingId
+    setBusyId(id)
+    setError(null)
+    try {
+      await apiClient.post(`/organizations/${organizationId}/approved-software/${id}/cancel`, { reason: cancelReason })
+      setCancellingId(null)
+      setCancelReason('')
+      load()
+    } catch (err: any) {
+      setError(err?.response?.data?.detail ?? 'Could not cancel this classification.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const [removingId, setRemovingId] = useState<string | null>(null)
   const doRemove = async () => {
     if (!removingId) return
@@ -1273,7 +1424,11 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
                   {APPROVAL_STATUS_LABELS[entry.approval_status]}
                 </span>
                 {entry.approval_status === 'pending_approval' &&
-                  (entry.created_by !== user?.user_id ? (
+                  (entry.created_by === user?.user_id ? (
+                    <button onClick={() => setCancellingId(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_SECONDARY}>
+                      Cancel submission
+                    </button>
+                  ) : (
                     <>
                       <button onClick={() => approve(entry.approved_software_id)} disabled={busyId === entry.approved_software_id} className={BTN_PRIMARY}>
                         Approve
@@ -1282,8 +1437,6 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
                         Reject
                       </button>
                     </>
-                  ) : (
-                    <span className="text-[11px] text-ink-faint">You submitted this — a different approver must decide it.</span>
                   ))}
                 {entry.approval_status !== 'superseded' && (
                   <button onClick={() => setRemovingId(entry.approved_software_id)} className="text-xs font-medium text-red-600 hover:underline">
@@ -1322,6 +1475,22 @@ function ApprovedSoftwarePanel({ organizationId }: { organizationId: string }) {
         onCancel={() => {
           setRejectingId(null)
           setRejectReason('')
+        }}
+      />
+      <ConfirmDialog
+        open={cancellingId !== null}
+        title="Cancel your classification submission"
+        message="Withdraw your own still-pending classification? You can resubmit it afterward."
+        confirmLabel="Cancel submission"
+        danger
+        reasonRequired
+        reasonValue={cancelReason}
+        onReasonChange={setCancelReason}
+        reasonPlaceholder="Why are you cancelling this submission?"
+        onConfirm={cancel}
+        onCancel={() => {
+          setCancellingId(null)
+          setCancelReason('')
         }}
       />
 

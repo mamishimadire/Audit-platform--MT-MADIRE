@@ -187,10 +187,15 @@ def approve_activation(db: Session, *, control: Control, approved_by_user_id: uu
 
 
 def reject_activation(db: Session, *, control: Control, reason: str, rejected_by_user_id: uuid.UUID) -> Control:
+    """A different person from whoever requested this activation — the
+    requester withdraws their own request via cancel_activation instead,
+    never this."""
     if control.status != "pending_activation":
         raise ValueError(f"Cannot reject — control is '{control.status}', not pending activation.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject an activation request.")
+    if control.activation_requested_by is not None and control.activation_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this activation yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     control.status = "pending_mapping" if control.activation_approved_by is None and control.deactivation_approved_by is None else "inactive"
     control.activation_requested_by = None
@@ -199,6 +204,32 @@ def reject_activation(db: Session, *, control: Control, reason: str, rejected_by
         action=f"Rejected activation of control '{control.control_code} — {control.control_name}': {reason}",
         organization_id=control.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="controls",
+        entity_id=control.control_id,
+        new_value={"status": control.status, "reason": reason},
+    )
+    db.commit()
+    db.refresh(control)
+    return control
+
+
+def cancel_activation(db: Session, *, control: Control, reason: str, cancelled_by_user_id: uuid.UUID) -> Control:
+    """The requester withdrawing their OWN still-pending activation
+    request — only they may do this, no one else."""
+    if control.status != "pending_activation":
+        raise ValueError(f"Cannot cancel — control is '{control.status}', not pending activation.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel an activation request.")
+    if control.activation_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this activation can cancel it.")
+
+    control.status = "pending_mapping" if control.activation_approved_by is None and control.deactivation_approved_by is None else "inactive"
+    control.activation_requested_by = None
+    log_action(
+        db,
+        action=f"Cancelled own activation request for control '{control.control_code} — {control.control_name}': {reason}",
+        organization_id=control.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="controls",
         entity_id=control.control_id,
         new_value={"status": control.status, "reason": reason},
@@ -260,10 +291,15 @@ def approve_deactivation(db: Session, *, control: Control, approved_by_user_id: 
 
 
 def reject_deactivation(db: Session, *, control: Control, reason: str, rejected_by_user_id: uuid.UUID) -> Control:
+    """A different person from whoever requested this deactivation — the
+    requester withdraws their own request via cancel_deactivation
+    instead, never this."""
     if control.status != "pending_deactivation":
         raise ValueError(f"Cannot reject — control is '{control.status}', not pending deactivation.")
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a deactivation request.")
+    if control.deactivation_requested_by is not None and control.deactivation_requested_by == rejected_by_user_id:
+        raise ValueError("You requested this deactivation yourself — a different authorized user must reject it, or cancel your own request instead.")
 
     control.status = "active"
     control.deactivation_requested_by = None
@@ -273,6 +309,33 @@ def reject_deactivation(db: Session, *, control: Control, reason: str, rejected_
         action=f"Rejected deactivation of control '{control.control_code} — {control.control_name}': {reason}",
         organization_id=control.organization_id,
         user_id=rejected_by_user_id,
+        entity_type="controls",
+        entity_id=control.control_id,
+        new_value={"status": "active", "reason": reason},
+    )
+    db.commit()
+    db.refresh(control)
+    return control
+
+
+def cancel_deactivation(db: Session, *, control: Control, reason: str, cancelled_by_user_id: uuid.UUID) -> Control:
+    """The requester withdrawing their OWN still-pending deactivation
+    request — only they may do this, no one else."""
+    if control.status != "pending_deactivation":
+        raise ValueError(f"Cannot cancel — control is '{control.status}', not pending deactivation.")
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a deactivation request.")
+    if control.deactivation_requested_by != cancelled_by_user_id:
+        raise ValueError("Only the person who requested this deactivation can cancel it.")
+
+    control.status = "active"
+    control.deactivation_requested_by = None
+    control.deactivation_requested_reason = None
+    log_action(
+        db,
+        action=f"Cancelled own deactivation request for control '{control.control_code} — {control.control_name}': {reason}",
+        organization_id=control.organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="controls",
         entity_id=control.control_id,
         new_value={"status": "active", "reason": reason},

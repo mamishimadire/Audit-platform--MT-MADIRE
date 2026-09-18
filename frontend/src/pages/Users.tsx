@@ -52,18 +52,22 @@ function UsersTable({
   canApprove,
   onApprove,
   onReject,
+  onCancel,
   onRequestAction,
   onApproveAction,
   onRejectAction,
+  onCancelAction,
 }: {
   users: UserOut[]
   currentUserId: string | undefined
   canApprove: boolean
   onApprove: (userId: string) => void
   onReject: (userId: string) => void
+  onCancel: (userId: string) => void
   onRequestAction: (userId: string, kind: 'deactivation' | 'removal') => void
   onApproveAction: (userId: string, kind: 'deactivation' | 'removal') => void
   onRejectAction: (userId: string, kind: 'deactivation' | 'removal') => void
+  onCancelAction: (userId: string, kind: 'deactivation' | 'removal') => void
 }) {
   return (
     <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-surface">
@@ -97,9 +101,12 @@ function UsersTable({
                 <td className="px-4 py-2">
                   {u.status === 'pending_approval' && canApprove && (
                     isOwnAddition ? (
-                      <span className="text-xs text-ink-faint" title="You added this user — someone else must approve them">
-                        Awaiting another approver
-                      </span>
+                      <button
+                        onClick={() => onCancel(u.user_id)}
+                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                      >
+                        Cancel submission
+                      </button>
                     ) : (
                       <div className="flex gap-2">
                         <button
@@ -120,9 +127,12 @@ function UsersTable({
                   {u.status === 'pending_deactivation' &&
                     canApprove &&
                     (u.deactivation_requested_by === currentUserId ? (
-                      <span className="text-xs text-ink-faint" title="You requested this — someone else must approve it">
-                        Awaiting another approver
-                      </span>
+                      <button
+                        onClick={() => onCancelAction(u.user_id, 'deactivation')}
+                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                      >
+                        Cancel request
+                      </button>
                     ) : (
                       <div className="flex gap-2">
                         <button
@@ -142,9 +152,12 @@ function UsersTable({
                   {u.status === 'pending_removal' &&
                     canApprove &&
                     (u.removal_requested_by === currentUserId ? (
-                      <span className="text-xs text-ink-faint" title="You requested this — someone else must approve it">
-                        Awaiting another approver
-                      </span>
+                      <button
+                        onClick={() => onCancelAction(u.user_id, 'removal')}
+                        className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg"
+                      >
+                        Cancel request
+                      </button>
                     ) : (
                       <div className="flex gap-2">
                         <button
@@ -296,8 +309,23 @@ export function UsersPage() {
     }
   }
 
+  // The adder withdrawing their OWN still-pending submission — distinct
+  // from rejecting someone else's, which the backend never allows the
+  // adder to do themselves.
+  const cancelUser = async (userId: string) => {
+    const reason = window.prompt('Why are you cancelling this submission? This is recorded in the audit trail.')
+    if (!reason || !reason.trim()) return
+    const path = view === 'internal' ? `/platform/users/${userId}/cancel` : `/organizations/${selectedOrgId}/users/${userId}/cancel`
+    try {
+      await apiClient.post(path, { reason })
+      view === 'internal' ? loadInternalUsers() : selectedOrgId && loadClientUsers(selectedOrgId)
+    } catch {
+      setError('Could not cancel this submission — try again.')
+    }
+  }
+
   const reload = () => (view === 'internal' ? loadInternalUsers() : selectedOrgId && loadClientUsers(selectedOrgId))
-  const lifecyclePath = (userId: string, kind: 'deactivation' | 'removal', action: 'request' | 'approve' | 'reject') =>
+  const lifecyclePath = (userId: string, kind: 'deactivation' | 'removal', action: 'request' | 'approve' | 'reject' | 'cancel') =>
     view === 'internal' ? `/platform/users/${userId}/${kind}/${action}` : `/organizations/${selectedOrgId}/users/${userId}/${kind}/${action}`
 
   const requestUserAction = async (userId: string, kind: 'deactivation' | 'removal') => {
@@ -330,6 +358,20 @@ export function UsersPage() {
       reload()
     } catch {
       setError(`Could not reject this ${kind} request — try again.`)
+    }
+  }
+
+  // The requester withdrawing their OWN still-pending request — distinct
+  // from rejecting someone else's, which the backend never allows the
+  // requester to do themselves.
+  const cancelUserAction = async (userId: string, kind: 'deactivation' | 'removal') => {
+    const reason = window.prompt(`Why are you cancelling this ${kind} request? This is recorded in the audit trail.`)
+    if (!reason || !reason.trim()) return
+    try {
+      await apiClient.post(lifecyclePath(userId, kind, 'cancel'), { reason })
+      reload()
+    } catch {
+      setError(`Could not cancel this ${kind} request — try again.`)
     }
   }
 
@@ -382,9 +424,11 @@ export function UsersPage() {
           canApprove={canManageClientUsers}
           onApprove={approveUser}
           onReject={rejectUser}
+          onCancel={cancelUser}
           onRequestAction={requestUserAction}
           onApproveAction={approveUserAction}
           onRejectAction={rejectUserAction}
+          onCancelAction={cancelUserAction}
         />
       ) : (
         <UsersTable
@@ -393,9 +437,11 @@ export function UsersPage() {
           canApprove={canManageInternalUsers}
           onApprove={approveUser}
           onReject={rejectUser}
+          onCancel={cancelUser}
           onRequestAction={requestUserAction}
           onApproveAction={approveUserAction}
           onRejectAction={rejectUserAction}
+          onCancelAction={cancelUserAction}
         />
       )}
 

@@ -120,10 +120,14 @@ def _maybe_auto_activate_control(
 
 
 def reject_rule(db: Session, *, rule: TestRule, reason: str, rejected_by_user_id: uuid.UUID, organization_id: uuid.UUID) -> TestRule:
+    """A different person from whoever wrote this rule — the author
+    withdraws their own submission via cancel_rule instead, never this."""
     if not reason or not reason.strip():
         raise ValueError("A reason is required to reject a test rule.")
     if rule.status != "pending_approval":
         raise ValueError(f"This rule is '{rule.status}', not pending approval.")
+    if rule.created_by is not None and rule.created_by == rejected_by_user_id:
+        raise ValueError("You wrote this rule yourself — a different authorized user must reject it, or cancel your own submission instead.")
 
     rule.status = "rejected"
     rule.rejected_reason = reason
@@ -132,6 +136,32 @@ def reject_rule(db: Session, *, rule: TestRule, reason: str, rejected_by_user_id
         action=f"Rejected test rule '{rule.rule_name}': {reason}",
         organization_id=organization_id,
         user_id=rejected_by_user_id,
+        entity_type="test_rules",
+        entity_id=rule.rule_id,
+        new_value={"status": "rejected", "reason": reason},
+    )
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+def cancel_rule(db: Session, *, rule: TestRule, reason: str, cancelled_by_user_id: uuid.UUID, organization_id: uuid.UUID) -> TestRule:
+    """The author withdrawing their OWN still-pending rule submission —
+    only they may do this, no one else."""
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to cancel a test rule submission.")
+    if rule.status != "pending_approval":
+        raise ValueError(f"This rule is '{rule.status}', not pending approval.")
+    if rule.created_by != cancelled_by_user_id:
+        raise ValueError("Only the person who wrote this rule can cancel it.")
+
+    rule.status = "rejected"
+    rule.rejected_reason = reason
+    log_action(
+        db,
+        action=f"Cancelled own test rule submission '{rule.rule_name}': {reason}",
+        organization_id=organization_id,
+        user_id=cancelled_by_user_id,
         entity_type="test_rules",
         entity_id=rule.rule_id,
         new_value={"status": "rejected", "reason": reason},

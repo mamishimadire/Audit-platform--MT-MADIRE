@@ -25,6 +25,7 @@ from app.schemas.data_source import (
 from app.schemas.user import EligibleApproverOut
 from app.services.data_connection_change_service import (
     approve_connection_change,
+    cancel_connection_change,
     list_changes_for_connection,
     reject_connection_change,
     request_connection_delete,
@@ -315,6 +316,25 @@ def reject_connection_change_route(
     try:
         return reject_connection_change(
             db, change=change, reason=payload.reason, rejected_by_user_id=user.user_id, organization_id=source.organization_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
+@router.post("/connections/{connection_id}/changes/{change_id}/cancel", response_model=DataConnectionChangeOut)
+def cancel_connection_change_route(
+    connection_id: uuid.UUID,
+    change_id: uuid.UUID,
+    payload: DataConnectionRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    change = _get_pending_change_or_404(db, connection_id, change_id)
+    try:
+        return cancel_connection_change(
+            db, change=change, reason=payload.reason, cancelled_by_user_id=user.user_id, organization_id=source.organization_id
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
