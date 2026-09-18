@@ -14,7 +14,13 @@ from app.schemas.control_binding import (
     ControlTableNotApplicable,
     TableBindingProgressOut,
 )
-from app.services.control_binding_service import bind_table, get_binding_progress, mark_not_applicable, unbind_table
+from app.services.control_binding_service import (
+    bind_table,
+    get_binding_progress,
+    get_binding_progress_for_controls,
+    mark_not_applicable,
+    unbind_table,
+)
 from app.services.control_service import (
     activate_control,
     approve_activation,
@@ -163,6 +169,20 @@ def deactivation_reject(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _to_out(db, updated)
+
+
+@router.get("/table-bindings", response_model=dict[uuid.UUID, TableBindingProgressOut])
+def get_all_table_bindings(
+    organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> dict[uuid.UUID, TableBindingProgressOut]:
+    """Every activated control's binding progress in one round trip — see
+    get_binding_progress_for_controls's docstring. The Controls page uses
+    this instead of one request per control, which used to mean 100+
+    simultaneous requests for an organization that activates most of the
+    library, and got slower with every additional control activated."""
+    enforce_same_organization(organization_id, user, db)
+    controls = list_controls(db, organization_id=organization_id)
+    return get_binding_progress_for_controls(db, controls=controls)
 
 
 @router.get("/{control_id}/table-bindings", response_model=TableBindingProgressOut)

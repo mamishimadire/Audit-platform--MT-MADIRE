@@ -461,14 +461,16 @@ export function ControlsPage() {
 
   const canManage = hasRole(...AUDIT_FRAMEWORK_ROLES)
 
-  const loadProgressFor = (orgId: string, controlIds: string[]) => {
-    Promise.all(
-      controlIds.map((id) =>
-        apiClient
-          .get<TableBindingProgressOut>(`/organizations/${orgId}/controls/${id}/table-bindings`)
-          .then((res) => [id, res.data] as const),
-      ),
-    ).then((entries) => setBindingProgress((prev) => ({ ...prev, ...Object.fromEntries(entries) })))
+  // One request for every activated control's progress, not one request
+  // per control — an organization that activates most of the 157-control
+  // library used to fire 100+ simultaneous requests here on every page
+  // load and after every single activation, and it got slower with each
+  // additional control activated. See get_binding_progress_for_controls's
+  // docstring on the backend for the full story.
+  const loadProgressFor = (orgId: string) => {
+    apiClient
+      .get<Record<string, TableBindingProgressOut>>(`/organizations/${orgId}/controls/table-bindings`)
+      .then((res) => setBindingProgress(res.data))
   }
 
   // Progress for every activated control is fetched once here (not per-row)
@@ -482,13 +484,8 @@ export function ControlsPage() {
   }
 
   const load = (orgId: string) => {
-    apiClient.get<ControlOut[]>(`/organizations/${orgId}/controls`).then((res) => {
-      setControls(res.data)
-      loadProgressFor(
-        orgId,
-        res.data.filter((c) => c.required_tables.length > 0).map((c) => c.control_id),
-      )
-    })
+    apiClient.get<ControlOut[]>(`/organizations/${orgId}/controls`).then((res) => setControls(res.data))
+    loadProgressFor(orgId)
     apiClient.get<RiskOut[]>(`/organizations/${orgId}/risks`).then((res) => setRisks(res.data))
     apiClient.get<DataSourceOut[]>(`/organizations/${orgId}/data-sources`).then((res) => setDataSources(res.data))
     apiClient.get<AuditTestOut[]>(`/organizations/${orgId}/audit-tests`).then((res) => setAuditTests(res.data))
