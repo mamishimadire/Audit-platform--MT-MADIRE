@@ -75,6 +75,8 @@ _RULE_TYPE_RECOMMENDATION = {
     "three_way_match": "Compare all three records side by side (for example, the order, the delivery, and the invoice) and fix whichever one doesn't match the other two.",
     "four_way_match": "Trace the chain of records (for example, the transaction, its approval, the approver's role, and that role's limit) and fix whichever link is wrong.",
     "balance": "Add up every line in this group and find which one is missing, wrong, or extra — the debit and credit totals don't match.",
+    "baseline_comparison": "Compare this record's setting to the approved baseline and either fix the setting or get an exception approved.",
+    "reconciliation": "Compare this ledger balance to the underlying transactions and find which one is missing, wrong, or extra.",
 }
 
 
@@ -220,6 +222,17 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
         debit_label = _humanize_field_name(rule_definition["debit_field"]).lower()
         credit_label = _humanize_field_name(rule_definition["credit_field"]).lower()
         return f"This {obj} record ({ident}) belongs to a {group_by} whose total {debit_label} does not equal its total {credit_label}."
+
+    if rule_type == "baseline_comparison":
+        obj = _humanize_object(rule_definition["object"])
+        baseline_obj = _humanize_object(rule_definition["baseline_object"])
+        field_label = _humanize_field_name(rule_definition["field"]).lower()
+        return f"This {obj} record ({ident})'s {field_label} does not meet the {baseline_obj} baseline."
+
+    if rule_type == "reconciliation":
+        ledger_obj = _humanize_object(rule_definition["ledger_object"])
+        subledger_obj = _humanize_object(rule_definition["subledger_object"])
+        return f"This {ledger_obj} record ({ident}) does not reconcile to its {subledger_obj} total."
 
     if rule_type == "three_way_match":
         primary_obj = _humanize_object(rule_definition["primary_object"])

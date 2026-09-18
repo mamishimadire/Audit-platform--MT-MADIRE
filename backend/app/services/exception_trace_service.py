@@ -41,6 +41,10 @@ def _object_roles(rule_definition: dict) -> list[tuple[str | None, str]]:
             ("tertiary", rule_definition["tertiary_object"]),
             ("quaternary", rule_definition["quaternary_object"]),
         ]
+    if rule_type == "baseline_comparison":
+        return [("primary", rule_definition["object"]), ("secondary", rule_definition["baseline_object"])]
+    if rule_type == "reconciliation":
+        return [("primary", rule_definition["ledger_object"]), ("secondary", rule_definition["subledger_object"])]
     return []
 
 

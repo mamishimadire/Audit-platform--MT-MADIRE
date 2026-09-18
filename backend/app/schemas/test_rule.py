@@ -522,6 +522,78 @@ class FourWayMatchRule(BaseModel):
         return fields_by_obj
 
 
+class BaselineComparisonRule(BaseModel):
+    """Compares object.field against a value looked up from a SEPARATE
+    lookup/config object that has no per-row join key at all — e.g.
+    security_baselines (control, required_value): a flat, name-keyed
+    settings table, not one row per system. missing_match/cross_match_
+    condition/three_way_match all require an actual shared key between
+    two objects; this is for the common case where the "other side" is
+    really just one (or one-per-named-setting) global config row, not a
+    per-row-joinable table. When baseline_key_field/baseline_key_value
+    are set, the ONE baseline_object row where that field equals that
+    literal is used (e.g. control == "tls_version"); when they're
+    omitted, the first baseline_object row at all is used (the common
+    case of a single-row policy/config table, e.g. session_policies).
+    condition optionally pre-filters object rows before comparing (e.g.
+    NW-003 only cares about firewall_rules with action == "allow").
+    If no matching baseline row exists at all, nothing is flagged —
+    there's nothing to compare against yet, which is a mapping/setup
+    gap for a human to notice, not a false "everything is fine"."""
+
+    rule_type: Literal["baseline_comparison"] = "baseline_comparison"
+    object: str
+    field: str
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte"]
+    baseline_object: str
+    baseline_value_field: str
+    baseline_key_field: str | None = None
+    baseline_key_value: str | None = None
+    condition: FieldCondition | None = None
+
+    def required_objects(self) -> set[str]:
+        return {self.object, self.baseline_object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        object_fields = {self.field}
+        if self.condition is not None:
+            object_fields.add(self.condition.field)
+        baseline_fields = {self.baseline_value_field}
+        if self.baseline_key_field is not None:
+            baseline_fields.add(self.baseline_key_field)
+        if self.object == self.baseline_object:
+            return {self.object: object_fields | baseline_fields}
+        return {self.object: object_fields, self.baseline_object: baseline_fields}
+
+
+class ReconciliationRule(BaseModel):
+    """GL-010-style subledger reconciliation: sums subledger_value_field
+    across subledger_object, grouped by subledger_key_field, then flags
+    every ledger_object row whose ledger_value_field doesn't match the
+    summed total for the same key (within tolerance). Distinct from
+    BalanceRule, which sums two fields WITHIN one object (debits vs.
+    credits on the same rows) — this compares one object's SUM against a
+    single stored value on a DIFFERENT object."""
+
+    rule_type: Literal["reconciliation"] = "reconciliation"
+    ledger_object: str
+    ledger_key_field: str
+    ledger_value_field: str
+    subledger_object: str
+    subledger_key_field: str
+    subledger_value_field: str
+    tolerance: float = 0.01
+
+    def required_objects(self) -> set[str]:
+        return {self.ledger_object, self.subledger_object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        return {
+            self.ledger_object: {self.ledger_key_field, self.ledger_value_field},
+            self.subledger_object: {self.subledger_key_field, self.subledger_value_field},
+        }
+
+
 class BalanceRule(BaseModel):
     """Groups object's rows by group_by and flags every row in a group
     where SUM(debit_field) and SUM(credit_field) across the group don't
@@ -548,7 +620,10 @@ class BalanceRule(BaseModel):
 
 
 TestRuleDefinition = Annotated[
-    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule, BalanceRule],
+    Union[
+        ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule,
+        BalanceRule, BaselineComparisonRule, ReconciliationRule,
+    ],
     Field(discriminator="rule_type"),
 ]
 
@@ -561,6 +636,8 @@ _RULE_CLASSES = {
     "three_way_match": ThreeWayMatchRule,
     "four_way_match": FourWayMatchRule,
     "balance": BalanceRule,
+    "baseline_comparison": BaselineComparisonRule,
+    "reconciliation": ReconciliationRule,
 }
 
 

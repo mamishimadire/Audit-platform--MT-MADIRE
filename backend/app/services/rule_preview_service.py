@@ -261,6 +261,29 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         test_condition = f"For each {group_by}, SUM({obj}.{debit_field}) does not equal SUM({obj}.{credit_field})"
         pass_condition = f"Every {group_by} has matching debit and credit totals"
 
+    elif rule_type == "baseline_comparison":
+        obj, baseline_obj = rule_definition["object"], rule_definition["baseline_object"]
+        source = obj
+        joins = []
+        filters = [_describe_condition(obj, rule_definition["condition"], parameters)] if rule_definition.get("condition") else []
+        baseline_desc = f"{baseline_obj}.{rule_definition['baseline_value_field']}"
+        if rule_definition.get("baseline_key_field"):
+            baseline_desc += f" where {baseline_obj}.{rule_definition['baseline_key_field']} = {rule_definition['baseline_key_value']}"
+        comparison = f"{obj}.{rule_definition['field']} {_OPERATOR_WORDS.get(rule_definition['operator'], rule_definition['operator'])} {baseline_desc}"
+        test_condition = comparison if not filters else f"{' AND '.join(filters)} AND {comparison}"
+        pass_condition = f"No {obj} record violates the {baseline_obj} baseline"
+
+    elif rule_type == "reconciliation":
+        ledger_obj, subledger_obj = rule_definition["ledger_object"], rule_definition["subledger_object"]
+        source = ledger_obj
+        joins = [f"{ledger_obj}.{rule_definition['ledger_key_field']} = SUM({subledger_obj}.{rule_definition['subledger_key_field']})"]
+        filters = []
+        test_condition = (
+            f"{ledger_obj}.{rule_definition['ledger_value_field']} does not equal "
+            f"SUM({subledger_obj}.{rule_definition['subledger_value_field']}) for the same {rule_definition['ledger_key_field']}"
+        )
+        pass_condition = f"Every {ledger_obj} record reconciles to its {subledger_obj} total"
+
     else:
         source = "—"
         joins = []

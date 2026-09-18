@@ -325,4 +325,43 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             exceptions=[{"record_identifier": _record_identifier(row, group_cols), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
         )
 
+    if rule_type == "baseline_comparison":
+        df = dataframes[rule["object"]]
+        baseline_df = dataframes[rule["baseline_object"]]
+        baseline_key_field = rule.get("baseline_key_field")
+        baseline_key_value = rule.get("baseline_key_value")
+        baseline_candidates = baseline_df if baseline_key_field is None else baseline_df[baseline_df[baseline_key_field] == baseline_key_value]
+        if baseline_candidates.empty:
+            return RuleResult(records_analyzed=len(df), exceptions=[])
+        baseline_value = baseline_candidates.iloc[0][rule["baseline_value_field"]]
+
+        candidates = df
+        condition = rule.get("condition")
+        if condition is not None:
+            candidates = candidates[_apply_condition(candidates, condition["field"], condition["operator"], condition.get("value"))]
+        mask = _apply_condition(candidates, rule["field"], rule["operator"], baseline_value)
+        hits = candidates[mask]
+        return RuleResult(
+            records_analyzed=len(df),
+            exceptions=[{"record_identifier": _record_identifier(row, [rule["field"]]), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
+        )
+
+    if rule_type == "reconciliation":
+        ledger_df = dataframes[rule["ledger_object"]]
+        subledger_df = dataframes[rule["subledger_object"]]
+        ledger_key_field = rule["ledger_key_field"]
+        ledger_value_field = rule["ledger_value_field"]
+        subledger_key_field = rule["subledger_key_field"]
+        subledger_value_field = rule["subledger_value_field"]
+        tolerance = rule.get("tolerance", 0.01)
+
+        totals = subledger_df.groupby(subledger_key_field)[subledger_value_field].sum()
+        subledger_totals = ledger_df[ledger_key_field].map(totals).fillna(0.0)
+        mismatched = (ledger_df[ledger_value_field] - subledger_totals).abs() > tolerance
+        hits = ledger_df[mismatched]
+        return RuleResult(
+            records_analyzed=len(ledger_df),
+            exceptions=[{"record_identifier": _record_identifier(row, [ledger_key_field]), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
+        )
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

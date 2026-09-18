@@ -48,6 +48,7 @@ DEFAULT_PARAMETERS: dict[str, float] = {
     "finding_remediation_sla_days": 60,
     "generic_approval_limit": 10000,
     "unusual_journal_amount_threshold": 100000,
+    "bad_debt_overdue_days_threshold": 90,
 }
 
 

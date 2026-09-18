@@ -327,4 +327,48 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
             len(rows), [{"record_identifier": _record_identifier(r, group_cols), "exception_data": r} for r in hits]
         )
 
+    if rule_type == "baseline_comparison":
+        rows = records[rule["object"]]
+        baseline_rows = records[rule["baseline_object"]]
+        baseline_key_field = rule.get("baseline_key_field")
+        baseline_key_value = rule.get("baseline_key_value")
+        if baseline_key_field is not None:
+            baseline_candidates = [b for b in baseline_rows if b.get(baseline_key_field) == baseline_key_value]
+        else:
+            baseline_candidates = baseline_rows
+        if not baseline_candidates:
+            return RuleResult(len(rows), [])
+        baseline_value = baseline_candidates[0].get(rule["baseline_value_field"])
+
+        candidates = rows
+        condition = rule.get("condition")
+        if condition is not None:
+            candidates = [r for r in candidates if _matches(r, condition["field"], condition["operator"], condition.get("value"))]
+        hits = [r for r in candidates if _matches(r, rule["field"], rule["operator"], baseline_value)]
+        return RuleResult(
+            len(rows), [{"record_identifier": _record_identifier(r, [rule["field"]]), "exception_data": r} for r in hits]
+        )
+
+    if rule_type == "reconciliation":
+        ledger_rows = records[rule["ledger_object"]]
+        subledger_rows = records[rule["subledger_object"]]
+        ledger_key_field = rule["ledger_key_field"]
+        ledger_value_field = rule["ledger_value_field"]
+        subledger_key_field = rule["subledger_key_field"]
+        subledger_value_field = rule["subledger_value_field"]
+        tolerance = rule.get("tolerance", 0.01)
+
+        subledger_totals: dict[Any, float] = {}
+        for r in subledger_rows:
+            key = r.get(subledger_key_field)
+            subledger_totals[key] = subledger_totals.get(key, 0.0) + float(r.get(subledger_value_field) or 0)
+
+        hits = [
+            r for r in ledger_rows
+            if abs(float(r.get(ledger_value_field) or 0) - subledger_totals.get(r.get(ledger_key_field), 0.0)) > tolerance
+        ]
+        return RuleResult(
+            len(ledger_rows), [{"record_identifier": _record_identifier(r, [ledger_key_field]), "exception_data": r} for r in hits]
+        )
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

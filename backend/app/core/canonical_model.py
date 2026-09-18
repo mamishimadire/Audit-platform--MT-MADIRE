@@ -138,7 +138,7 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     # accounts (asset/liability/suspense/...), so this is filling an
     # obviously-missing attribute, not inventing structure.
     "general_ledger": ["account", "account_name", "account_type", "balance", "as_of"],
-    "ap_transactions": ["transaction_id", "supplier_id", "amount", "posted_at"],
+    "ap_transactions": ["transaction_id", "supplier_id", "amount", "posted_at", "account"],
     "ar_transactions": ["transaction_id", "customer_id", "amount", "posted_at"],
     "inventory": ["item_code", "description", "quantity_on_hand", "unit_cost"],
     # 4. Payroll
@@ -189,7 +189,7 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "scheduled_jobs": ["job_id", "job_name", "schedule", "critical", "max_duration_seconds"],
     "job_executions": ["job_id", "executed_at", "status", "duration_seconds"],
     "incident_records": ["incident_id", "job_id", "opened_at"],
-    "incidents": ["incident_id", "description", "severity", "opened_at", "status"],
+    "incidents": ["incident_id", "description", "severity", "opened_at", "status", "system_id"],
     "system_logs": ["log_id", "system", "logged_at"],
     "log_retention_rules": ["system", "retention_days"],
     # 8. Backup & Recovery
@@ -267,7 +267,7 @@ CANONICAL_MODEL: dict[str, list[str]] = {
     "web_filter_config": ["config_id", "category_db_version", "updated_at"],
     # 17. Patch Management
     "patch_inventory": ["asset_id", "patch_id", "installed", "installed_at"],
-    "patch_releases": ["patch_id", "severity", "released_at"],
+    "patch_releases": ["patch_id", "severity", "released_at", "software_name"],
     "patch_catalogue": ["patch_id", "applies_to_os"],
     "patch_deployments": ["deployment_id", "patch_id", "asset_id", "deployed_at", "approved", "tested", "emergency"],
     "patch_approvals": ["deployment_id", "approved_by", "approved_at"],
