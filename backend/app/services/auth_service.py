@@ -5,7 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password, verify_password
+from app.models.organization import Organization
 from app.models.rbac import Permission, Role, RolePermission, User, UserRole
+from app.services.audit_log_service import log_action
 
 # A password older than this is expired outright — must_change_password
 # (see password_expiry_status) turns true and ProtectedRoute forces the
@@ -39,6 +41,25 @@ def activate_pending_user(db: Session, *, email: str, temporary_password: str, n
     user.password_changed_at = datetime.now(timezone.utc)
     user.status = "active"
     user.temporary_password_plaintext = None
+
+    # An organization stays 'onboarding' until someone from it actually
+    # shows up — this is that moment, for whichever of its users gets
+    # there first. Nothing else in the system ever makes this transition,
+    # so without it every organization would sit on 'onboarding' forever.
+    if user.organization_id is not None:
+        organization = db.get(Organization, user.organization_id)
+        if organization is not None and organization.status == "onboarding":
+            organization.status = "active"
+            log_action(
+                db,
+                action=f"Organization '{organization.organization_name}' is now active — {user.email} activated their account",
+                organization_id=organization.organization_id,
+                user_id=user.user_id,
+                entity_type="organizations",
+                entity_id=organization.organization_id,
+                new_value={"status": "active"},
+            )
+
     db.commit()
     db.refresh(user)
     return user
