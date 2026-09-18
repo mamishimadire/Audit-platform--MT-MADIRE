@@ -500,11 +500,28 @@ def suggest_canonical_field(
 
     def _score_field(field_name: str, obj_name: str) -> float:
         target_tokens = set(_tokens(field_name))
+        overlap = source_tokens & target_tokens
         overlap_score = _token_overlap_score(source_tokens, target_tokens)
         normalized_target = "".join(sorted(target_tokens))
         seq_ratio = difflib.SequenceMatcher(None, normalized_source, normalized_target).ratio() * 100
-        if source_tokens & target_tokens:
+        if overlap and (overlap == source_tokens or overlap == target_tokens):
+            # One side's tokens are a full subset of the other's (or an
+            # exact match) — e.g. "id" vs "user_id", or "first_name" vs
+            # itself. A genuine abbreviation/subset relationship, so
+            # seq_ratio is trusted fully, same as always.
             score = max(overlap_score, seq_ratio)
+        elif overlap:
+            # PARTIAL overlap — some tokens agree, some plainly don't
+            # (e.g. "last_name" vs "last_login": both share "last", but
+            # "name" and "login" are unrelated). seq_ratio still gets a
+            # say (catches near-miss spelling), but capped close to the
+            # honest token-overlap fraction — otherwise an incidental
+            # shared PREFIX between two DIFFERENT words (both starting
+            # with "last") can score far higher than the actual overlap
+            # justifies, exactly how "last_name" reached 84% confidence
+            # against "last_login" despite "name" having nothing to do
+            # with "login".
+            score = max(overlap_score, min(seq_ratio, overlap_score + 15))
         elif seq_ratio >= _NO_OVERLAP_SEQ_RATIO_FLOOR:
             score = seq_ratio
         else:
