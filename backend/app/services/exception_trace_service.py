@@ -19,6 +19,7 @@ from app.services.exception_service import _humanize_field_name, _humanize_objec
 _SINGLE_OBJECT_TYPES = ("threshold", "duplicate")
 _TWO_OBJECT_TYPES = ("missing_match", "cross_match_condition")
 _THREE_OBJECT_TYPES = ("three_way_match",)
+_FOUR_OBJECT_TYPES = ("four_way_match",)
 
 
 def _object_roles(rule_definition: dict) -> list[tuple[str | None, str]]:
@@ -32,6 +33,13 @@ def _object_roles(rule_definition: dict) -> list[tuple[str | None, str]]:
             ("primary", rule_definition["primary_object"]),
             ("secondary", rule_definition["secondary_object"]),
             ("tertiary", rule_definition["tertiary_object"]),
+        ]
+    if rule_type in _FOUR_OBJECT_TYPES:
+        return [
+            ("primary", rule_definition["primary_object"]),
+            ("secondary", rule_definition["secondary_object"]),
+            ("tertiary", rule_definition["tertiary_object"]),
+            ("quaternary", rule_definition["quaternary_object"]),
         ]
     return []
 

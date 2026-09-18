@@ -233,4 +233,67 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                     exceptions.append({"record_identifier": _record_identifier(pr, [jf_ps]), "exception_data": merged})
         return RuleResult(len(primary), exceptions)
 
+    if rule_type == "four_way_match":
+        # One hop past three_way_match — e.g. a transaction (purchase_order/
+        # payment/journal_entry) -> its own approval record -> the
+        # approver's role -> that role's authorised limit, which needs a
+        # 4th object no existing primitive reaches (see PR-002/PR-019/
+        # GL-007's own rule templates for the concrete shape). Otherwise
+        # identical in structure to three_way_match, one level deeper.
+        primary = records[rule["primary_object"]]
+        secondary = records[rule["secondary_object"]]
+        tertiary = records[rule["tertiary_object"]]
+        quaternary = records[rule["quaternary_object"]]
+        jf_ps = rule["join_field_primary_secondary"]
+        sec_field_1 = rule.get("secondary_join_field_1") or jf_ps
+        jf_st = rule["join_field_secondary_tertiary"]
+        tert_field = rule.get("tertiary_join_field") or jf_st
+        jf_tq = rule["join_field_tertiary_quaternary"]
+        quat_field = rule.get("quaternary_join_field") or jf_tq
+        cp, cs, ct, cq = (
+            rule.get("condition_primary"), rule.get("condition_secondary"),
+            rule.get("condition_tertiary"), rule.get("condition_quaternary"),
+        )
+        field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
+
+        primary_hits = [r for r in primary if cp is None or _matches(r, cp["field"], cp["operator"], cp.get("value"))]
+        secondary_hits = [r for r in secondary if cs is None or _matches(r, cs["field"], cs["operator"], cs.get("value"))]
+        tertiary_hits = [r for r in tertiary if ct is None or _matches(r, ct["field"], ct["operator"], ct.get("value"))]
+        quaternary_hits = [r for r in quaternary if cq is None or _matches(r, cq["field"], cq["operator"], cq.get("value"))]
+
+        secondary_by_key: dict[Any, list[dict]] = {}
+        for r in secondary_hits:
+            secondary_by_key.setdefault(r.get(sec_field_1), []).append(r)
+        tertiary_by_key: dict[Any, list[dict]] = {}
+        for r in tertiary_hits:
+            tertiary_by_key.setdefault(r.get(tert_field), []).append(r)
+        quaternary_by_key: dict[Any, list[dict]] = {}
+        for r in quaternary_hits:
+            quaternary_by_key.setdefault(r.get(quat_field), []).append(r)
+
+        exceptions = []
+        for pr in primary_hits:
+            for sr in secondary_by_key.get(pr.get(jf_ps), []):
+                for tr in tertiary_by_key.get(sr.get(jf_st), []):
+                    for qr in quaternary_by_key.get(tr.get(jf_tq), []):
+                        rows_by_role = {"primary": pr, "secondary": sr, "tertiary": tr, "quaternary": qr}
+                        if field_comparison is not None:
+                            left = rows_by_role[field_comparison["left_object"]].get(field_comparison["left_field"])
+                            right = rows_by_role[field_comparison["right_object"]].get(field_comparison["right_field"])
+                            if not _OPERATORS[field_comparison["operator"]](left, right):
+                                continue
+                        if dynamic_cmp is not None:
+                            date_record = rows_by_role[dynamic_cmp["date_object"]]
+                            offset_record = rows_by_role[dynamic_cmp["offset_object"]]
+                            if not _dynamic_relative_date_matches(date_record, offset_record, dynamic_cmp):
+                                continue
+                        merged: dict[str, Any] = {}
+                        merged.update({f"{k}_primary": v for k, v in pr.items()})
+                        merged.update({f"{k}_secondary": v for k, v in sr.items()})
+                        merged.update({f"{k}_tertiary": v for k, v in tr.items()})
+                        merged.update({f"{k}_quaternary": v for k, v in qr.items()})
+                        exceptions.append({"record_identifier": _record_identifier(pr, [jf_ps]), "exception_data": merged})
+        return RuleResult(len(primary), exceptions)
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

@@ -204,6 +204,48 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
             test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
         pass_condition = "No linked set of records satisfies all of the above at once"
 
+    elif rule_type == "four_way_match":
+        primary, secondary, tertiary, quaternary = (
+            rule_definition["primary_object"], rule_definition["secondary_object"],
+            rule_definition["tertiary_object"], rule_definition["quaternary_object"],
+        )
+        jf1 = rule_definition["join_field_primary_secondary"]
+        jf1_secondary = rule_definition.get("secondary_join_field_1") or jf1
+        jf2 = rule_definition["join_field_secondary_tertiary"]
+        jf2_tertiary = rule_definition.get("tertiary_join_field") or jf2
+        jf3 = rule_definition["join_field_tertiary_quaternary"]
+        jf3_quaternary = rule_definition.get("quaternary_join_field") or jf3
+        source = primary
+        joins = [
+            f"{primary}.{jf1} = {secondary}.{jf1_secondary}",
+            f"{secondary}.{jf2} = {tertiary}.{jf2_tertiary}",
+            f"{tertiary}.{jf3} = {quaternary}.{jf3_quaternary}",
+        ]
+        filters = []
+        for role, obj in (
+            ("condition_primary", primary), ("condition_secondary", secondary),
+            ("condition_tertiary", tertiary), ("condition_quaternary", quaternary),
+        ):
+            if rule_definition.get(role):
+                filters.append(_describe_condition(obj, rule_definition[role], parameters))
+        test_condition = (
+            " AND ".join(filters) if filters else f"{primary}, {secondary}, {tertiary}, and {quaternary} records are linked together"
+        )
+        role_obj = {"primary": primary, "secondary": secondary, "tertiary": tertiary, "quaternary": quaternary}
+        if rule_definition.get("field_comparison"):
+            fc = rule_definition["field_comparison"]
+            comparison = f"{role_obj[fc['left_object']]}.{fc['left_field']} {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} {role_obj[fc['right_object']]}.{fc['right_field']}"
+            filters.append(comparison)
+            test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
+        if rule_definition.get("dynamic_relative_date_comparison"):
+            dc = rule_definition["dynamic_relative_date_comparison"]
+            comparison = _describe_dynamic_relative_date(
+                role_obj[dc["date_object"]], dc["date_field"], dc["operator"], role_obj[dc["offset_object"]], dc["offset_field"], dc.get("direction", -1)
+            )
+            filters.append(comparison)
+            test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
+        pass_condition = "No linked set of records satisfies all of the above at once"
+
     else:
         source = "—"
         joins = []

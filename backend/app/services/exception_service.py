@@ -73,14 +73,15 @@ _RULE_TYPE_RECOMMENDATION = {
     "missing_match": "Find out why the link is missing. If it should exist, add it. If it shouldn't, find out why this record is here at all.",
     "cross_match_condition": "Look at both records together and fix whichever one is wrong — usually by turning off access, changing a status, or getting the missing approval.",
     "three_way_match": "Compare all three records side by side (for example, the order, the delivery, and the invoice) and fix whichever one doesn't match the other two.",
+    "four_way_match": "Trace the chain of records (for example, the transaction, its approval, the approver's role, and that role's limit) and fix whichever link is wrong.",
 }
 
 
 def _humanize_field_name(key: str) -> str:
     """Turns a raw field name like 'employment_status_primary' into
-    'Employment Status' — strips the _primary/_secondary/_tertiary role
-    suffix the rule engine adds, then title-cases each word."""
-    for suffix in ("_primary", "_secondary", "_tertiary"):
+    'Employment Status' — strips the _primary/_secondary/_tertiary/
+    _quaternary role suffix the rule engine adds, then title-cases each word."""
+    for suffix in ("_primary", "_secondary", "_tertiary", "_quaternary"):
         if key.endswith(suffix):
             key = key[: -len(suffix)]
             break
@@ -236,6 +237,43 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
                 )
             )
         joined = "; ".join(parts) if parts else f"its linked {primary_obj}, {secondary_obj}, and {tertiary_obj} records don't reconcile"
+        return f"{ident}: {joined}."
+
+    if rule_type == "four_way_match":
+        primary_obj = _humanize_object(rule_definition["primary_object"])
+        secondary_obj = _humanize_object(rule_definition["secondary_object"])
+        tertiary_obj = _humanize_object(rule_definition["tertiary_object"])
+        quaternary_obj = _humanize_object(rule_definition["quaternary_object"])
+        role_obj = {"primary": primary_obj, "secondary": secondary_obj, "tertiary": tertiary_obj, "quaternary": quaternary_obj}
+        parts = []
+        for role, obj_label in (
+            ("primary", primary_obj), ("secondary", secondary_obj), ("tertiary", tertiary_obj), ("quaternary", quaternary_obj),
+        ):
+            cond = rule_definition.get(f"condition_{role}")
+            if cond:
+                parts.append(f"its {obj_label} {_describe_fact(exception_data, cond['field'], role, cond['operator'], cond.get('value'))}")
+        fc = rule_definition.get("field_comparison")
+        if fc is not None:
+            left_label = _humanize_field_name(fc["left_field"]).lower()
+            right_label = _humanize_field_name(fc["right_field"]).lower()
+            left_val = _fact_value(exception_data, fc["left_field"], fc["left_object"])
+            right_val = _fact_value(exception_data, fc["right_field"], fc["right_object"])
+            parts.append(
+                f"its {role_obj[fc['left_object']]}'s {left_label} ({left_val}) {_OPERATOR_WORDS.get(fc['operator'], fc['operator'])} "
+                f"its {role_obj[fc['right_object']]}'s {right_label} ({right_val})"
+            )
+        dc = rule_definition.get("dynamic_relative_date_comparison")
+        if dc is not None:
+            parts.append(
+                _describe_dynamic_relative_date_fact(
+                    exception_data, dc["date_field"], dc["date_object"], dc["operator"], dc["offset_field"], dc["offset_object"], dc.get("direction", -1)
+                )
+            )
+        joined = (
+            "; ".join(parts)
+            if parts
+            else f"its linked {primary_obj}, {secondary_obj}, {tertiary_obj}, and {quaternary_obj} records don't reconcile"
+        )
         return f"{ident}: {joined}."
 
     return None

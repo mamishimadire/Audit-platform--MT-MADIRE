@@ -173,7 +173,7 @@ class TraceFieldOut(OrmModel):
 
 
 class TraceObjectOut(OrmModel):
-    role: str | None  # primary | secondary | tertiary | None (single-object rules)
+    role: str | None  # primary | secondary | tertiary | quaternary | None (single-object rules)
     canonical_object: str
     table_name: str | None  # the physical table this canonical object is mapped to, if any
     fields: list[TraceFieldOut]

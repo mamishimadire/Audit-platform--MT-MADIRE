@@ -242,4 +242,62 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             ],
         )
 
+    if rule_type == "four_way_match":
+        # One hop past three_way_match — see app.services.rule_evaluation's
+        # mirror of this block for the rationale (a transaction -> its own
+        # approval record -> the approver's role -> that role's authorised
+        # limit needs a 4th object no existing primitive reaches).
+        primary = dataframes[rule["primary_object"]]
+        secondary = dataframes[rule["secondary_object"]]
+        tertiary = dataframes[rule["tertiary_object"]]
+        quaternary = dataframes[rule["quaternary_object"]]
+        jf_ps = rule["join_field_primary_secondary"]
+        sec_field_1 = rule.get("secondary_join_field_1") or jf_ps
+        jf_st = rule["join_field_secondary_tertiary"]
+        tert_field = rule.get("tertiary_join_field") or jf_st
+        jf_tq = rule["join_field_tertiary_quaternary"]
+        quat_field = rule.get("quaternary_join_field") or jf_tq
+        cp, cs, ct, cq = (
+            rule.get("condition_primary"), rule.get("condition_secondary"),
+            rule.get("condition_tertiary"), rule.get("condition_quaternary"),
+        )
+        field_comparison = rule.get("field_comparison")
+        dynamic_cmp = rule.get("dynamic_relative_date_comparison")
+
+        primary_hits = primary if cp is None else primary[_apply_condition(primary, cp["field"], cp["operator"], cp.get("value"))]
+        secondary_hits = secondary if cs is None else secondary[_apply_condition(secondary, cs["field"], cs["operator"], cs.get("value"))]
+        tertiary_hits = tertiary if ct is None else tertiary[_apply_condition(tertiary, ct["field"], ct["operator"], ct.get("value"))]
+        quaternary_hits = quaternary if cq is None else quaternary[_apply_condition(quaternary, cq["field"], cq["operator"], cq.get("value"))]
+
+        # Suffixed by role before any merge, same reasoning as
+        # three_way_match — unambiguous column names by construction,
+        # including the join keys themselves, across all four tables.
+        primary_hits = primary_hits.add_suffix("_primary")
+        secondary_hits = secondary_hits.add_suffix("_secondary")
+        tertiary_hits = tertiary_hits.add_suffix("_tertiary")
+        quaternary_hits = quaternary_hits.add_suffix("_quaternary")
+
+        merged = primary_hits.merge(secondary_hits, left_on=f"{jf_ps}_primary", right_on=f"{sec_field_1}_secondary")
+        merged = merged.merge(tertiary_hits, left_on=f"{jf_st}_secondary", right_on=f"{tert_field}_tertiary")
+        merged = merged.merge(quaternary_hits, left_on=f"{jf_tq}_tertiary", right_on=f"{quat_field}_quaternary")
+
+        if field_comparison is not None:
+            left_col = f"{field_comparison['left_field']}_{field_comparison['left_object']}"
+            right_col = f"{field_comparison['right_field']}_{field_comparison['right_object']}"
+            merged = merged[_OPERATORS[field_comparison["operator"]](merged[left_col], merged[right_col])]
+
+        if dynamic_cmp is not None:
+            date_col = f"{dynamic_cmp['date_field']}_{dynamic_cmp['date_object']}"
+            offset_col = f"{dynamic_cmp['offset_field']}_{dynamic_cmp['offset_object']}"
+            mask = _dynamic_relative_date_mask(merged[date_col], merged[offset_col], dynamic_cmp["operator"], dynamic_cmp.get("direction", -1))
+            merged = merged[mask]
+
+        return RuleResult(
+            records_analyzed=len(primary),
+            exceptions=[
+                {"record_identifier": _record_identifier(row, [f"{jf_ps}_primary"]), "exception_data": _json_safe_row(row)}
+                for _, row in merged.iterrows()
+            ],
+        )
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

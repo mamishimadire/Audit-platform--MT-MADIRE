@@ -409,8 +409,106 @@ class ThreeWayMatchRule(BaseModel):
         return fields_by_obj
 
 
+class FourWayFieldComparison(BaseModel):
+    """Like ThreeWayFieldComparison, one role wider."""
+
+    left_object: Literal["primary", "secondary", "tertiary", "quaternary"]
+    left_field: str
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte"]
+    right_object: Literal["primary", "secondary", "tertiary", "quaternary"]
+    right_field: str
+
+
+class FourWayDynamicRelativeDateComparison(BaseModel):
+    """Like ThreeWayDynamicRelativeDateComparison, one role wider."""
+
+    date_object: Literal["primary", "secondary", "tertiary", "quaternary"]
+    date_field: str
+    operator: Literal["lt", "lte", "gt", "gte"]
+    offset_object: Literal["primary", "secondary", "tertiary", "quaternary"]
+    offset_field: str
+    direction: Literal[-1, 1] = -1
+
+
+class FourWayMatchRule(BaseModel):
+    """One hop past ThreeWayMatchRule: primary <-> secondary <-> tertiary
+    <-> quaternary, chained the same way (each join's "other side" field
+    name defaults to the same name, override when it differs). Exists for
+    a dynamic per-row threshold lookup where the actor isn't on the
+    transaction record itself but on a SEPARATE approval record one hop
+    away — e.g. PR-002/PR-019/GL-007: transaction (primary) -> its own
+    approval record (secondary, holds approved_by) -> that approver's role
+    (tertiary, user_roles) -> the role's authorised limit (quaternary,
+    approval_limits) -> field_comparison checks the transaction's amount
+    against the limit. ThreeWayMatchRule's own built-in threshold-lookup
+    shape (see its docstring) only reaches a limits table one hop from
+    primary; this is for when it's two."""
+
+    rule_type: Literal["four_way_match"] = "four_way_match"
+    primary_object: str
+    secondary_object: str
+    tertiary_object: str
+    quaternary_object: str
+    join_field_primary_secondary: str
+    secondary_join_field_1: str | None = None
+    join_field_secondary_tertiary: str
+    tertiary_join_field: str | None = None
+    join_field_tertiary_quaternary: str
+    quaternary_join_field: str | None = None
+    condition_primary: FieldCondition | None = None
+    condition_secondary: FieldCondition | None = None
+    condition_tertiary: FieldCondition | None = None
+    condition_quaternary: FieldCondition | None = None
+    field_comparison: FourWayFieldComparison | None = None
+    dynamic_relative_date_comparison: FourWayDynamicRelativeDateComparison | None = None
+
+    def _secondary_ps_field(self) -> str:
+        return self.secondary_join_field_1 or self.join_field_primary_secondary
+
+    def _tertiary_field(self) -> str:
+        return self.tertiary_join_field or self.join_field_secondary_tertiary
+
+    def _quaternary_field(self) -> str:
+        return self.quaternary_join_field or self.join_field_tertiary_quaternary
+
+    def required_objects(self) -> set[str]:
+        return {self.primary_object, self.secondary_object, self.tertiary_object, self.quaternary_object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        obj_by_role = {
+            "primary": self.primary_object, "secondary": self.secondary_object,
+            "tertiary": self.tertiary_object, "quaternary": self.quaternary_object,
+        }
+        fields_by_obj: dict[str, set[str]] = {}
+
+        def add(obj: str, field: str) -> None:
+            fields_by_obj.setdefault(obj, set()).add(field)
+
+        add(self.primary_object, self.join_field_primary_secondary)
+        add(self.secondary_object, self._secondary_ps_field())
+        add(self.secondary_object, self.join_field_secondary_tertiary)
+        add(self.tertiary_object, self._tertiary_field())
+        add(self.tertiary_object, self.join_field_tertiary_quaternary)
+        add(self.quaternary_object, self._quaternary_field())
+        if self.condition_primary is not None:
+            add(self.primary_object, self.condition_primary.field)
+        if self.condition_secondary is not None:
+            add(self.secondary_object, self.condition_secondary.field)
+        if self.condition_tertiary is not None:
+            add(self.tertiary_object, self.condition_tertiary.field)
+        if self.condition_quaternary is not None:
+            add(self.quaternary_object, self.condition_quaternary.field)
+        if self.field_comparison is not None:
+            add(obj_by_role[self.field_comparison.left_object], self.field_comparison.left_field)
+            add(obj_by_role[self.field_comparison.right_object], self.field_comparison.right_field)
+        if self.dynamic_relative_date_comparison is not None:
+            add(obj_by_role[self.dynamic_relative_date_comparison.date_object], self.dynamic_relative_date_comparison.date_field)
+            add(obj_by_role[self.dynamic_relative_date_comparison.offset_object], self.dynamic_relative_date_comparison.offset_field)
+        return fields_by_obj
+
+
 TestRuleDefinition = Annotated[
-    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule],
+    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule],
     Field(discriminator="rule_type"),
 ]
 
@@ -421,6 +519,7 @@ _RULE_CLASSES = {
     "missing_match": MissingMatchRule,
     "cross_match_condition": CrossMatchConditionRule,
     "three_way_match": ThreeWayMatchRule,
+    "four_way_match": FourWayMatchRule,
 }
 
 
