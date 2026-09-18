@@ -306,6 +306,19 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   const activeSchedule = schedules.find((s) => s.status === 'active') ?? null
   const pendingSchedule = schedules.find((s) => s.status === 'pending_approval') ?? null
   const supersededScheduleCount = schedules.filter((s) => s.status === 'superseded').length
+
+  // The "propose a change" dropdown below always started at the hardcoded
+  // 'daily' default and never synced to the real active schedule — so the
+  // moment a pending request got approved (e.g. "hourly"), this dropdown
+  // reappeared showing "Daily" right next to the correctly-still-hourly
+  // active schedule. Nothing was actually changed, but it looked like it
+  // was, and clicking the button without first noticing would have
+  // silently submitted a real request to change it to Daily. Keep it
+  // synced to whatever's actually active so it only ever starts from the
+  // true current cadence.
+  useEffect(() => {
+    if (activeSchedule) setFrequency(activeSchedule.frequency)
+  }, [activeSchedule?.schedule_id, activeSchedule?.frequency])
   const STATUS_STYLES: Record<string, string> = {
     pending_approval: 'bg-orange-100 text-orange-800 font-bold',
     active: 'bg-accent-soft text-accent-ink',
