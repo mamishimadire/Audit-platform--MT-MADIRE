@@ -522,8 +522,33 @@ class FourWayMatchRule(BaseModel):
         return fields_by_obj
 
 
+class BalanceRule(BaseModel):
+    """Groups object's rows by group_by and flags every row in a group
+    where SUM(debit_field) and SUM(credit_field) across the group don't
+    match — the standard "does this journal balance" accounting check
+    (GL-009: group_by=["journal_id"] on journal_lines). Distinct from
+    DuplicateRule's distinct_field option, which counts distinct VALUES;
+    this sums two NUMERIC fields per group and compares the totals.
+    tolerance absorbs floating-point rounding, not a real business
+    allowance — a group off by more than a cent or two is still a real
+    imbalance."""
+
+    rule_type: Literal["balance"] = "balance"
+    object: str
+    group_by: list[str] = Field(min_length=1)
+    debit_field: str
+    credit_field: str
+    tolerance: float = 0.01
+
+    def required_objects(self) -> set[str]:
+        return {self.object}
+
+    def required_fields_by_object(self) -> dict[str, set[str]]:
+        return {self.object: set(self.group_by) | {self.debit_field, self.credit_field}}
+
+
 TestRuleDefinition = Annotated[
-    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule],
+    Union[ThresholdRule, DuplicateRule, MissingMatchRule, CrossMatchConditionRule, ThreeWayMatchRule, FourWayMatchRule, BalanceRule],
     Field(discriminator="rule_type"),
 ]
 
@@ -535,6 +560,7 @@ _RULE_CLASSES = {
     "cross_match_condition": CrossMatchConditionRule,
     "three_way_match": ThreeWayMatchRule,
     "four_way_match": FourWayMatchRule,
+    "balance": BalanceRule,
 }
 
 

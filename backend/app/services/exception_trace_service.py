@@ -16,7 +16,7 @@ from app.services.exception_service import _humanize_field_name, _humanize_objec
 # same rule-shape knowledge applied to a different question ("which
 # physical table did each value come from" instead of "what sentence
 # describes this").
-_SINGLE_OBJECT_TYPES = ("threshold", "duplicate")
+_SINGLE_OBJECT_TYPES = ("threshold", "duplicate", "balance")
 _TWO_OBJECT_TYPES = ("missing_match", "cross_match_condition")
 _THREE_OBJECT_TYPES = ("three_way_match",)
 _FOUR_OBJECT_TYPES = ("four_way_match",)

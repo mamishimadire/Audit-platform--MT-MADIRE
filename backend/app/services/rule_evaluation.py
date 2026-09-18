@@ -306,4 +306,25 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                         exceptions.append({"record_identifier": _record_identifier(pr, [jf_ps]), "exception_data": merged})
         return RuleResult(len(primary), exceptions)
 
+    if rule_type == "balance":
+        rows = records[rule["object"]]
+        group_cols = rule["group_by"]
+        debit_field = rule["debit_field"]
+        credit_field = rule["credit_field"]
+        tolerance = rule.get("tolerance", 0.01)
+
+        totals: dict[tuple, list[float]] = {}
+        for r in rows:
+            key = tuple(r.get(c) for c in group_cols)
+            debit, credit = totals.setdefault(key, [0.0, 0.0])
+            debit += float(r.get(debit_field) or 0)
+            credit += float(r.get(credit_field) or 0)
+            totals[key] = [debit, credit]
+
+        unbalanced_keys = {key for key, (debit, credit) in totals.items() if abs(debit - credit) > tolerance}
+        hits = [r for r in rows if tuple(r.get(c) for c in group_cols) in unbalanced_keys]
+        return RuleResult(
+            len(rows), [{"record_identifier": _record_identifier(r, group_cols), "exception_data": r} for r in hits]
+        )
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

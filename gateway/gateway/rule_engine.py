@@ -307,4 +307,22 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
             ],
         )
 
+    if rule_type == "balance":
+        df = dataframes[rule["object"]]
+        group_cols = rule["group_by"]
+        debit_field = rule["debit_field"]
+        credit_field = rule["credit_field"]
+        tolerance = rule.get("tolerance", 0.01)
+
+        totals = df.groupby(group_cols).agg(
+            __debit_total__=(debit_field, "sum"), __credit_total__=(credit_field, "sum")
+        )
+        totals["__unbalanced__"] = (totals["__debit_total__"] - totals["__credit_total__"]).abs() > tolerance
+        merged = df.join(totals["__unbalanced__"], on=group_cols)
+        hits = merged[merged["__unbalanced__"]].drop(columns=["__unbalanced__"])
+        return RuleResult(
+            records_analyzed=len(df),
+            exceptions=[{"record_identifier": _record_identifier(row, group_cols), "exception_data": _json_safe_row(row)} for _, row in hits.iterrows()],
+        )
+
     raise ValueError(f"Unsupported rule_type: {rule_type}")

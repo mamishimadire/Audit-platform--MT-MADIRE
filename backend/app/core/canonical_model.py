@@ -394,11 +394,25 @@ def infer_object_for_entity(entity_name: str) -> str | None:
     if alias is not None:
         return alias
     entity_tokens = set(_tokens(entity_name))
+    if not entity_tokens:
+        return None
     best_object, best_score = None, 0.0
     for obj_name in CANONICAL_MODEL:
-        overlap = entity_tokens & set(_tokens(obj_name))
-        if overlap and len(overlap) > best_score:
-            best_score = len(overlap)
+        obj_tokens = set(_tokens(obj_name))
+        overlap = entity_tokens & obj_tokens
+        if not overlap:
+            continue
+        # Jaccard ratio, not raw shared-token count — a raw count lets a
+        # longer superset tie an EXACT match on the same shared tokens
+        # (e.g. "user_access" vs "user_access_changes" both share {"user",
+        # "access"}), and the first one Python happens to iterate then
+        # wins the tie regardless of which is actually the real match.
+        # Dividing by the union makes an exact match score 1.0 and always
+        # win outright over any partial/superset one, which is what "this
+        # table's name IS a canonical object's name" should always mean.
+        score = len(overlap) / len(entity_tokens | obj_tokens)
+        if score > best_score:
+            best_score = score
             best_object = obj_name
     return best_object
 

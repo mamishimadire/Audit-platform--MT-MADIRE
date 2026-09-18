@@ -41,6 +41,24 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Ses
     return TokenResponse(access_token=token)
 
 
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(user: User = Depends(get_current_user)) -> TokenResponse:
+    """Issues a fresh token with a full new expiry window, as long as the
+    CURRENT one is still valid and the account is still active — sliding
+    expiration rather than a hard cliff. Without this, a fixed
+    access_token_expire_minutes (30 by default) logs an actively-working
+    user out mid-session the moment it elapses, regardless of how recently
+    they last did something; the frontend calls this periodically while
+    the app is open (see AuthContext) so only genuine INACTIVITY (closing
+    the tab, or the OS/browser going to sleep) ever lets the token actually
+    expire. get_current_user already re-checks user.status == "active" on
+    every call, so a deactivated account stops refreshing immediately —
+    this never extends a session beyond what a fresh login would also be
+    able to do."""
+    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id)
+    return TokenResponse(access_token=token)
+
+
 @router.post("/activate", response_model=TokenResponse)
 def activate_account(payload: ActivateAccountRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """First-login step for a pending account: trade the one-time temporary

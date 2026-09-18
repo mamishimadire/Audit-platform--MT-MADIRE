@@ -74,6 +74,7 @@ _RULE_TYPE_RECOMMENDATION = {
     "cross_match_condition": "Look at both records together and fix whichever one is wrong — usually by turning off access, changing a status, or getting the missing approval.",
     "three_way_match": "Compare all three records side by side (for example, the order, the delivery, and the invoice) and fix whichever one doesn't match the other two.",
     "four_way_match": "Trace the chain of records (for example, the transaction, its approval, the approver's role, and that role's limit) and fix whichever link is wrong.",
+    "balance": "Add up every line in this group and find which one is missing, wrong, or extra — the debit and credit totals don't match.",
 }
 
 
@@ -212,6 +213,13 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
             distinct_label = _humanize_field_name(distinct_field).lower()
             return f"This {obj} record ({ident}) has the same {group_by} as other {obj} records with a different {distinct_label}."
         return f"This {obj} record ({ident}) shares the same {group_by} with at least one other {obj} record."
+
+    if rule_type == "balance":
+        obj = _humanize_object(rule_definition["object"])
+        group_by = ", ".join(_humanize_field_name(f).lower() for f in rule_definition["group_by"])
+        debit_label = _humanize_field_name(rule_definition["debit_field"]).lower()
+        credit_label = _humanize_field_name(rule_definition["credit_field"]).lower()
+        return f"This {obj} record ({ident}) belongs to a {group_by} whose total {debit_label} does not equal its total {credit_label}."
 
     if rule_type == "three_way_match":
         primary_obj = _humanize_object(rule_definition["primary_object"])

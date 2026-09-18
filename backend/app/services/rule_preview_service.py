@@ -251,6 +251,16 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
             test_condition = f"{test_condition} AND {comparison}" if test_condition else comparison
         pass_condition = "No linked set of records satisfies all of the above at once"
 
+    elif rule_type == "balance":
+        obj = rule_definition["object"]
+        source = obj
+        joins = []
+        filters = []
+        group_by = ", ".join(f"{obj}.{f}" for f in rule_definition["group_by"])
+        debit_field, credit_field = rule_definition["debit_field"], rule_definition["credit_field"]
+        test_condition = f"For each {group_by}, SUM({obj}.{debit_field}) does not equal SUM({obj}.{credit_field})"
+        pass_condition = f"Every {group_by} has matching debit and credit totals"
+
     else:
         source = "—"
         joins = []

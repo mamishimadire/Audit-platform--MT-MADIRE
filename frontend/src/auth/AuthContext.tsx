@@ -46,6 +46,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetchMe().finally(() => setIsLoading(false))
   }, [])
 
+  // Sliding expiration: the access token has a fixed lifetime
+  // (access_token_expire_minutes, 30 by default) with no refresh at all
+  // otherwise — an actively-working user would get logged out mid-session
+  // the instant it elapsed, no matter how recently they last clicked
+  // anything. Re-issuing it well before that on a timer, for as long as
+  // the app stays open with someone logged in, means only genuine
+  // inactivity (closing the tab, the browser sleeping) ever lets it
+  // really expire. /auth/refresh re-checks the account is still active,
+  // so this can't extend a session past what a fresh login would allow.
+  useEffect(() => {
+    if (!user) return
+    const REFRESH_INTERVAL_MS = 10 * 60 * 1000
+    const interval = setInterval(() => {
+      apiClient
+        .post<{ access_token: string }>('/auth/refresh')
+        .then((response) => setStoredToken(response.data.access_token))
+        .catch(() => {
+          /* a genuinely expired/invalid token here is handled by the
+             401 interceptor already — nothing extra to do */
+        })
+    }, REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [user])
+
   const login = async (email: string, password: string) => {
     const form = new URLSearchParams()
     form.set('username', email)

@@ -47,6 +47,7 @@ DEFAULT_PARAMETERS: dict[str, float] = {
     "patch_deployment_sla_days": 30,
     "finding_remediation_sla_days": 60,
     "generic_approval_limit": 10000,
+    "unusual_journal_amount_threshold": 100000,
 }
 
 
