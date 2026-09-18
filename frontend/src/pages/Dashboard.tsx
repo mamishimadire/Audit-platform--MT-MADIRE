@@ -200,6 +200,58 @@ export function DashboardPage() {
           </div>
 
           <div className="mt-6 rounded-lg border border-line bg-surface p-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">
+              Continuous re-performance — is monitoring actually still running?
+            </div>
+            <p className="mt-1 text-[11px] leading-snug text-ink-faint">
+              A schedule being switched on proves nothing by itself — this is whether it's actually still firing on
+              its own cadence, not stalled.
+            </p>
+            {stats.active_schedules_total === 0 ? (
+              <p className="mt-3 text-xs text-ink-soft">No active monitoring schedules yet.</p>
+            ) : (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3">
+                  <StatTile
+                    label="On-time re-performance rate"
+                    value={`${stats.reperformance_rate}%`}
+                    tone={stats.reperformance_rate >= 90 ? 'good' : stats.reperformance_rate >= 70 ? 'warning' : 'critical'}
+                    hint="Active schedules still running on their own cadence."
+                  />
+                  <StatTile
+                    label="Schedules on time"
+                    value={`${stats.active_schedules_on_time} / ${stats.active_schedules_total}`}
+                  />
+                  <StatTile
+                    label="Re-performances (30 days)"
+                    value={stats.reperformances_last_30_days}
+                    hint="Actual test runs under an active schedule, last 30 days."
+                    to="/executions?view=history"
+                  />
+                </div>
+                {stats.behind_schedule.length > 0 && (
+                  <div className="mt-4">
+                    <div className="text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+                      Falling behind their own cadence
+                    </div>
+                    <ul className="mt-2 divide-y divide-line">
+                      {stats.behind_schedule.map((b) => (
+                        <li key={b.audit_test_id} className="flex items-center justify-between py-1.5 text-xs">
+                          <span className="text-ink">
+                            {b.test_code ? `${b.test_code} — ${b.test_name}` : b.test_name}{' '}
+                            <span className="text-ink-faint">({b.frequency})</span>
+                          </span>
+                          <span className="font-medium text-orange-600">{b.overdue_by_hours}h overdue</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="mt-6 rounded-lg border border-line bg-surface p-4">
             <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">Gateway health</div>
             <div className="mt-2">
               <GatewayHealthBar stats={stats} />

@@ -28,8 +28,10 @@ const CATEGORY_GROUP: Record<string, CategoryGroup> = {
   device_revocation: 'approval',
   device_deletion: 'approval',
   monitoring_schedule: 'approval',
+  user_approval: 'approval',
   your_exception: 'exception',
   evidence_request: 'evidence',
+  evidence_received: 'evidence',
 }
 
 const GROUP_ICON: Record<CategoryGroup, string> = {

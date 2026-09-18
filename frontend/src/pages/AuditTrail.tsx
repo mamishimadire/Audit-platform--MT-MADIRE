@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
+import { ExportButton } from '../components/ExportButton'
+import type { ExportReport } from '../lib/exportTable'
 import type { AuditLogOut } from '../types/api'
 
 type HistoryPreset = 'today' | 'week' | 'month' | 'all' | 'custom'
@@ -71,13 +73,46 @@ export function AuditTrailPage() {
     return true
   })
 
+  const orgName = organizations.find((o) => o.organization_id === organizationId)?.organization_name ?? ''
+  const scopeLabel =
+    view === 'current'
+      ? 'Today'
+      : historyPreset === 'all'
+        ? 'All time'
+        : `${fromDate || '…'} to ${toDate || '…'}`
+  const buildReport = (): ExportReport => ({
+    title: 'Audit Trail',
+    subtitle: [orgName, scopeLabel, entityFilter && `Entity: ${entityFilter}`, search && `Search: “${search}”`]
+      .filter(Boolean)
+      .join(' · '),
+    columns: [
+      { key: 'when', label: 'When' },
+      { key: 'who', label: 'Who' },
+      { key: 'action', label: 'Action' },
+      { key: 'entity', label: 'Entity' },
+      { key: 'change', label: 'Change' },
+    ],
+    rows: visible.map((l) => ({
+      when: new Date(l.timestamp).toLocaleString(),
+      who: l.user_name ?? 'System',
+      action: l.action,
+      entity: l.entity_type ?? '—',
+      change: l.change_summary ?? '—',
+    })),
+  })
+
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-ink">Audit Trail</h1>
-      <p className="mt-1 text-sm text-ink-soft">
-        Every logged platform action for this organization — who, what, when. Protected from modification; this is a
-        read-only view.
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold text-ink">Audit Trail</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Every logged platform action for this organization — who, what, when. Protected from modification; this
+            is a read-only view.
+          </p>
+        </div>
+        {!error && !loading && visible.length > 0 && <ExportButton report={buildReport} />}
+      </div>
       {needsPicker && <OrganizationPicker organizations={organizations} value={organizationId} onChange={setOrganizationId} />}
 
       {error && <p className="mt-4 text-sm text-red-600">You don't have permission to view this organization's audit trail.</p>}

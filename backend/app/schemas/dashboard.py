@@ -1,3 +1,4 @@
+import uuid
 from datetime import date
 
 from app.schemas.common import OrmModel
@@ -13,6 +14,18 @@ class GatewayHealthCounts(OrmModel):
 class TrendPoint(OrmModel):
     date: date
     count: int
+
+
+class BehindScheduleItem(OrmModel):
+    """One active monitoring schedule that's missed at least a full cycle
+    of its own cadence — proof the "continuous" in continuous monitoring
+    has actually stalled for this test, not just a number saying so."""
+
+    audit_test_id: uuid.UUID
+    test_code: str | None
+    test_name: str
+    frequency: str
+    overdue_by_hours: float
 
 
 class DashboardStats(OrmModel):
@@ -41,3 +54,12 @@ class DashboardStats(OrmModel):
     gateway_health: GatewayHealthCounts
     executions_trend: list[TrendPoint]
     exceptions_trend: list[TrendPoint]
+    # Is continuous monitoring actually continuing, not just configured?
+    # active_schedules_on_time / active_schedules_total is the answer —
+    # a schedule counts as on time if it's not overdue by more than one
+    # full cycle of its own frequency (see dashboard_service).
+    active_schedules_total: int
+    active_schedules_on_time: int
+    reperformance_rate: float  # 0-100; 0 when active_schedules_total is 0 (nothing to measure yet)
+    reperformances_last_30_days: int  # actual test runs in the last 30 days for tests under an active schedule
+    behind_schedule: list[BehindScheduleItem] = []

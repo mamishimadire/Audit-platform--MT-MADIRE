@@ -19,8 +19,21 @@ class User(Base, TimestampMixin):
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending")
+    # pending_approval -> (approved) pending -> active, or -> rejected.
+    # A brand-new user starts at pending_approval and cannot log in or
+    # even activate their own account until a DIFFERENT authorized user
+    # approves them (see user_service.approve_pending_user) — 'pending'
+    # itself keeps its original meaning of "approved, just waiting on
+    # the person to set their own password."
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending_approval")
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Visible/copyable in the UI until this user activates their account and
     # sets their own password — cleared the moment that happens (see
     # auth_service.activate_pending_user). Explicit product decision, not an

@@ -1,11 +1,12 @@
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from pydantic import EmailStr, Field
 
 from app.schemas.common import OrmModel
 
-UserStatus = Literal["pending", "active", "inactive", "locked"]
+UserStatus = Literal["pending_approval", "pending", "active", "inactive", "locked", "rejected"]
 
 
 class UserCreate(OrmModel):
@@ -25,6 +26,10 @@ class PlatformUserCreate(OrmModel):
     last_name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     role_names: list[str] = Field(default_factory=list)
+
+
+class UserRejectRequest(OrmModel):
+    reason: str
 
 
 class EligibleApproverOut(OrmModel):
@@ -49,3 +54,6 @@ class UserOut(OrmModel):
     # user activates their account. Visible here so it stays copyable in the
     # UI rather than shown once and lost.
     temporary_password: str | None = None
+    created_by: uuid.UUID | None = None
+    approved_by: uuid.UUID | None = None
+    approved_at: datetime | None = None

@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import enforce_same_organization, get_current_user, require_permissions
 from app.db.session import get_db
 from app.models.rbac import User
-from app.schemas.user import UserCreate, UserOut
+from app.schemas.user import UserCreate, UserOut, UserRejectRequest
 from app.services.auth_service import get_role_names_bulk, get_user_permission_names, get_user_role_names
-from app.services.user_service import create_user_in_organization
+from app.services.user_service import approve_pending_user, create_user_in_organization, reject_pending_user
 
 router = APIRouter(prefix="/organizations/{organization_id}/users", tags=["users"])
 
@@ -62,3 +62,43 @@ def list_users(
             )
         )
     return out
+
+
+def _get_org_user_or_404(db: Session, organization_id: uuid.UUID, user_id: uuid.UUID) -> User:
+    target = db.get(User, user_id)
+    if target is None or target.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return target
+
+
+@router.post("/{user_id}/approve", response_model=UserOut)
+def approve_user(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        approved = approve_pending_user(db, user=target, approved_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, approved)
+
+
+@router.post("/{user_id}/reject", response_model=UserOut)
+def reject_user(
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload: UserRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("users:manage")),
+) -> UserOut:
+    enforce_same_organization(organization_id, user, db)
+    target = _get_org_user_or_404(db, organization_id, user_id)
+    try:
+        rejected = reject_pending_user(db, user=target, reason=payload.reason, rejected_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, rejected)

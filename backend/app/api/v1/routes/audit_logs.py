@@ -76,11 +76,15 @@ def _change_summary(old_value: dict | None, new_value: dict | None, names_by_id:
         if has_old and has_new:
             if old_v == new_v:
                 continue
-            parts.append(f"{_humanize_key(key)}: {_display_value(key, old_v, names_by_id)} → {_display_value(key, new_v, names_by_id)}")
+            old_text, _ = _display_value(key, old_v, names_by_id)
+            new_text, resolved = _display_value(key, new_v, names_by_id)
+            parts.append(f"{_humanize_key(key, resolved_to_name=resolved)}: {old_text} → {new_text}")
         elif has_new:
-            parts.append(f"{_humanize_key(key)}: {_display_value(key, new_v, names_by_id)}")
+            new_text, resolved = _display_value(key, new_v, names_by_id)
+            parts.append(f"{_humanize_key(key, resolved_to_name=resolved)}: {new_text}")
         else:
-            parts.append(f"{_humanize_key(key)}: {_display_value(key, old_v, names_by_id)} (removed)")
+            old_text, resolved = _display_value(key, old_v, names_by_id)
+            parts.append(f"{_humanize_key(key, resolved_to_name=resolved)}: {old_text} (removed)")
     return ", ".join(parts) if parts else None
 
 

@@ -22,7 +22,7 @@ from app.schemas.audit_engine import (
     ExceptionTraceOut,
     ExceptionUpdate,
 )
-from app.services.auth_service import get_user_permission_names
+from app.services.auth_service import get_user_permission_names, get_user_role_names
 from app.services.evidence_request_service import (
     create_request,
     delete_evidence_file as delete_evidence_file_row,
@@ -116,12 +116,28 @@ def _to_comments_out(db: Session, comments: list[ExceptionComment]) -> list[Exce
     return out
 
 
+def _is_unprivileged_exception_owner(db: Session, *, user: User) -> bool:
+    """Exception Owner holds no standing permissions at all (see migration
+    0005) — its whole job is resolving whatever's actually assigned to
+    it, not an organization-wide view. Anyone who ALSO holds
+    audit_framework:manage or exceptions:assign (the audit team, the
+    client's own admin) is exempt — this only identifies the plain
+    Exception Owner case, never any other role."""
+    granted = get_user_permission_names(db, user.user_id)
+    return "Exception Owner" in get_user_role_names(db, user.user_id) and granted.isdisjoint(
+        {"audit_framework:manage", "exceptions:assign"}
+    )
+
+
 @router.get("/organizations/{organization_id}/exceptions", response_model=list[ExceptionOut])
 def list_all(
     organization_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ) -> list[Exception_]:
     enforce_same_organization(organization_id, user, db)
-    return list_exceptions_for_organization(db, organization_id=organization_id)
+    exceptions = list_exceptions_for_organization(db, organization_id=organization_id)
+    if _is_unprivileged_exception_owner(db, user=user):
+        exceptions = [e for e in exceptions if e.owner_id == user.user_id]
+    return exceptions
 
 
 def _get_exception_with_org(db: Session, exception_id: uuid.UUID) -> tuple[Exception_, uuid.UUID]:
@@ -131,6 +147,15 @@ def _get_exception_with_org(db: Session, exception_id: uuid.UUID) -> tuple[Excep
     execution = db.get(TestExecution, exception.execution_id)
     audit_test = db.get(AuditTest, execution.audit_test_id)
     return exception, audit_test.organization_id
+
+
+def _require_exception_visible(db: Session, *, exception: Exception_, user: User) -> None:
+    """Mirrors list_all's own filtering (_is_unprivileged_exception_owner)
+    for the single-exception routes — otherwise a plain Exception Owner
+    could see everything the list hides just by knowing/guessing another
+    exception's id directly."""
+    if _is_unprivileged_exception_owner(db, user=user) and exception.owner_id != user.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only view exceptions assigned to you.")
 
 
 def _require_exception_collaborator(db: Session, *, exception: Exception_, user: User) -> None:
@@ -173,6 +198,7 @@ def _require_evidence_uploader(db: Session, *, exception: Exception_, user: User
 def get_one(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Exception_:
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_visible(db, exception=exception, user=user)
     return exception
 
 
@@ -221,8 +247,9 @@ def update(
 
 @router.get("/exceptions/{exception_id}/records", response_model=list[ExceptionRecordOut])
 def records(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    _exception, organization_id = _get_exception_with_org(db, exception_id)
+    exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_visible(db, exception=exception, user=user)
     # Most recently detected first — a fast-re-detecting schedule piles up
     # one row per run, and the frontend only shows the latest by default
     # (the rest are available as history), so this order is what makes
@@ -238,6 +265,7 @@ def records(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User =
 def explanation(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict:
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_visible(db, exception=exception, user=user)
     return explain_exception(db, exception=exception)
 
 
@@ -245,6 +273,7 @@ def explanation(exception_id: uuid.UUID, db: Session = Depends(get_db), user: Us
 def trace(exception_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> ExceptionTraceOut:
     exception, organization_id = _get_exception_with_org(db, exception_id)
     enforce_same_organization(organization_id, user, db)
+    _require_exception_visible(db, exception=exception, user=user)
     return trace_from_exception(db, exception=exception)
 
 

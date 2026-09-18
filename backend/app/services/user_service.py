@@ -1,5 +1,6 @@
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -23,8 +24,12 @@ def create_user_in_organization(
         last_name=payload.last_name,
         email=payload.email,
         password_hash=hash_password(temporary_password),
-        status="pending",
+        # Not usable yet — a different authorized user has to approve
+        # this account first (see approve_pending_user). The person who
+        # just created it can't also be the one who signs off on it.
+        status="pending_approval",
         temporary_password_plaintext=temporary_password,
+        created_by=created_by_user_id,
     )
     db.add(user)
     db.flush()
@@ -69,8 +74,9 @@ def create_platform_user(db: Session, *, payload: PlatformUserCreate, created_by
         last_name=payload.last_name,
         email=payload.email,
         password_hash=hash_password(temporary_password),
-        status="pending",
+        status="pending_approval",
         temporary_password_plaintext=temporary_password,
+        created_by=created_by_user_id,
     )
     db.add(user)
     db.flush()
@@ -137,3 +143,51 @@ def list_users_with_permission_for_organization(
     for u in (*client_users, *platform_users):
         seen[u.user_id] = u
     return list(seen.values())
+
+
+def approve_pending_user(db: Session, *, user: User, approved_by_user_id: uuid.UUID) -> User:
+    """Maker-checker, identity-based — same pattern as test_rule_service.
+    approve_rule. Whoever created this account cannot also be the one who
+    approves it, even holding the exact same users:manage/organizations:
+    manage permission."""
+    if user.created_by is not None and user.created_by == approved_by_user_id:
+        raise ValueError("You added this user yourself — a different authorized user must approve them.")
+    if user.status != "pending_approval":
+        raise ValueError(f"This user is '{user.status}', not pending approval.")
+
+    user.status = "pending"
+    user.approved_by = approved_by_user_id
+    user.approved_at = datetime.now(timezone.utc)
+    log_action(
+        db,
+        action=f"Approved new user '{user.email}'",
+        organization_id=user.organization_id,
+        user_id=approved_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "pending"},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def reject_pending_user(db: Session, *, user: User, reason: str, rejected_by_user_id: uuid.UUID) -> User:
+    if not reason or not reason.strip():
+        raise ValueError("A reason is required to reject a new user.")
+    if user.status != "pending_approval":
+        raise ValueError(f"This user is '{user.status}', not pending approval.")
+
+    user.status = "rejected"
+    log_action(
+        db,
+        action=f"Rejected new user '{user.email}': {reason}",
+        organization_id=user.organization_id,
+        user_id=rejected_by_user_id,
+        entity_type="users",
+        entity_id=user.user_id,
+        new_value={"status": "rejected", "reason": reason},
+    )
+    db.commit()
+    db.refresh(user)
+    return user

@@ -1,14 +1,14 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataConnectionChange, DataSource
 from app.models.device import ApprovedSoftware, Device, DevicePolicyChange
-from app.models.evidence_exception import EvidenceRequest, Exception_
+from app.models.evidence_exception import EvidenceFile, EvidenceRequest, Exception_
 from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.models.notification import NotificationDismissal
 from app.models.rbac import User
@@ -35,6 +35,7 @@ _PENDING_PERMISSION = {
     "approved_software": "devices:manage_policy",
     "device_revocation": "devices:approve_revoke",
     "device_deletion": "devices:approve_delete",
+    "user_approval": "users:manage",
 }
 
 
@@ -249,6 +250,31 @@ def _pending_device_lifecycle(db: Session, *, organization_id: uuid.UUID, exclud
     return out
 
 
+def _pending_user_approvals(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """A new client-org user can't log in or even activate their account
+    until a DIFFERENT users:manage holder approves them (see
+    user_service.approve_pending_user) — this is how that other admin
+    actually finds out there's someone waiting."""
+    rows = db.scalars(
+        select(User).where(
+            User.organization_id == organization_id,
+            User.status == "pending_approval",
+            User.created_by != exclude_user_id,
+        )
+    )
+    return [
+        PendingApprovalOut(
+            category="user_approval",
+            entity_id=row.user_id,
+            label=f"New user “{row.first_name} {row.last_name}” needs your OK",
+            detail=f"{row.email}. They can't sign in until someone else approves them.",
+            requested_at=row.created_at,
+            link_path="/users",
+        )
+        for row in rows
+    ]
+
+
 def _pending_schedules(db: Session, *, organization_id: uuid.UUID, exclude_user_id: uuid.UUID) -> list[PendingApprovalOut]:
     """Was missing entirely — added when monitoring schedules got their own
     maker-checker (migration 0062), but never wired into the bell, so a
@@ -340,6 +366,39 @@ def _evidence_requests_waiting_on_you(db: Session, *, organization_id: uuid.UUID
     return out
 
 
+def _evidence_received_for_your_requests(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UUID) -> list[PendingApprovalOut]:
+    """The other half of _evidence_requests_waiting_on_you — once the
+    client actually uploads what was asked for, the auditor who
+    requested it needs to be told it arrived, not left to keep checking
+    back on their own. requested_at is the moment it was FULFILLED (the
+    latest file's upload time), not when it was originally asked, so a
+    newly-received request sorts as recent activity, not stale history."""
+    rows = db.execute(
+        select(EvidenceRequest, func.max(EvidenceFile.uploaded_at).label("received_at"))
+        .join(Exception_, Exception_.exception_id == EvidenceRequest.exception_id)
+        .join(TestExecution, TestExecution.execution_id == Exception_.execution_id)
+        .join(AuditTest, AuditTest.audit_test_id == TestExecution.audit_test_id)
+        .join(EvidenceFile, EvidenceFile.request_id == EvidenceRequest.request_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            EvidenceRequest.status == "received",
+            EvidenceRequest.requested_by == user_id,
+        )
+        .group_by(EvidenceRequest.request_id)
+    )
+    return [
+        PendingApprovalOut(
+            category="evidence_received",
+            entity_id=request.request_id,
+            label=f"Evidence received: {request.description}",
+            detail="The client uploaded what you asked for — take a look.",
+            requested_at=received_at,
+            link_path="/exceptions",
+        )
+        for request, received_at in rows
+    ]
+
+
 def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: User) -> list[PendingApprovalOut]:
     """Everything this specific user is both eligible to decide on (holds
     the permission the approve endpoint itself requires) and did not
@@ -365,11 +424,14 @@ def list_pending_approvals(db: Session, *, organization_id: uuid.UUID, user: Use
         items += _pending_device_lifecycle(db, organization_id=organization_id, exclude_user_id=user.user_id)
     if "audit_framework:manage" in granted:
         items += _pending_schedules(db, organization_id=organization_id, exclude_user_id=user.user_id)
+    if _PENDING_PERMISSION["user_approval"] in granted:
+        items += _pending_user_approvals(db, organization_id=organization_id, exclude_user_id=user.user_id)
 
     # Not gated by permission — every user sees their own inbox items
     # regardless of what they're eligible to approve.
     items += _your_open_exceptions(db, organization_id=organization_id, user_id=user.user_id)
     items += _evidence_requests_waiting_on_you(db, organization_id=organization_id, user=user)
+    items += _evidence_received_for_your_requests(db, organization_id=organization_id, user_id=user.user_id)
 
     items = _exclude_dismissed(db, items, user_id=user.user_id)
     items.sort(key=lambda i: i.requested_at, reverse=True)

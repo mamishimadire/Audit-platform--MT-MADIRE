@@ -164,6 +164,14 @@ _SOD_WORKFLOWS: list[SodWorkflowOut] = [
         enforcement="Requires audit_framework:manage, held only by internal roles (Platform Super Admin, Audit Manager, Auditor, IT/Audit Technical User, Compliance Manager). No client-side role — including Client IT Admin, who manages the devices themselves — can create a Finding against their own organization's data.",
         mandatory=True,
     ),
+    SodWorkflowOut(
+        action="New user approval",
+        states=["pending_approval", "pending (approved, awaiting the person's own activation)", "active", "rejected"],
+        maker="Adds a new user to an organization or to the internal platform (POST .../users). Holds users:manage (client org) or organizations:manage (platform).",
+        checker="Approves (POST .../users/{id}/approve) or rejects with a reason (POST .../users/{id}/reject) the same permission the maker used.",
+        enforcement="created_by != approved_by, checked by user identity — the person who added the account can never also be the one who signs off on it. A pending_approval user cannot log in or activate their own account at all until approved.",
+        mandatory=True,
+    ),
 ]
 
 

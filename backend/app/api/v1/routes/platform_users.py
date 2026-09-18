@@ -1,12 +1,14 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_permissions
 from app.db.session import get_db
 from app.models.rbac import User
-from app.schemas.user import PlatformUserCreate, UserOut
+from app.schemas.user import PlatformUserCreate, UserOut, UserRejectRequest
 from app.services.auth_service import get_role_names_bulk, get_user_role_names
-from app.services.user_service import create_platform_user, list_platform_users
+from app.services.user_service import approve_pending_user, create_platform_user, list_platform_users, reject_pending_user
 
 router = APIRouter(prefix="/platform/users", tags=["platform-users"])
 
@@ -54,3 +56,37 @@ def list_all(
             )
         )
     return out
+
+
+def _get_platform_user_or_404(db: Session, user_id: uuid.UUID) -> User:
+    target = db.get(User, user_id)
+    if target is None or target.organization_id is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return target
+
+
+@router.post("/{user_id}/approve", response_model=UserOut)
+def approve(
+    user_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_permissions("organizations:manage"))
+) -> UserOut:
+    target = _get_platform_user_or_404(db, user_id)
+    try:
+        approved = approve_pending_user(db, user=target, approved_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    return _to_out(db, approved)
+
+
+@router.post("/{user_id}/reject", response_model=UserOut)
+def reject(
+    user_id: uuid.UUID,
+    payload: UserRejectRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("organizations:manage")),
+) -> UserOut:
+    target = _get_platform_user_or_404(db, user_id)
+    try:
+        rejected = reject_pending_user(db, user=target, reason=payload.reason, rejected_by_user_id=user.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_out(db, rejected)

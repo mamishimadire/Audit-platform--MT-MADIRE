@@ -1,13 +1,73 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { apiClient } from '../lib/apiClient'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
+import { ExportButton } from '../components/ExportButton'
+import type { ExportReport } from '../lib/exportTable'
 import type { EvidenceOut } from '../types/api'
 
 type HistoryPreset = 'today' | 'week' | 'month' | 'all' | 'custom'
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
+}
+
+const EVIDENCE_FIELD_LABELS: Record<string, string> = {
+  records_analyzed: 'Records analyzed',
+  exceptions_found: 'Exceptions found',
+  started_at: 'Started',
+  completed_at: 'Completed',
+  hostname: 'Device',
+}
+
+function titleCase(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .split(' ')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+function humanizeEvidenceValue(key: string, value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if ((key === 'started_at' || key === 'completed_at') && typeof value === 'string') {
+    const d = new Date(value)
+    return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+  }
+  return String(value)
+}
+
+// evidence_location's JSON shape differs by check type (a test result vs.
+// a device/software compliance check) — this reads whichever shape is
+// present and always produces plain-English rows, never raw JSON, the
+// same reasoning as the backend's own _evidence_summary_sentence.
+function humanizeEvidenceLocation(raw: string | null): { label: string; value: string }[] {
+  if (!raw) return []
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return [{ label: 'Detail', value: raw }]
+  }
+  const rows: { label: string; value: string }[] = []
+  const { started_at, completed_at, audit_test_id: _audit_test_id, checks, ...rest } = parsed as Record<string, unknown>
+  for (const [key, value] of Object.entries(rest)) {
+    if (key === 'hostname' && 'checks' in parsed) continue // shown as its own header below, not a row
+    rows.push({ label: EVIDENCE_FIELD_LABELS[key] ?? titleCase(key), value: humanizeEvidenceValue(key, value) })
+  }
+  if (checks && typeof checks === 'object') {
+    for (const [key, value] of Object.entries(checks as Record<string, unknown>)) {
+      rows.push({ label: titleCase(key), value: humanizeEvidenceValue(key, value) })
+    }
+  }
+  if (typeof started_at === 'string') rows.push({ label: 'Started', value: humanizeEvidenceValue('started_at', started_at) })
+  if (typeof completed_at === 'string') rows.push({ label: 'Completed', value: humanizeEvidenceValue('completed_at', completed_at) })
+  if (typeof started_at === 'string' && typeof completed_at === 'string') {
+    const ms = new Date(completed_at).getTime() - new Date(started_at).getTime()
+    if (Number.isFinite(ms) && ms >= 0) rows.push({ label: 'Duration', value: ms < 1000 ? '<1 second' : `${Math.round(ms / 1000)} seconds` })
+  }
+  return rows
 }
 
 export function EvidencePage() {
@@ -69,13 +129,38 @@ export function EvidencePage() {
     .filter((e) => !controlFilter || e.control_code === controlFilter)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 
+  const orgName = organizations.find((o) => o.organization_id === organizationId)?.organization_name ?? ''
+  const scopeLabel =
+    view === 'current' ? 'Today' : historyPreset === 'all' ? 'All time' : `${fromDate || '…'} to ${toDate || '…'}`
+  const buildReport = (): ExportReport => ({
+    title: 'Evidence',
+    subtitle: [orgName, scopeLabel, controlFilter && `Control: ${controlFilter}`].filter(Boolean).join(' · '),
+    columns: [
+      { key: 'captured', label: 'Captured' },
+      { key: 'what', label: 'What happened' },
+      { key: 'control', label: 'Control' },
+      { key: 'hash', label: 'Hash' },
+    ],
+    rows: sorted.map((e) => ({
+      captured: new Date(e.created_at).toLocaleString(),
+      what: e.summary ?? e.evidence_type ?? '—',
+      control: e.control_code ? `${e.control_code} — ${e.control_name ?? ''}`.trim() : '—',
+      hash: e.evidence_hash ?? '—',
+    })),
+  })
+
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-ink">Evidence</h1>
-      <p className="mt-1 text-sm text-ink-soft">
-        A hashed evidence record is captured automatically for every test execution — the hash proves the summary hasn't
-        been altered after the fact.
-      </p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h1 className="text-2xl font-semibold text-ink">Evidence</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            A hashed evidence record is captured automatically for every test execution — the hash proves the
+            summary hasn't been altered after the fact.
+          </p>
+        </div>
+        {!error && !loading && sorted.length > 0 && <ExportButton report={buildReport} />}
+      </div>
       {needsPicker && <OrganizationPicker organizations={organizations} value={organizationId} onChange={setOrganizationId} />}
       {error && <p className="mt-4 text-sm text-red-600">Could not load evidence for this organization.</p>}
 
@@ -171,7 +256,7 @@ export function EvidencePage() {
                     onClick={() => setExpandedId(expandedId === e.evidence_id ? null : e.evidence_id)}
                     className="text-xs font-medium text-accent-ink hover:underline"
                   >
-                    {expandedId === e.evidence_id ? 'Hide' : 'View raw'}
+                    {expandedId === e.evidence_id ? 'Hide' : 'View details'}
                   </button>
                 </td>
               </tr>
@@ -179,13 +264,27 @@ export function EvidencePage() {
             {expandedId &&
               sorted
                 .filter((e) => e.evidence_id === expandedId)
-                .map((e) => (
-                  <tr key={`${e.evidence_id}-detail`}>
-                    <td colSpan={4} className="bg-bg px-6 py-3">
-                      <pre className="overflow-x-auto rounded bg-surface p-2 font-mono text-xs">{e.evidence_location}</pre>
-                    </td>
-                  </tr>
-                ))}
+                .map((e) => {
+                  const rows = humanizeEvidenceLocation(e.evidence_location)
+                  return (
+                    <tr key={`${e.evidence_id}-detail`}>
+                      <td colSpan={4} className="bg-bg px-6 py-3">
+                        {rows.length === 0 ? (
+                          <p className="text-xs text-ink-soft">No additional detail recorded.</p>
+                        ) : (
+                          <dl className="grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 text-xs">
+                            {rows.map((r) => (
+                              <Fragment key={r.label}>
+                                <dt className="text-ink-soft">{r.label}</dt>
+                                <dd className="text-ink">{r.value}</dd>
+                              </Fragment>
+                            ))}
+                          </dl>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
             {loading && (
               <tr>
                 <td colSpan={4} className="px-4 py-6 text-center text-ink-soft">

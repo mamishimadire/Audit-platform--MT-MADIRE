@@ -10,7 +10,8 @@ from app.models.data_source import Gateway
 from app.models.evidence_exception import Exception_
 from app.models.finding import Finding, RemediationAction
 from app.models.monitoring import MonitoringSchedule, TestExecution
-from app.schemas.dashboard import DashboardStats, GatewayHealthCounts, TrendPoint
+from app.schemas.dashboard import BehindScheduleItem, DashboardStats, GatewayHealthCounts, TrendPoint
+from app.services.monitoring_service import _FREQUENCY_DELTAS
 
 _TREND_DAYS = 14
 _OPEN_EXCEPTION_STATUSES = ("open", "awaiting_evidence", "in_progress")
@@ -137,6 +138,60 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
     executions_trend = [TrendPoint(date=d, count=execution_counts.get(d, 0)) for d in days]
     exceptions_trend = [TrendPoint(date=d, count=exception_counts.get(d, 0)) for d in days]
 
+    # Continuous re-performance: a schedule being 'active' proves nothing
+    # by itself — this checks whether it's actually still firing on its
+    # own cadence. next_run is the scheduler's own authoritative "due at"
+    # marker (see monitoring_service/execution_service's next_run <= now
+    # pickup check), so a schedule counts as on time as long as it isn't
+    # overdue by more than one full cycle of its own frequency.
+    active_schedules = db.execute(
+        select(MonitoringSchedule, AuditTest)
+        .join(AuditTest, AuditTest.audit_test_id == MonitoringSchedule.audit_test_id)
+        .where(
+            AuditTest.organization_id == organization_id,
+            MonitoringSchedule.is_active.is_(True),
+            MonitoringSchedule.status == "active",
+        )
+    ).all()
+
+    active_schedules_total = len(active_schedules)
+    active_schedules_on_time = 0
+    behind_schedule: list[BehindScheduleItem] = []
+    for schedule, test in active_schedules:
+        grace = _FREQUENCY_DELTAS.get(schedule.frequency, timedelta(days=1))
+        if schedule.next_run is None or (now - schedule.next_run) <= grace:
+            active_schedules_on_time += 1
+        else:
+            behind_schedule.append(
+                BehindScheduleItem(
+                    audit_test_id=test.audit_test_id,
+                    test_code=test.test_code,
+                    test_name=test.test_name,
+                    frequency=schedule.frequency,
+                    overdue_by_hours=round((now - schedule.next_run).total_seconds() / 3600, 1),
+                )
+            )
+    behind_schedule.sort(key=lambda b: b.overdue_by_hours, reverse=True)
+    behind_schedule = behind_schedule[:5]
+
+    reperformance_rate = (
+        round((active_schedules_on_time / active_schedules_total) * 100, 1) if active_schedules_total > 0 else 0.0
+    )
+
+    since_30 = now - timedelta(days=30)
+    active_schedule_test_ids = select(MonitoringSchedule.audit_test_id).join(
+        AuditTest, AuditTest.audit_test_id == MonitoringSchedule.audit_test_id
+    ).where(
+        AuditTest.organization_id == organization_id,
+        MonitoringSchedule.is_active.is_(True),
+        MonitoringSchedule.status == "active",
+    )
+    reperformances_last_30_days = db.scalar(
+        select(func.count())
+        .select_from(TestExecution)
+        .where(TestExecution.audit_test_id.in_(active_schedule_test_ids), TestExecution.started_at >= since_30)
+    ) or 0
+
     return DashboardStats(
         active_monitoring_tests=active_monitoring_tests,
         tests_executed_total=tests_executed_total,
@@ -156,4 +211,9 @@ def get_dashboard_stats(db: Session, *, organization_id: uuid.UUID) -> Dashboard
         gateway_health=gateway_health,
         executions_trend=executions_trend,
         exceptions_trend=exceptions_trend,
+        active_schedules_total=active_schedules_total,
+        active_schedules_on_time=active_schedules_on_time,
+        reperformance_rate=reperformance_rate,
+        reperformances_last_30_days=reperformances_last_30_days,
+        behind_schedule=behind_schedule,
     )

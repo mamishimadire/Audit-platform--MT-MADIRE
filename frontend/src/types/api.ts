@@ -20,9 +20,12 @@ export interface UserOut {
   first_name: string
   last_name: string
   email: string
-  status: 'pending' | 'active' | 'inactive' | 'locked'
+  status: 'pending_approval' | 'pending' | 'active' | 'inactive' | 'locked' | 'rejected'
   roles: string[]
   temporary_password: string | null
+  created_by: string | null
+  approved_by: string | null
+  approved_at: string | null
   // Only populated by /auth/me and /auth/change-password (the currently
   // logged-in user's own status) — absent on every other UserOut-shaped
   // response, such as the Users management list.
@@ -456,6 +459,14 @@ export interface TrendPoint {
   count: number
 }
 
+export interface BehindScheduleItem {
+  audit_test_id: string
+  test_code: string | null
+  test_name: string
+  frequency: string
+  overdue_by_hours: number
+}
+
 export interface DashboardStats {
   active_monitoring_tests: number
   tests_executed_total: number
@@ -475,6 +486,11 @@ export interface DashboardStats {
   gateway_health: GatewayHealthCounts
   executions_trend: TrendPoint[]
   exceptions_trend: TrendPoint[]
+  active_schedules_total: number
+  active_schedules_on_time: number
+  reperformance_rate: number
+  reperformances_last_30_days: number
+  behind_schedule: BehindScheduleItem[]
 }
 
 export interface FindingOut {

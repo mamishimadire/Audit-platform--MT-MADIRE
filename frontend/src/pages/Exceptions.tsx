@@ -52,37 +52,37 @@ function AvatarFor({ name, role }: { name: string | null; role: string | null })
   return <AvatarCircle initials={initials} internal={internal} />
 }
 
-// A small file-type icon ("PDF", "XLS", "DOC", "?" while still awaiting)
-// — the same visual shorthand the product spec's mockup uses, so a list
-// of requests reads at a glance instead of as plain text. Drawn as an
-// actual document glyph (folded corner) rather than a flat colored
-// square, so it reads as a file icon instead of a label chip.
-function fileTypeBadge(fileName: string | null): { label: string; textClass: string } {
+// A small, solid-color file-type icon ("PDF", "XLS", "DOC", "IMG", "?"
+// while still awaiting) — colored per type like a familiar file-manager
+// icon (red PDF, green spreadsheet, blue document, purple image) so a
+// list of files is recognizable at a glance, not just readable text.
+function fileTypeBadge(fileName: string | null): { label: string; bg: string } {
   const ext = fileName?.split('.').pop()?.toUpperCase() ?? ''
-  if (ext === 'PDF') return { label: 'PDF', textClass: 'text-red-600' }
-  if (ext === 'XLS' || ext === 'XLSX') return { label: 'XLS', textClass: 'text-emerald-600' }
-  if (ext === 'CSV') return { label: 'CSV', textClass: 'text-emerald-600' }
-  if (ext === 'DOC' || ext === 'DOCX') return { label: 'DOC', textClass: 'text-blue-600' }
-  if (ext) return { label: ext.slice(0, 3), textClass: 'text-ink-soft' }
-  return { label: '', textClass: 'text-ink-soft' }
+  if (ext === 'PDF') return { label: 'PDF', bg: '#DC2626' }
+  if (ext === 'XLS' || ext === 'XLSX') return { label: 'XLS', bg: '#15803D' }
+  if (ext === 'CSV') return { label: 'CSV', bg: '#15803D' }
+  if (ext === 'DOC' || ext === 'DOCX') return { label: 'DOC', bg: '#1D4ED8' }
+  if (ext === 'PPT' || ext === 'PPTX') return { label: 'PPT', bg: '#C2410C' }
+  if (['PNG', 'JPG', 'JPEG', 'GIF', 'WEBP', 'BMP'].includes(ext)) return { label: 'IMG', bg: '#7C3AED' }
+  if (ext) return { label: ext.slice(0, 4), bg: '#475569' }
+  return { label: '', bg: '#94A3B8' }
 }
 
 function FileBadge({ fileName }: { fileName: string | null }) {
-  const { label, textClass } = fileTypeBadge(fileName)
+  const { label, bg } = fileTypeBadge(fileName)
   return (
-    <span className={`relative flex h-9 w-8 shrink-0 items-start justify-center ${textClass}`}>
+    <span className="relative flex h-9 w-8 shrink-0 items-start justify-center" style={{ color: bg }}>
       <svg viewBox="0 0 24 28" className="h-9 w-8" fill="none" aria-hidden="true">
         <path
           d="M3.5 2.5c0-.55.45-1 1-1H14l6.5 6.5V25.5c0 .55-.45 1-1 1h-15c-.55 0-1-.45-1-1V2.5z"
           fill="currentColor"
-          fillOpacity="0.1"
           stroke="currentColor"
           strokeWidth="1.25"
           strokeLinejoin="round"
         />
-        <path d="M14 1.5V7c0 .55.45 1 1 1h5.5" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+        <path d="M14 1.5V7c0 .55.45 1 1 1h5.5" fill="none" stroke="white" strokeOpacity="0.6" strokeWidth="1.25" strokeLinejoin="round" />
       </svg>
-      {label && <span className="absolute bottom-1.5 text-[7px] font-bold tracking-tight">{label}</span>}
+      {label && <span className="absolute bottom-1.5 text-[6.5px] font-bold tracking-tight text-white">{label}</span>}
     </span>
   )
 }
@@ -607,26 +607,52 @@ function ExceptionRow({
                 </button>
               )}
             </div>
-            {(showRecordHistory ? records : records.slice(0, 1)).map((r, i) => (
-              <div key={r.exception_record_id}>
-                {i === 0 ? (
-                  <p className="mt-2 text-[11px] font-medium uppercase tracking-wide text-accent-ink">Current</p>
-                ) : (
-                  <p className="mt-3 text-[11px] text-ink-soft">Detected {new Date(r.detected_at).toLocaleString()}</p>
-                )}
-                <dl className="mt-1 grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 rounded-md bg-surface p-3 text-sm">
-                  {Object.entries(r.exception_data ?? {}).map(([key, value]) => (
-                    <Fragment key={key}>
-                      <dt className="text-ink-soft">{EXCEPTION_FIELD_LABELS[key] ?? titleCaseFieldName(key)}</dt>
-                      <dd className="text-ink">{humanizeExceptionValue(key, value, r.exception_data ?? {})}</dd>
-                    </Fragment>
-                  ))}
-                  {(!r.exception_data || Object.keys(r.exception_data).length === 0) && (
-                    <dd className="text-ink-soft">No additional detail recorded.</dd>
-                  )}
-                </dl>
-              </div>
-            ))}
+            {(() => {
+              const shown = showRecordHistory ? records : records.slice(0, 1)
+              const columnKeys = [...new Set(shown.flatMap((r) => Object.keys(r.exception_data ?? {})))]
+              return (
+                <div className="mt-1 overflow-x-auto rounded-md border border-line bg-surface">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
+                        <th className="whitespace-nowrap px-3 py-2">Detected</th>
+                        {columnKeys.map((key) => (
+                          <th key={key} className="whitespace-nowrap px-3 py-2">
+                            {EXCEPTION_FIELD_LABELS[key] ?? titleCaseFieldName(key)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shown.map((r, i) => (
+                        <tr key={r.exception_record_id} className="border-t border-line align-top">
+                          <td className="whitespace-nowrap px-3 py-2 text-xs">
+                            {i === 0 && (
+                              <span className="mr-2 font-medium uppercase tracking-wide text-accent-ink">Current</span>
+                            )}
+                            <span className="text-ink-soft">{new Date(r.detected_at).toLocaleString()}</span>
+                          </td>
+                          {columnKeys.map((key) => (
+                            <td key={key} className="px-3 py-2 text-ink">
+                              {key in (r.exception_data ?? {})
+                                ? humanizeExceptionValue(key, (r.exception_data ?? {})[key], r.exception_data ?? {})
+                                : '—'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                      {columnKeys.length === 0 && (
+                        <tr>
+                          <td colSpan={99} className="px-3 py-2 text-ink-soft">
+                            No additional detail recorded.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
 
             {collaborationForbidden ? (
               <p className="mt-4 rounded-md border border-line bg-surface p-3 text-xs text-ink-soft">
@@ -676,8 +702,7 @@ function ExceptionRow({
 
                 <ul className="mt-2 divide-y divide-line">
                   {evidenceRequests.map((r) => (
-                    <li key={r.request_id} className="flex items-start gap-3 py-2 text-xs first:pt-2">
-                      <FileBadge fileName={r.files[0]?.file_name ?? null} />
+                    <li key={r.request_id} className="py-2 text-xs first:pt-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
                           <div className="font-medium text-ink">{r.description}</div>
@@ -697,24 +722,28 @@ function ExceptionRow({
                         </div>
 
                         {r.files.length > 0 && (
-                          <ul className="mt-1 space-y-1">
+                          <ul className="mt-2 space-y-1.5">
                             {r.files.map((f) => (
-                              <li key={f.evidence_file_id} className="flex items-center gap-2">
+                              <li key={f.evidence_file_id} className="flex items-center gap-2 rounded-md border border-line bg-bg p-1.5">
+                                <FileBadge fileName={f.file_name} />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate font-mono text-ink">{f.file_name}</div>
+                                  <div className="text-[10px] text-ink-soft">
+                                    {labelFor(f.uploaded_by_name, f.uploaded_by_role) ? `by ${labelFor(f.uploaded_by_name, f.uploaded_by_role)} · ` : ''}
+                                    {new Date(f.uploaded_at).toLocaleString()}
+                                  </div>
+                                </div>
                                 <button
                                   onClick={() => downloadFile(r.request_id, f.evidence_file_id, f.file_name)}
-                                  className="font-mono text-accent-ink hover:underline"
+                                  className="shrink-0 rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-ink hover:bg-line"
                                 >
-                                  {f.file_name}
+                                  Download
                                 </button>
-                                <span className="text-[10px] text-ink-soft">
-                                  {labelFor(f.uploaded_by_name, f.uploaded_by_role) ? `by ${labelFor(f.uploaded_by_name, f.uploaded_by_role)} · ` : ''}
-                                  {new Date(f.uploaded_at).toLocaleString()}
-                                </span>
                                 {!canManage && (
                                   <button
                                     onClick={() => deleteFile(r.request_id, f.evidence_file_id)}
                                     disabled={deletingFileId === f.evidence_file_id}
-                                    className="text-[10px] font-medium text-red-600 hover:underline disabled:opacity-60"
+                                    className="shrink-0 text-[10px] font-medium text-red-600 hover:underline disabled:opacity-60"
                                   >
                                     {deletingFileId === f.evidence_file_id ? 'Removing…' : 'Remove'}
                                   </button>
