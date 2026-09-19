@@ -54,6 +54,12 @@ def suggestions(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
     source = db.get(DataSource, entity.data_source_id)
     enforce_same_organization(source.organization_id, user, db)
+    if audit_test_id is not None:
+        # The control in view must belong to the same organization as the table: never
+        # judge one tenant's table against another tenant's control.
+        test = _get_test_or_404(db, audit_test_id)
+        if test.organization_id != source.organization_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
     return suggest_mappings_for_entity(db, entity_id=entity_id, audit_test_id=audit_test_id)
 
 

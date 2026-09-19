@@ -1,5 +1,7 @@
 import logging
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from sqlalchemy import MetaData, String, Table, cast, create_engine, delete, distinct, func, insert, inspect, select, text, tuple_, update
@@ -1269,6 +1271,30 @@ def _measure_all(connection: DataConnection, candidates: list[Candidate]) -> lis
     return out
 
 
+_background_lock = threading.Lock()
+_background_running: set[uuid.UUID] = set()
+
+
+@contextmanager
+def _one_background_job_per_source(data_source_id: uuid.UUID):
+    """Yields True if this call may run, False if a profiling or relationship job for
+    the same data source is already running. Each job reads a whole source for
+    minutes, so repeated "Discover schema" / "Detect relationships" clicks must not
+    stack up overlapping jobs (or have two inference runs delete each other's edges)."""
+    with _background_lock:
+        if data_source_id in _background_running:
+            allowed = False
+        else:
+            _background_running.add(data_source_id)
+            allowed = True
+    try:
+        yield allowed
+    finally:
+        if allowed:
+            with _background_lock:
+                _background_running.discard(data_source_id)
+
+
 def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:
     """Profiles every table of a data source, one at a time, in its own
     database session — meant for a daemon thread started after discovery (or
@@ -1276,6 +1302,14 @@ def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:
     failure never stops the rest."""
     from app.db.session import SessionLocal
 
+    with _one_background_job_per_source(data_source_id) as allowed:
+        if not allowed:
+            logger.info("a background job for data source %s is already running; not starting another", data_source_id)
+            return
+        _profile_data_source(SessionLocal, data_source_id)
+
+
+def _profile_data_source(SessionLocal, data_source_id: uuid.UUID) -> None:
     db = SessionLocal()
     try:
         connections = _connected_direct_connections(db, data_source_id)
@@ -1308,14 +1342,18 @@ def infer_relationships_in_background(data_source_id: uuid.UUID) -> None:
     """Relationship inference only (profiles already exist), for a refresh."""
     from app.db.session import SessionLocal
 
-    db = SessionLocal()
-    try:
-        infer_relationships_for_source(db, data_source_id=data_source_id)
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        logger.exception("relationship inference for source %s failed", data_source_id)
-    finally:
-        db.close()
+    with _one_background_job_per_source(data_source_id) as allowed:
+        if not allowed:
+            logger.info("a background job for data source %s is already running; not starting another", data_source_id)
+            return
+        db = SessionLocal()
+        try:
+            infer_relationships_for_source(db, data_source_id=data_source_id)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("relationship inference for source %s failed", data_source_id)
+        finally:
+            db.close()
 
 
 def list_entities_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[DataEntity]:

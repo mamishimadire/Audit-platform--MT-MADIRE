@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import AuditTest, TestDataMapping
+from app.models.audit_test import AuditTest
 from app.models.data_source import DataEntity, DataField
 from app.schemas.test_rule import required_fields_by_object_for
 from app.services.mapping_service import list_mappings

@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.core.canonical_model import (
     LOW_CONTENT_FIT_THRESHOLD,
     infer_object_for_entity,
-    mapping_status_for_confidence,
     suggest_canonical_field,
 )
 from app.core.join_requirements import required_join_key_fields

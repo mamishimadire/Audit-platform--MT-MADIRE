@@ -16,8 +16,8 @@ It only ever judges what it can actually check: every scorer returns None
 when there is nothing checkable, and callers use it to DEMOTE a
 contradiction, never to boost a match — names stay the primary signal.
 
-Privacy: a profile stores real values only for small, enum-like columns that
-are not sensitive (see build_column_profile). Everything else keeps
+Privacy: a profile stores real values only for small, REPETITIVE (enum-like)
+columns that are not sensitive, personal or identifiers (see may_store_values). Everything else keeps
 statistics only. That policy lives here, next to the code that builds the
 profile, so no caller can persist more than it allows.
 """
@@ -63,11 +63,38 @@ _PII_SUBSTRINGS = (
     "password", "passwd", "hash", "secret", "token", "credential", "apikey", "api_key", "passport",
     "national_id", "id_number", "email", "phone", "mobile", "address", "street", "postcode", "salary",
     "birth", "gender", "ethnic", "religion", "medical", "diagnos", "first_name", "last_name", "full_name",
-    "surname", "account_number", "iban",
+    "surname", "account_number", "iban", "username", "user_name", "login_name", "loginname", "nickname",
+    "display_name", "screen_name", "handle",
 )
 _PII_WORDS = frozenset(
     "pwd salt ssn social tax mail cell fax zip pay wage bank card cvv pin dob health".split()
 )
+
+
+# The last word of a column that identifies rows (user_id, invoice_no, session_key...). Its
+# values ARE the identifiers, however few rows a small table happens to have.
+_IDENTIFIER_NAME_WORDS = frozenset({"id", "no", "num", "number", "key", "uuid", "guid", "ref", "reference"})
+
+
+def is_identifier_named(field_name: str) -> bool:
+    words = [w for w in re.sub(r"[^a-z0-9]+", "_", field_name.lower()).split("_") if w]
+    return bool(words) and words[-1] in _IDENTIFIER_NAME_WORDS
+
+
+# Only a column whose NAME says it is a category may have its values kept. Values are used to
+# check that a status/state column holds states, and nothing else needs them, so everything
+# else (people, free text, amounts, codes, names) stays statistics-only: collect what is needed.
+_CATEGORICAL_NAME_WORDS = frozenset(
+    {
+        "status", "state", "type", "category", "level", "severity", "priority", "stage", "class",
+        "classification", "criticality", "sensitivity", "outcome", "result", "action", "frequency", "mode", "kind",
+    }
+)
+
+
+def is_categorical_named(field_name: str) -> bool:
+    words = [w for w in re.sub(r"[^a-z0-9]+", "_", field_name.lower()).split("_") if w]
+    return any(w in _CATEGORICAL_NAME_WORDS for w in words)
 
 
 def is_pii_named(field_name: str) -> bool:
@@ -221,18 +248,29 @@ def _value_kind_of(value: object) -> Kind:
     return "text"
 
 
-def may_store_values(field_name: str, is_sensitive: bool, distinct: Iterable[str], value_kind: str | None) -> bool:
+def may_store_values(
+    field_name: str, is_sensitive: bool, distinct: Iterable[str], value_kind: str | None, present_count: int
+) -> bool:
     """The one rule for when a profile may hold real values: only a small,
-    enum-like, non-sensitive, non-PII-named column whose values are short
-    and are not identifiers or timestamps. Used both when the platform
-    builds a profile itself and when it screens one a Gateway reported."""
+    ENUM-LIKE column whose NAME marks it as a category (status, type, level...),
+    and never one that is sensitive, personal, an identifier, a number or a
+    timestamp. Enum-like means the values REPEAT: a status has a handful of
+    values spread over many rows, while a name or key column has about one value
+    per row, however few rows a small table has. The cardinality cap alone cannot
+    tell them apart (an 8-row users table has 8 user ids and 8 usernames), which is
+    why the repetition test exists. `present_count` is the number of non-empty
+    sampled values. Used both when the platform builds a profile itself and when it
+    screens one a Gateway reported."""
     values = list(distinct)
     return (
         not is_sensitive
         and not is_pii_named(field_name)
+        and not is_identifier_named(field_name)
+        and is_categorical_named(field_name)
         and 0 < len(values) <= MAX_STORED_DISTINCT_VALUES
+        and len(values) <= max(2, present_count // 2)
         and all(len(v) <= MAX_STORED_VALUE_LENGTH for v in values)
-        and value_kind not in {"identifier", "datetime"}
+        and value_kind not in {"identifier", "datetime", "numeric"}
     )
 
 
@@ -263,7 +301,8 @@ def sanitize_reported_profile(field_name: str, is_sensitive: bool, reported: dic
     raw_values = reported.get("top_values")
     if isinstance(raw_values, list):
         cleaned = sorted({str(v).strip().lower() for v in raw_values if v is not None and str(v).strip() != ""})
-        if may_store_values(field_name, is_sensitive, cleaned, value_kind):
+        present_count = round(sample_size * (1.0 - min(max(null_ratio, 0.0), 1.0)))
+        if may_store_values(field_name, is_sensitive, cleaned, value_kind, present_count):
             top_values = tuple(cleaned)
 
     max_length = reported.get("max_length")
@@ -306,7 +345,7 @@ def build_column_profile(
             value_kind = top_kind  # type: ignore[assignment]
 
     top_values: tuple[str, ...] | None = None
-    if may_store_values(field_name, is_sensitive, distinct, value_kind):
+    if may_store_values(field_name, is_sensitive, distinct, value_kind, len(present)):
         top_values = tuple(sorted(distinct))
 
     return ColumnProfile(

@@ -658,3 +658,42 @@ def test_requirement_candidates_come_from_real_controls_and_bindings(db, test_or
         db.query(ControlRuleTemplate).filter(ControlRuleTemplate.control_library_id == library.control_library_id).delete()
         db.delete(library)
         db.commit()
+
+
+# ---- background jobs: never two at once for one data source ------------------------------------------
+def test_only_one_background_job_runs_per_data_source():
+    a, b = uuid.uuid4(), uuid.uuid4()
+    with data_source_service._one_background_job_per_source(a) as first:
+        assert first is True
+        with data_source_service._one_background_job_per_source(a) as second:
+            assert second is False  # already running for this source
+        with data_source_service._one_background_job_per_source(b) as other_source:
+            assert other_source is True  # a different source is unaffected
+    with data_source_service._one_background_job_per_source(a) as after:
+        assert after is True  # released, even though the first block just ended
+
+
+def test_a_job_that_fails_still_releases_its_source():
+    a = uuid.uuid4()
+    with pytest.raises(RuntimeError):
+        with data_source_service._one_background_job_per_source(a):
+            raise RuntimeError("boom")
+    with data_source_service._one_background_job_per_source(a) as again:
+        assert again is True
+
+
+def test_repeated_discover_clicks_start_only_one_profiling_job(monkeypatch):
+    import threading
+
+    calls, release = [], threading.Event()
+    monkeypatch.setattr(data_source_service, "_profile_data_source", lambda session_factory, sid: (calls.append(sid), release.wait(5)))
+    source = uuid.uuid4()
+    first = threading.Thread(target=data_source_service.profile_data_source_in_background, args=(source,))
+    first.start()
+    while not calls:  # wait until the first job is genuinely running
+        pass
+    for _ in range(3):  # three more clicks while it runs
+        data_source_service.profile_data_source_in_background(source)
+    release.set()
+    first.join(5)
+    assert len(calls) == 1

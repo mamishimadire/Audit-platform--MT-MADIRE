@@ -75,6 +75,21 @@ class ProfileBuildTests(unittest.TestCase):
         self.assertIsNone(profiling.build_column_profile("seen", ["2024-01-01", "2024-02-01"])["top_values"])
         self.assertIsNone(profiling.build_column_profile("note", ["x" * 41, "y"])["top_values"])
 
+    def test_identifier_and_personal_name_columns_never_report_values_even_in_a_tiny_table(self):
+        for name in ("user_id", "username", "invoice_no", "api_key", "display_name", "handle"):
+            self.assertIsNone(profiling.build_column_profile(name, ["a1", "b2", "a1", "b2", "a1", "b2"])["top_values"], name)
+
+    def test_only_repetitive_columns_are_enum_like(self):
+        self.assertIsNone(profiling.build_column_profile("status", ["a", "b", "c", "d", "e"])["top_values"])
+        self.assertEqual(profiling.build_column_profile("status", ["a", "b"] * 4)["top_values"], ["a", "b"])
+
+    def test_only_columns_named_like_a_category_may_report_values(self):
+        for name in ("approved_by", "description", "asset_name", "country"):
+            self.assertIsNone(profiling.build_column_profile(name, ["alice", "bob"] * 4)["top_values"], name)
+        self.assertIsNone(profiling.build_column_profile("amount", [100, 200] * 4)["top_values"])
+        for name in ("status", "account_status", "risk_level", "document_type"):
+            self.assertEqual(profiling.build_column_profile(name, ["a", "b"] * 4)["top_values"], ["a", "b"], name)
+
     def test_empty_sample_has_no_profile(self):
         self.assertIsNone(profiling.build_column_profile("status", []))
 

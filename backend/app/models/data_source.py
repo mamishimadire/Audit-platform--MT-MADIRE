@@ -228,7 +228,9 @@ class DataFieldProfile(Base):
     distinct_count: Mapped[int] = mapped_column(Integer, nullable=False)
     distinct_ratio: Mapped[float] = mapped_column(Float, nullable=False)
     value_kind: Mapped[str | None] = mapped_column(String(20))
-    top_values: Mapped[list | None] = mapped_column(JSONB)
+    # none_as_null: a column with no stored values is SQL NULL, not the JSON value `null`
+    # (which `IS NULL` would not match).
+    top_values: Mapped[list | None] = mapped_column(JSONB(none_as_null=True))
     max_length: Mapped[int | None] = mapped_column(Integer)
     profiled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

@@ -13,6 +13,8 @@ from app.core.value_profile import (
     build_column_profile,
     canonical_kind,
     column_kind_from_type,
+    is_categorical_named,
+    is_identifier_named,
     is_pii_named,
     score_table_fit,
     score_table_value_fit,
@@ -153,12 +155,12 @@ def test_observed_values_beat_the_declared_type():
 # ---- table level ---------------------------------------------------------------
 GOOD_USERS = [
     ColumnInfo("user_id", True, "UUID"), ColumnInfo("username", False, "TEXT"),
-    ColumnInfo("status", False, "TEXT", _profile("status", ["active", "locked", "active", "disabled", "active"])),
+    ColumnInfo("status", False, "TEXT", _profile("status", ["active", "locked", "active", "disabled", "active"] * 3)),
     ColumnInfo("last_login", False, "TIMESTAMP"),
 ]
 WRONG_KIND_USERS = [
     ColumnInfo("user_id", True, "BOOLEAN"), ColumnInfo("username", False, "TEXT"),
-    ColumnInfo("status", False, "TEXT", _profile("status", ["Comedy", "Drama", "Action", "Horror", "Comedy"])),
+    ColumnInfo("status", False, "TEXT", _profile("status", ["Comedy", "Drama", "Action", "Horror", "Comedy"] * 4)),
     ColumnInfo("last_login", False, "BOOLEAN"),
 ]
 
@@ -258,7 +260,7 @@ def _fake_rows(status_values):
 
 def test_profiling_stores_stats_never_pii_values_and_refreshes(db, genre_status_entity, monkeypatch):
     entity = genre_status_entity
-    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: _fake_rows(["Comedy", "Drama", "Comedy", "Action", "Drama", "Horror"]))
+    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: _fake_rows(["Comedy", "Drama", "Comedy", "Action", "Drama", "Horror"] * 3))
     assert data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=[SimpleNamespace()]) == 5
 
     profiles = {
@@ -267,6 +269,7 @@ def test_profiling_stores_stats_never_pii_values_and_refreshes(db, genre_status_
     }
     assert profiles["status"].top_values == ["action", "comedy", "drama", "horror"]
     assert profiles["email"].top_values is None  # PII-named: statistics only
+    assert profiles["user_id"].top_values is None and profiles["username"].top_values is None  # identifier / personal name: statistics only
     assert profiles["last_login"].value_kind == "datetime" and profiles["last_login"].top_values is None
 
     # An empty table must not leave a stale profile behind.
@@ -284,7 +287,7 @@ def test_mapping_suggestion_is_demoted_when_the_data_contradicts_the_name(db, ge
     entity = genre_status_entity
     before = {s.field_name: s for s in mapping_service.suggest_mappings_for_entity(db, entity_id=entity.entity_id)}
 
-    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: _fake_rows(["Comedy", "Drama", "Comedy", "Action", "Drama", "Horror"]))
+    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: _fake_rows(["Comedy", "Drama", "Comedy", "Action", "Drama", "Horror"] * 3))
     data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=[SimpleNamespace()])
     after = {s.field_name: s for s in mapping_service.suggest_mappings_for_entity(db, entity_id=entity.entity_id)}
 
@@ -330,6 +333,17 @@ _DRIFT_CASES = [
     ("note", ["x" * 41, "y", ""], False),
     ("mixed", ["a", 1, "b", 2], False),
     ("empty", [None, None, None], False),
+    ("username", ["u1", "u2", "u1", "u2"], False),
+    ("approved_by", ["alice", "bob"] * 3, False),
+    ("description", ["x", "y"] * 3, False),
+    ("amount", [100, 200] * 3, False),
+    ("risk_level", ["high", "low"] * 3, False),
+    ("document_type", ["invoice", "credit"] * 3, False),
+    ("user_id", ["U1", "U2", "U3", "U4"], False),
+    ("invoice_no", ["A", "B", "A", "B", "A", "B"], False),
+    ("status", ["a", "b", "c", "d", "e"], False),
+    ("status", ["a", "b"] * 4, False),
+    ("status", ["a", "b", "a", "b", "c", "c", "a", "b"], False),
 ]
 
 
@@ -350,8 +364,10 @@ def test_gateway_and_platform_profile_builders_never_drift():
         ), name
         assert (tuple(theirs["top_values"]) if theirs["top_values"] is not None else None) == ours.top_values, name
         DiscoveredFieldProfile(**theirs)  # the Gateway's wire shape must parse as the platform's schema
-    for name in ["password", "first_name", "iban", "payment_status", "shipping_method", "status", "api_token", "dob", "syntax"]:
+    for name in ["password", "first_name", "iban", "payment_status", "shipping_method", "status", "api_token", "dob", "syntax", "username", "user_id", "invoice_no", "display_name", "handle", "approved_by", "risk_level", "description", "amount"]:
         assert gateway.is_pii_named(name) == is_pii_named(name), name
+        assert gateway.is_identifier_named(name) == is_identifier_named(name), name
+        assert gateway.is_categorical_named(name) == is_categorical_named(name), name
     assert gateway.MAX_STORED_DISTINCT_VALUES == 20 and gateway.MAX_STORED_VALUE_LENGTH == 40
 
 
@@ -464,3 +480,64 @@ def test_columns_that_were_never_sampled_get_no_profile(db, genre_status_entity,
         .filter(DataField.entity_id == entity.entity_id)
     }
     assert names == {"user_id", "username", "status"}  # last_login and email were absent from every row
+
+
+def test_a_column_with_no_stored_values_is_sql_null_not_the_json_value_null(db, genre_status_entity, monkeypatch):
+    """`top_values IS NULL` must mean "no values stored": SQLAlchemy's JSONB otherwise writes the JSON
+    value null for Python None, which IS NULL does not match (found in a live-data inspection: 155 rows)."""
+    from sqlalchemy import text
+
+    entity = genre_status_entity
+    rows = [{"user_id": f"u{i}", "username": f"n{i}", "status": ["active", "locked"][i % 2], "last_login": "2024-05-01", "email": f"x{i}@example.com"} for i in range(6)]
+    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: rows)
+    data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=[SimpleNamespace()])
+    kinds = dict(
+        db.execute(
+            text(
+                "select f.field_name, jsonb_typeof(p.top_values) from data_field_profiles p "
+                "join data_fields f on f.field_id = p.field_id where f.entity_id = :e"
+            ),
+            {"e": entity.entity_id},
+        ).all()
+    )
+    assert kinds["status"] == "array"
+    assert kinds["email"] is None and kinds["last_login"] is None  # SQL NULL
+    assert "null" not in kinds.values()
+
+
+# ---- privacy: identifiers and names are not enums, however small the table --------------------------
+def test_identifier_and_personal_name_columns_never_store_values_even_in_a_tiny_table():
+    """Found by an end-to-end inspection: an 8-row users table has 8 user ids and 8 usernames, which
+    a cardinality cap alone lets through. They must stay statistics-only."""
+    for name in ("user_id", "username", "invoice_no", "api_key", "employee_ref", "display_name", "handle"):
+        profile = build_column_profile(name, ["a1", "b2", "a1", "b2", "a1", "b2"])
+        assert profile.top_values is None, name
+
+
+def test_only_repetitive_columns_are_enum_like():
+    assert build_column_profile("status", ["a", "b", "c", "d", "e"]).top_values is None  # one value per row: a key, not an enum
+    assert build_column_profile("status", ["a", "b"] * 4).top_values == ("a", "b")
+    assert build_column_profile("status", ["active", "locked", "disabled"] * 5).top_values == ("active", "disabled", "locked")
+
+
+def test_a_reported_profile_with_identifier_or_username_values_is_stripped_on_arrival():
+    """An older or modified Gateway may send values it should not: the platform re-screens them."""
+    sent = _reported(top_values=["u001", "u002"], distinct_count=2, sample_size=20)
+    assert sanitize_reported_profile("user_id", False, sent).top_values is None
+    assert sanitize_reported_profile("username", False, sent).top_values is None
+    assert sanitize_reported_profile("status", False, sent).top_values == ("u001", "u002")  # a plausible enum survives
+    all_distinct = _reported(top_values=[f"v{i}" for i in range(9)], distinct_count=9, sample_size=10, null_ratio=0.1)
+    assert sanitize_reported_profile("status", False, all_distinct).top_values is None  # ~one value per row
+
+
+def test_only_columns_named_like_a_category_may_keep_values():
+    """Data minimisation: values are only ever used to check that a status/state column holds states,
+    so people (approved_by), free text (description), money (amount) and names stay statistics-only
+    however much they repeat. Found by an inspection of what was actually stored."""
+    repeated = ["alice", "bob"] * 4
+    for name in ("approved_by", "created_by", "description", "asset_name", "country", "department", "dataset"):
+        assert build_column_profile(name, repeated).top_values is None, name
+    assert build_column_profile("amount", [100, 200] * 4).top_values is None  # numbers are never kept
+    for name in ("status", "account_status", "risk_level", "document_type", "severity", "employment_status"):
+        assert build_column_profile(name, ["a", "b"] * 4).top_values == ("a", "b"), name
+    assert is_categorical_named("Account Status") and not is_categorical_named("statuses_id")

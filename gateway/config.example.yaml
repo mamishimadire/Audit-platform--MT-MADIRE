@@ -10,10 +10,11 @@ heartbeat_interval_seconds: 300
 # table and sends the platform a small SUMMARY of each column (how many are
 # empty, how many distinct values, whether it holds dates/numbers/text) so
 # mapping can check a column holds the right kind of data, not just the right
-# name. Real values are sent ONLY for small, non-sensitive, enum-like columns
-# such as a status (never for anything named like a password, email, salary,
-# etc., and never for identifiers, dates or free text). Set false to turn it
-# off entirely, or add `profiling: false` to a single connection below.
+# name. Real values are sent ONLY for small columns whose NAME marks them as a
+# category (status, type, level...) and whose few values repeat, e.g. a status of
+# active/locked. Never for people, identifiers, free text, amounts, or anything
+# named like a password, email, salary, etc. Set false to turn it off entirely,
+# or add `profiling: false` to a single connection below.
 profiling_enabled: true
 profile_interval_hours: 24
 profile_sample_rows: 500

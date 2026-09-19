@@ -58,11 +58,12 @@ Once a day (`profile_interval_hours`) the gateway samples up to
 whether it holds dates, numbers or text. This lets the platform check a column
 holds the right *kind* of data, not just the right name.
 
-Real values are sent **only** for small, non-sensitive, enum-like columns such
-as a `status` (at most 20 distinct values, each at most 40 characters). They are
-never sent for a column named like a password, email, phone, address, salary,
-bank/card detail or similar, and never for identifiers, dates or free text. The
-platform screens every summary again on arrival and can only store less than
+Real values are sent **only** for small columns whose *name marks them as a category*
+(`status`, `type`, `level`, `severity`, ...) and whose few values repeat across many rows, such as
+a `status` holding `active` / `locked`. They are never sent for anything else: not people
+(`approved_by`, `username`), not identifiers (`user_id`, `invoice_no`), not free text or names, not
+numbers or amounts, and never for a column named like a password, email, phone, address, salary or
+bank/card detail. The platform screens every summary again on arrival and can only store less than
 what is sent.
 
 Turn it off with `profiling_enabled: false`, or for one connection with

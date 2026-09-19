@@ -6,7 +6,6 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 
 from gateway import main as gateway_main
-from gateway import relationships
 from gateway.config import ConnectionEntry, GatewaySettings
 from gateway.connectors.base import ConnectorConfig, SqlAlchemyConnector
 

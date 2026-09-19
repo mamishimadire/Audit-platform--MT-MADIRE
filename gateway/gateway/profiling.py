@@ -6,10 +6,12 @@ its name looks right.
 
 What leaves this machine is a small summary per column: how many rows were
 sampled, how many were empty, how many distinct values, the kind of value.
-Real values are included ONLY for a small, non-sensitive, enum-like column
-(<= 20 distinct values, each <= 40 characters) — never for a column whose
-name looks personal or secret (password, email, salary, ...), never for
-identifiers or timestamps, and never for anything high-cardinality. The
+Real values are included ONLY for a small, non-sensitive, enum-like column whose
+NAME marks it as a category (status, type, level...) (<= 20 distinct values that
+REPEAT across the rows, each <= 40 characters) —
+never for a column whose name looks personal or secret (password, email,
+username, salary, ...), never for identifiers (user_id, invoice_no) or
+timestamps, and never for anything high-cardinality or one-value-per-row. The
 platform screens every profile again on arrival and can only ever store less
 than what is sent here, so a bug or a modified Gateway cannot widen it.
 
@@ -36,7 +38,8 @@ _PII_SUBSTRINGS = (
     "password", "passwd", "hash", "secret", "token", "credential", "apikey", "api_key", "passport",
     "national_id", "id_number", "email", "phone", "mobile", "address", "street", "postcode", "salary",
     "birth", "gender", "ethnic", "religion", "medical", "diagnos", "first_name", "last_name", "full_name",
-    "surname", "account_number", "iban",
+    "surname", "account_number", "iban", "username", "user_name", "login_name", "loginname", "nickname",
+    "display_name", "screen_name", "handle",
 )
 _PII_WORDS = frozenset("pwd salt ssn social tax mail cell fax zip pay wage bank card cvv pin dob health".split())
 
@@ -46,6 +49,30 @@ _DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(
 
 # Data types never worth pulling over the wire to profile.
 _BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw")
+
+
+_IDENTIFIER_NAME_WORDS = frozenset({"id", "no", "num", "number", "key", "uuid", "guid", "ref", "reference"})
+
+
+def is_identifier_named(field_name: str) -> bool:
+    words = [w for w in re.sub(r"[^a-z0-9]+", "_", field_name.lower()).split("_") if w]
+    return bool(words) and words[-1] in _IDENTIFIER_NAME_WORDS
+
+
+# Only a column whose NAME says it is a category may have its values kept. Values are used to
+# check that a status/state column holds states, and nothing else needs them, so everything
+# else (people, free text, amounts, codes, names) stays statistics-only: collect what is needed.
+_CATEGORICAL_NAME_WORDS = frozenset(
+    {
+        "status", "state", "type", "category", "level", "severity", "priority", "stage", "class",
+        "classification", "criticality", "sensitivity", "outcome", "result", "action", "frequency", "mode", "kind",
+    }
+)
+
+
+def is_categorical_named(field_name: str) -> bool:
+    words = [w for w in re.sub(r"[^a-z0-9]+", "_", field_name.lower()).split("_") if w]
+    return any(w in _CATEGORICAL_NAME_WORDS for w in words)
 
 
 def is_pii_named(field_name: str) -> bool:
@@ -100,9 +127,12 @@ def build_column_profile(field_name: str, values: list, *, is_sensitive: bool = 
     if (
         not is_sensitive
         and not is_pii_named(field_name)
+        and not is_identifier_named(field_name)
+        and is_categorical_named(field_name)
         and 0 < len(distinct) <= MAX_STORED_DISTINCT_VALUES
+        and len(distinct) <= max(2, len(present) // 2)
         and all(len(t) <= MAX_STORED_VALUE_LENGTH for t in distinct)
-        and value_kind not in {"identifier", "datetime"}
+        and value_kind not in {"identifier", "datetime", "numeric"}
     ):
         top_values = sorted(distinct)
 
