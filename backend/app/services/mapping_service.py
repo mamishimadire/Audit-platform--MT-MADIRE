@@ -56,7 +56,9 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
     # the name vouch for it — fall back to the unconstrained, already-capped
     # search instead of confidently boosting into the wrong object.
     if preferred_object is not None and entity is not None and fields:
-        fit = score_table_content_fit([f.field_name for f in fields], entity.entity_name)
+        fit = score_table_content_fit(
+            [f.field_name for f in fields], entity.entity_name, {f.field_name for f in fields if f.is_primary_key}
+        )
         if fit is not None and fit < LOW_CONTENT_FIT_THRESHOLD:
             preferred_object = None
     suggestions = []

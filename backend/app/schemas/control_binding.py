@@ -31,6 +31,10 @@ class ControlTableBindingOut(OrmModel):
     not_applicable_reason: str | None
     bound_by: uuid.UUID | None
     bound_at: datetime
+    # Same second signal the suggestions carry, for the table actually bound —
+    # so a hand-picked (or long-ago bound) table whose columns don't resemble
+    # what the control needs is flagged too. None = not applicable.
+    content_fit_score: float | None = None
 
 
 class TableBindingSuggestionOut(OrmModel):

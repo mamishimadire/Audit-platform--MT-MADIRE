@@ -50,6 +50,7 @@ export function suggestionsFromProgress(bindingProgress: Record<string, TableBin
           source_name: b.source_name,
           entity_name: b.entity_name,
           source: 'reused',
+          content_fit_score: b.content_fit_score,
           bound_at: b.bound_at,
         }
       }
@@ -201,7 +202,7 @@ export function TableBindingPicker({
       {suggestion && sourceId === suggestion.data_source_id && entityId === suggestion.entity_id && (
         <p className="w-full text-xs text-accent-ink">
           {suggestion.source === 'reused'
-            ? 'Suggested from another control that already uses this table — confirm, or change it above.'
+            ? `Suggested from another control that already uses this table — confirm, or change it above.${lowFit(suggestion.content_fit_score) ? ' Its columns look unlike what this control needs — check this is the right table.' : ''}`
             : `Suggested by name match (${Math.round(suggestion.confidence_score ?? 0)}% confidence${fitLabel(suggestion.content_fit_score)}) — a guess, not a confirmed binding. Review before confirming, or change it above.${lowFit(suggestion.content_fit_score) ? ' Its columns look unlike what this control needs — check this is the right table.' : ''}`}
         </p>
       )}
@@ -284,7 +285,17 @@ export function RequiredTablesChecklist({
                 <div className="flex flex-1 flex-wrap items-center gap-2">
                   {binding ? (
                     binding.status === 'bound' ? (
-                      <span className="text-xs text-accent-ink">✓ {binding.source_name} · {binding.entity_name}</span>
+                      <>
+                        <span className="text-xs text-accent-ink">✓ {binding.source_name} · {binding.entity_name}</span>
+                        {lowFit(binding.content_fit_score) && (
+                          <span
+                            className="text-xs text-amber-600"
+                            title="This table's columns barely resemble the data this control needs, even though it was bound. Check it is the right table."
+                          >
+                            ⚠ columns look unlike what this control needs ({Math.round(binding.content_fit_score ?? 0)}% column fit)
+                          </span>
+                        )}
+                      </>
                     ) : (
                       <span className="text-xs text-ink-soft">Not applicable — {binding.not_applicable_reason}</span>
                     )

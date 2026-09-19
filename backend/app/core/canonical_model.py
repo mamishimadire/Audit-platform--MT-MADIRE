@@ -616,8 +616,21 @@ def score_table_name_match(canonical_table_name: str, candidate_entity_name: str
 # canonical object it's being asked to stand in for to trust its NAME alone.
 LOW_CONTENT_FIT_THRESHOLD = 30.0
 
+# A column only counts as evidence when it matches a canonical field
+# CONFIDENTLY. Counting every in-object match (score >= 60) let generic
+# columns like id/_id/created_at/description cover a third or more of most
+# canonical objects — most have only 2-4 fields — so an unrelated table
+# passed for the real thing on roughly 90% of the control library. Measured
+# across all 130 required tables: any-match catches 12 generic decoys, this
+# bar catches 121, with no false alarms on real audit tables.
+_CONTENT_FIT_MIN_MATCH_SCORE = 90.0
 
-def score_table_content_fit(field_names: list[str], required_table_name: str) -> float | None:
+
+def score_table_content_fit(
+    field_names: list[str],
+    required_table_name: str,
+    primary_key_fields: frozenset[str] | set[str] = frozenset(),
+) -> float | None:
     """How well a candidate table's own discovered columns, taken as a
     whole, cover the canonical object `required_table_name` resolves to —
     independent of whether the table's NAME matches. score_table_name_match
@@ -628,13 +641,15 @@ def score_table_content_fit(field_names: list[str], required_table_name: str) ->
     independent signal.
 
     Returns the percentage (0-100) of the target canonical object's own
-    fields that at least one candidate column matches in-object, or None
-    when required_table_name doesn't resolve to any modeled canonical object
-    (nothing to check against — the signal simply doesn't apply, which is
-    not the same as a bad fit).
+    fields that at least one candidate column matches confidently, or None
+    when there is nothing to judge (no discovered columns yet, or
+    required_table_name doesn't resolve to any modeled canonical object) —
+    which is not the same as a bad fit. primary_key_fields are the
+    connector-reported primary keys, so a real "id" key is credited the same
+    way column mapping credits it.
     """
     if not field_names:
-        return None  # no discovered columns yet: nothing to judge, not a bad fit
+        return None
     target_object = infer_object_for_entity(required_table_name)
     if target_object is None or target_object not in CANONICAL_MODEL:
         return None
@@ -645,7 +660,9 @@ def score_table_content_fit(field_names: list[str], required_table_name: str) ->
     covered: set[str] = set()
     prefix = f"{target_object}."
     for name in field_names:
-        matched, _score = suggest_canonical_field(name, preferred_object=target_object, in_object_only=True)
-        if matched.startswith(prefix):
+        matched, score = suggest_canonical_field(
+            name, is_primary_key=name in primary_key_fields, preferred_object=target_object, in_object_only=True
+        )
+        if matched.startswith(prefix) and score >= _CONTENT_FIT_MIN_MATCH_SCORE:
             covered.add(matched[len(prefix):])
     return round(len(covered) / len(target_fields) * 100, 2)

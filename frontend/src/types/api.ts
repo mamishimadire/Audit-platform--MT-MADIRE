@@ -183,6 +183,7 @@ export interface ControlTableBindingOut {
   not_applicable_reason: string | null
   bound_by: string | null
   bound_at: string
+  content_fit_score: number | null
 }
 
 export interface TableBindingSuggestionOut {

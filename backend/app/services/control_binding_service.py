@@ -33,23 +33,30 @@ _CONTENT_FIT_SHORTLIST = 6
 
 
 @lru_cache(maxsize=4096)
-def _content_fit(field_names: tuple[str, ...], required_table_name: str) -> float | None:
+def _content_fit(fields: tuple[tuple[str, bool], ...], required_table_name: str) -> float | None:
     """Cached: a table's columns and the required name it's judged against
     rarely change, and the same pair is re-scored on every Controls page
-    load otherwise."""
-    return score_table_content_fit(list(field_names), required_table_name)
+    load otherwise. `fields` is sorted (name, is_primary_key) pairs."""
+    return score_table_content_fit(
+        [name for name, _ in fields], required_table_name, frozenset(name for name, is_pk in fields if is_pk)
+    )
 
 
-def _field_names_by_entity(db: Session, entity_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
-    """One query for every shortlisted candidate's already-discovered
-    column names — no live call to the client's database."""
+def _table_content_fit(fields: list[tuple[str, bool]] | None, required_table_name: str) -> float | None:
+    # No discovered columns at all means nothing to judge, not a bad fit.
+    return _content_fit(tuple(sorted(fields)), required_table_name) if fields else None
+
+
+def _field_names_by_entity(db: Session, entity_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[tuple[str, bool]]]:
+    """One query for every candidate's already-discovered (column name,
+    is_primary_key) pairs — no live call to the client's database."""
     if not entity_ids:
         return {}
-    by_entity: dict[uuid.UUID, list[str]] = {}
-    for entity_id, field_name in db.execute(
-        select(DataField.entity_id, DataField.field_name).where(DataField.entity_id.in_(entity_ids))
+    by_entity: dict[uuid.UUID, list[tuple[str, bool]]] = {}
+    for entity_id, field_name, is_pk in db.execute(
+        select(DataField.entity_id, DataField.field_name, DataField.is_primary_key).where(DataField.entity_id.in_(entity_ids))
     ):
-        by_entity.setdefault(entity_id, []).append(field_name)
+        by_entity.setdefault(entity_id, []).append((field_name, bool(is_pk)))
     return by_entity
 
 
@@ -78,7 +85,7 @@ def _suggest_bindings(
     organization_id: uuid.UUID,
     unbound_tables: list[str],
     rows=None,
-    fields_by_entity: dict[uuid.UUID, list[str]] | None = None,
+    fields_by_entity: dict[uuid.UUID, list[tuple[str, bool]]] | None = None,
 ) -> dict[str, list[TableBindingSuggestionOut]]:
     """For each still-unmapped required table, rank every discovered table
     across the organization's data sources by name similarity — so the
@@ -118,9 +125,7 @@ def _suggest_bindings(
 
         ranked = []
         for name_score, entity, source_name in shortlist:
-            entity_fields = shortlist_fields.get(entity.entity_id)
-            # No discovered columns at all means nothing to judge, not a bad fit.
-            fit = _content_fit(tuple(sorted(entity_fields)), table) if entity_fields else None
+            fit = _table_content_fit(shortlist_fields.get(entity.entity_id), table)
             # A name match can't tell a real table from an unrelated one
             # that shares its name; when the columns clearly don't resemble
             # the target object, rank it below candidates that do.
@@ -177,6 +182,7 @@ def get_binding_progress(db: Session, *, control: Control) -> TableBindingProgre
     bindings = list_bindings(db, control_id=control.control_id)
     by_table = {b.canonical_table_name: b for b in bindings}
 
+    bound_fields = _field_names_by_entity(db, [b.entity_id for b in bindings if b.entity_id])
     out_bindings = []
     for b in bindings:
         entity = db.get(DataEntity, b.entity_id) if b.entity_id else None
@@ -195,6 +201,9 @@ def get_binding_progress(db: Session, *, control: Control) -> TableBindingProgre
                 "not_applicable_reason": b.not_applicable_reason,
                 "bound_by": b.bound_by,
                 "bound_at": b.bound_at,
+                "content_fit_score": _table_content_fit(bound_fields.get(b.entity_id), b.canonical_table_name)
+                if b.status == "bound" and b.entity_id
+                else None,
             }
         )
 
@@ -278,6 +287,9 @@ def get_binding_progress_for_controls(
                     "not_applicable_reason": b.not_applicable_reason,
                     "bound_by": b.bound_by,
                     "bound_at": b.bound_at,
+                    "content_fit_score": _table_content_fit(org_fields.get(b.entity_id), b.canonical_table_name)
+                    if b.status == "bound" and b.entity_id
+                    else None,
                 }
             )
 
