@@ -228,3 +228,48 @@ class DataFieldProfile(Base):
     top_values: Mapped[list | None] = mapped_column(JSONB)
     max_length: Mapped[int | None] = mapped_column(Integer)
     profiled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DataFieldConstraint(Base):
+    """Catalog facts about one column: nullable / unique / indexed. None for
+    is_nullable means the catalog did not say."""
+
+    __tablename__ = "data_field_constraints"
+
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_fields.field_id", ondelete="CASCADE"), primary_key=True
+    )
+    is_nullable: Mapped[bool | None] = mapped_column(Boolean)
+    is_unique: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    is_indexed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+
+
+class DataRelationship(Base):
+    """One edge of the relationship graph: child column -> parent column.
+    `declared_fk` is read from the client's schema; `inferred` was measured on
+    the client's data (aggregate numbers only, never values). A row an auditor
+    confirmed or rejected is never overwritten by re-discovery or re-inference."""
+
+    __tablename__ = "data_relationships"
+
+    relationship_id: Mapped[uuid.UUID] = uuid_pk("relationship_id")
+    data_source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_sources.data_source_id", ondelete="CASCADE"), nullable=False
+    )
+    child_field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_fields.field_id", ondelete="CASCADE"), nullable=False
+    )
+    parent_field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_fields.field_id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    constraint_name: Mapped[str | None] = mapped_column(String(200))
+    containment: Mapped[float | None] = mapped_column(Float)
+    child_distinct: Mapped[int | None] = mapped_column(Integer)
+    parent_distinct: Mapped[int | None] = mapped_column(Integer)
+    parent_unique: Mapped[bool | None] = mapped_column(Boolean)
+    cardinality: Mapped[str | None] = mapped_column(String(20))
+    confidence: Mapped[float | None] = mapped_column(Float)
+    evidence: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="detected")
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

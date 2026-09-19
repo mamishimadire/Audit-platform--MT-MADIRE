@@ -228,6 +228,8 @@ function ConnectionRow({
   const [discovering, setDiscovering] = useState(false)
   const [profiling, setProfiling] = useState(false)
   const [profileStarted, setProfileStarted] = useState(false)
+  const [relating, setRelating] = useState(false)
+  const [relatingStarted, setRelatingStarted] = useState(false)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [changes, setChanges] = useState<DataConnectionChangeOut[]>([])
@@ -301,6 +303,21 @@ function ConnectionRow({
       setActionError(err?.response?.data?.detail ?? 'Could not start reading column contents.')
     } finally {
       setProfiling(false)
+    }
+  }
+
+  // How this source's tables relate (declared foreign keys are read at discovery;
+  // this measures the undeclared ones on the client's own data).
+  const runRelationships = async () => {
+    setRelating(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/data-sources/${connection.data_source_id}/relationships/refresh`)
+      setRelatingStarted(true)
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not start relationship detection.')
+    } finally {
+      setRelating(false)
     }
   }
 
@@ -510,6 +527,14 @@ function ConnectionRow({
             className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60"
           >
             {profiling ? 'Starting…' : profileStarted ? 'Reading column data in the background…' : 'Profile column data'}
+          </button>
+          <button
+            onClick={runRelationships}
+            disabled={relating}
+            title="Works out how this source's tables relate (which column of one table refers to which column of another), so mapping can check the join keys are the right ones"
+            className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60"
+          >
+            {relating ? 'Starting…' : relatingStarted ? 'Detecting relationships in the background…' : 'Detect relationships'}
           </button>
           {!pending && (
             <>

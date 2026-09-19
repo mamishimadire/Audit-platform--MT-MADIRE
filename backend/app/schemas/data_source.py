@@ -212,6 +212,17 @@ class DiscoveredField(OrmModel):
     # Optional: a Gateway that predates column profiling (or has it turned
     # off) simply doesn't send one, and any existing profile is kept.
     profile: DiscoveredFieldProfile | None = None
+    # Catalog facts (see app.core.schema_metadata). None = the catalog didn't say.
+    is_nullable: bool | None = None
+    is_unique: bool | None = None
+    is_indexed: bool | None = None
+
+
+class DiscoveredForeignKey(OrmModel):
+    name: str | None = None
+    columns: list[str]
+    referred_table: str
+    referred_columns: list[str]
 
 
 class DiscoveredEntity(OrmModel):
@@ -222,6 +233,9 @@ class DiscoveredEntity(OrmModel):
     entity_type: Literal["table", "view", "api", "file", "collection"] = "table"
     description: str | None = None
     fields: list[DiscoveredField] = []
+    # None = not reported (an older Gateway, a dialect that can't say, or a
+    # failed read): relationships already known are kept. [] = reported, none exist.
+    foreign_keys: list[DiscoveredForeignKey] | None = None
 
 
 class DiscoveryPayload(OrmModel):

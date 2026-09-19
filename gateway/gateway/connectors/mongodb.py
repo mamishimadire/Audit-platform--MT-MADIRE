@@ -131,10 +131,31 @@ class MongoConnector:
         entities: list[dict] = []
         for collection_name in database.list_collection_names():
             sampled = list(database[collection_name].aggregate([{"$sample": {"size": SAMPLE_SIZE}}]))
-            entities.append(self._discover_collection(collection_name, sampled))
+            try:
+                index_info = database[collection_name].index_information()
+            except Exception:  # noqa: BLE001 — indexes are a bonus; never fail discovery over them
+                index_info = None
+            entities.append(self._discover_collection(collection_name, sampled, index_info))
         return entities
 
-    def _discover_collection(self, name: str, sampled_docs: list[dict]) -> dict:
+    @staticmethod
+    def _index_facts(index_info: dict | None):
+        """(unique single-field paths, indexed leading paths); None if indexes could not be read."""
+        if index_info is None:
+            return None
+        unique: set[str] = set()
+        indexed: set[str] = set()
+        for name, info in index_info.items():
+            keys = [k for k, _direction in info.get("key", [])]
+            if not keys:
+                continue
+            indexed.add(keys[0])
+            if (info.get("unique") or name == "_id_") and len(keys) == 1:
+                unique.add(keys[0])
+        return unique, indexed
+
+    def _discover_collection(self, name: str, sampled_docs: list[dict], index_info: dict | None = None) -> dict:
+        index_facts = self._index_facts(index_info)
         total = len(sampled_docs)
         presence: dict[str, int] = {}
         types_seen: dict[str, set[str]] = {}
@@ -170,6 +191,9 @@ class MongoConnector:
                     "data_type": type_text,
                     "is_primary_key": path == "_id",
                     "is_sensitive": False,  # sensitivity is an auditor judgement call, not auto-detected
+                    "is_nullable": True if presence[path] < total else None,
+                    "is_unique": (path in index_facts[0]) if index_facts is not None else None,
+                    "is_indexed": (path in index_facts[1]) if index_facts is not None else None,
                 }
             )
 

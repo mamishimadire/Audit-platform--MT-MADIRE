@@ -62,9 +62,13 @@ export function ColumnMappingGrid({
   // every discovered column stays visible, same as before this existed.
   const [requiredFields, setRequiredFields] = useState<Set<string> | null>(null)
   const [showOptional, setShowOptional] = useState(false)
+  // Which of those required fields the rule JOINS on — they identify rows, so they get a key marker.
+  const [joinKeys, setJoinKeys] = useState<Set<string>>(new Set())
 
   const load = () => {
-    apiClient.get<MappingSuggestion[]>(`/data-sources/entities/${entityId}/mapping-suggestions`).then((res) => setSuggestions(res.data))
+    apiClient
+      .get<MappingSuggestion[]>(`/data-sources/entities/${entityId}/mapping-suggestions`, { params: { audit_test_id: auditTestId } })
+      .then((res) => setSuggestions(res.data))
     apiClient
       .get<TestDataMappingOut[]>(`/organizations/${organizationId}/audit-tests/${auditTestId}/data-mappings`)
       .then((res) => setMappings(res.data.filter((m) => m.entity_id === entityId)))
@@ -74,6 +78,11 @@ export function ColumnMappingGrid({
         const boundObject = res.data.objects.find((o) => o.entity_id === entityId)
         setRequiredFields(
           boundObject ? new Set(boundObject.required_fields.map((f) => `${boundObject.canonical_object}.${f.canonical_field}`)) : null,
+        )
+        setJoinKeys(
+          new Set(
+            res.data.objects.flatMap((o) => o.required_fields.filter((f) => f.is_join_key).map((f) => `${o.canonical_object}.${f.canonical_field}`)),
+          ),
         )
       })
   }
@@ -211,9 +220,25 @@ export function ColumnMappingGrid({
               ⚠ {s.value_fit_reason}
             </div>
           )}
+          {!existing && s.relationship_reason && (
+            <div className="mt-0.5 font-sans text-[11px] text-amber-600" title="Checked against how this table relates to the other tables this control joins">
+              ⚠ {s.relationship_reason}
+            </div>
+          )}
         </td>
         <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">
-          {noConfidentMatch ? <span className="italic text-ink-soft">no confident match</span> : existing?.canonical_field ?? s.suggested_canonical_field}
+          {noConfidentMatch ? (
+            <span className="italic text-ink-soft">no confident match</span>
+          ) : (
+            <>
+              {joinKeys.has(canonicalFieldFor(s)) && (
+                <span className="mr-1" title="The rule joins on this field: it identifies rows">
+                  🔑
+                </span>
+              )}
+              {existing?.canonical_field ?? s.suggested_canonical_field}
+            </>
+          )}
         </td>
         <td className="px-3 py-1.5">{!noConfidentMatch && <ConfidenceBar value={s.confidence_score} />}</td>
         <td className="px-3 py-1.5">

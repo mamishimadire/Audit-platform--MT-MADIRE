@@ -13,6 +13,7 @@ from app.schemas.data_mapping import (
     MappingReadinessOut,
     MappingRejectRequest,
     MappingSuggestion,
+    JoinReportOut,
     RelationshipCheckOut,
     RulePreviewOut,
     TestDataMappingCreate,
@@ -30,6 +31,7 @@ from app.services.mapping_service import (
     suggest_mappings_for_entity,
     update_mapping_field,
 )
+from app.services.join_resolution_service import build_join_report
 from app.services.relationship_validation_service import validate_relationships
 from app.services.rule_preview_service import build_rule_preview
 from app.services.test_rule_service import get_control_rule_template, list_test_rules
@@ -38,14 +40,21 @@ router = APIRouter(tags=["data-mappings"])
 
 
 @router.get("/data-sources/entities/{entity_id}/mapping-suggestions", response_model=list[MappingSuggestion])
-def suggestions(entity_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Read-only preview — nothing is persisted until a mapping is explicitly created."""
+def suggestions(
+    entity_id: uuid.UUID,
+    audit_test_id: uuid.UUID | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Read-only preview — nothing is persisted until a mapping is explicitly created.
+    With audit_test_id, columns that serve as a join key for that test's control
+    are also judged by whether the relationship they carry actually holds."""
     entity = db.get(DataEntity, entity_id)
     if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
     source = db.get(DataSource, entity.data_source_id)
     enforce_same_organization(source.organization_id, user, db)
-    return suggest_mappings_for_entity(db, entity_id=entity_id)
+    return suggest_mappings_for_entity(db, entity_id=entity_id, audit_test_id=audit_test_id)
 
 
 def _get_test_or_404(db: Session, audit_test_id: uuid.UUID) -> AuditTest:
@@ -85,6 +94,24 @@ def list_all(
     if test.organization_id != organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
     return list_mappings(db, audit_test_id=audit_test_id)
+
+
+@router.get(
+    "/organizations/{organization_id}/audit-tests/{audit_test_id}/join-resolution",
+    response_model=JoinReportOut,
+)
+def join_resolution(
+    organization_id: uuid.UUID, audit_test_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> JoinReportOut:
+    """How each join this control's rule needs is satisfied by the client's actual
+    tables (which columns, how strongly the schema and the data back it up),
+    plus how the control's tables connect through any bridge tables. Reads stored
+    relationship evidence only; refresh it from Data Sources."""
+    enforce_same_organization(organization_id, user, db)
+    test = _get_test_or_404(db, audit_test_id)
+    if test.organization_id != organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audit test not found in this organization")
+    return build_join_report(db, audit_test_id=audit_test_id)
 
 
 @router.get(

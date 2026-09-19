@@ -736,6 +736,9 @@ export interface MappingSuggestion {
   // (the suggestion was capped so it can't auto-accept).
   value_fit_score?: number | null
   value_fit_reason?: string | null
+  // Set when this column is a join key whose relationship the data does not support
+  // (or that has several plausible pairings); the suggestion is capped, not auto-accepted.
+  relationship_reason?: string | null
 }
 
 export interface TestDataMappingOut {
@@ -763,6 +766,7 @@ export interface RequiredFieldStatus {
   mapping_id: string | null
   field_name: string | null
   mapping_status: string | null
+  is_join_key?: boolean
 }
 
 export interface RequiredObjectStatus {
@@ -829,4 +833,40 @@ export interface AuditTestOut {
   domain: string | null
   required_tables: string[]
   mapping_status: string
+}
+
+export type JoinVerdict = 'valid' | 'ambiguous' | 'contradicted' | 'unverified' | 'unresolved'
+
+export interface JoinColumnOut {
+  field_id: string | null
+  table: string
+  column: string
+}
+
+export interface JoinResolutionOut {
+  primitive: string
+  requires_left: string
+  requires_right: string
+  verdict: JoinVerdict
+  reason: string
+  left: JoinColumnOut | null
+  right: JoinColumnOut | null
+  relationship: 'declared_fk' | 'inferred' | 'none'
+  relationship_id: string | null
+  containment: number | null
+  evidence: string[]
+  alternatives: { left: JoinColumnOut; right: JoinColumnOut; score: number }[]
+}
+
+export interface JoinPathOut {
+  from_table: string
+  to_table: string
+  steps: { from_column: string; to_column: string }[]
+  executed: boolean
+}
+
+export interface JoinReportOut {
+  joins: JoinResolutionOut[]
+  paths: JoinPathOut[]
+  blocking: boolean
 }

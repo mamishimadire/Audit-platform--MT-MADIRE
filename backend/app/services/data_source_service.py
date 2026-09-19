@@ -2,16 +2,33 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import MetaData, Table, create_engine, delete, distinct, insert, inspect, select, text, update
+from sqlalchemy import MetaData, String, Table, cast, create_engine, delete, distinct, func, insert, inspect, select, text, update
 from sqlalchemy import column as sql_column, table as sql_table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.relationship_inference import (
+    Candidate,
+    ColumnRef,
+    Measurement,
+    generate_candidates,
+    score_inferred,
+    worth_storing,
+)
+from app.core.schema_metadata import derive_column_constraints, normalize_foreign_keys
 from app.core.value_profile import ColumnProfile, build_column_profile, sanitize_reported_profile
 from app.models.control_library import ControlTableBinding
-from app.models.data_source import DataConnection, DataEntity, DataField, DataFieldProfile, DataSource
+from app.models.data_source import (
+    DataConnection,
+    DataEntity,
+    DataField,
+    DataFieldConstraint,
+    DataFieldProfile,
+    DataRelationship,
+    DataSource,
+)
 from app.schemas.data_source import (
     DataConnectionCreate,
     DataSourceCreate,
@@ -299,19 +316,47 @@ def discover_direct_connection_schema(db: Session, *, connection: DataConnection
         entities: list[DiscoveredEntity] = []
         for table_name in inspector.get_table_names():
             pk_columns = set(inspector.get_pk_constraint(table_name).get("constrained_columns") or [])
+            columns = inspector.get_columns(table_name)
+            # Catalog facts beyond names/types. Each call is best-effort: a
+            # dialect that can't report one (Snowflake has no indexes, HANA and
+            # Snowflake rarely declare foreign keys) or a permission gap must
+            # never fail discovery — the fact is simply "not reported".
+            unique_constraints = _safe_inspector_call(inspector.get_unique_constraints, table_name)
+            indexes = _safe_inspector_call(inspector.get_indexes, table_name)
+            foreign_keys = normalize_foreign_keys(_safe_inspector_call(inspector.get_foreign_keys, table_name))
+            facts = derive_column_constraints(
+                [col["name"] for col in columns],
+                nullable_by_column={col["name"]: col.get("nullable") for col in columns},
+                pk_columns=pk_columns,
+                unique_constraints=unique_constraints,
+                indexes=indexes,
+            )
             fields = [
                 DiscoveredField(
                     field_name=col["name"],
                     data_type=str(col.get("type")),
                     is_primary_key=col["name"] in pk_columns,
+                    is_nullable=facts[col["name"]]["is_nullable"],
+                    # Only claim "not unique / not indexed" when the catalog was actually read.
+                    is_unique=facts[col["name"]]["is_unique"] if (unique_constraints is not None or pk_columns) else None,
+                    is_indexed=facts[col["name"]]["is_indexed"] if indexes is not None else None,
                 )
-                for col in inspector.get_columns(table_name)
+                for col in columns
             ]
-            entities.append(DiscoveredEntity(entity_name=table_name, entity_type="table", fields=fields))
+            entities.append(
+                DiscoveredEntity(entity_name=table_name, entity_type="table", fields=fields, foreign_keys=foreign_keys)
+            )
     finally:
         engine.dispose()
 
     return replace_discovery(db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities))
+
+
+def _safe_inspector_call(call, table_name: str):
+    try:
+        return call(table_name)
+    except Exception:  # noqa: BLE001 — unsupported by this dialect/permissions; discovery carries on without it
+        return None
 
 
 def list_connections(db: Session, *, data_source_id: uuid.UUID) -> list[DataConnection]:
@@ -352,6 +397,8 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
 
     seen_entity_names: set[str] = set()
     reported_profiles: dict[tuple[str, str], object] = {}
+    reported_constraints: dict[tuple[str, str], tuple] = {}
+    reported_foreign_keys: dict[str, list] = {}
     new_entity_rows = []
     new_field_rows = []
     stale_field_ids: list[uuid.UUID] = []
@@ -359,6 +406,8 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
 
     for discovered in payload.entities:
         seen_entity_names.add(discovered.entity_name)
+        if discovered.foreign_keys is not None:
+            reported_foreign_keys[discovered.entity_name] = discovered.foreign_keys
         existing = existing_entities.get(discovered.entity_name)
         if existing is not None:
             existing.entity_type = discovered.entity_type
@@ -383,6 +432,8 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
             seen_field_names.add(f.field_name)
             if f.profile is not None:
                 reported_profiles[(discovered.entity_name, f.field_name)] = f.profile
+            if f.is_nullable is not None or f.is_unique is not None or f.is_indexed is not None:
+                reported_constraints[(discovered.entity_name, f.field_name)] = (f.is_nullable, f.is_unique, f.is_indexed)
             existing_field = existing_fields.get(f.field_name)
             if existing_field is not None:
                 existing_field.data_type = f.data_type
@@ -415,6 +466,10 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
         db.execute(insert(DataField), new_field_rows)
     if reported_profiles:
         _store_reported_profiles(db, data_source_id=data_source_id, reported=reported_profiles)
+    if reported_constraints or reported_foreign_keys:
+        _store_reported_schema_metadata(
+            db, data_source_id=data_source_id, constraints=reported_constraints, foreign_keys=reported_foreign_keys
+        )
 
     db.commit()
     return list(db.scalars(select(DataEntity).where(DataEntity.entity_id.in_(result_entity_ids))))
@@ -646,17 +701,25 @@ def _sample_sql_rows(
     engine = _build_direct_engine(connection)
     try:
         with engine.connect() as conn:
-            try:
-                if connection.db_type == "postgresql":
-                    conn.execute(text(f"SET LOCAL statement_timeout = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
-                    conn.execute(text("SET TRANSACTION READ ONLY"))
-                elif connection.db_type == "mysql":
-                    conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
-            except Exception:  # noqa: BLE001 — a guard the server refuses must not block profiling
-                conn.rollback()
+            _apply_read_guards(conn, connection.db_type)
             return [dict(row._mapping) for row in conn.execute(statement)]
     finally:
         engine.dispose()
+
+
+def _apply_read_guards(conn, db_type: str) -> None:
+    """Best-effort statement timeout + read-only transaction for the reads this
+    platform does on its own initiative (profiling, relationship inference). A
+    guard a particular server rejects (e.g. a pooler that forbids SET) is
+    skipped, not fatal."""
+    try:
+        if db_type == "postgresql":
+            conn.execute(text(f"SET LOCAL statement_timeout = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+        elif db_type == "mysql":
+            conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+    except Exception:  # noqa: BLE001
+        conn.rollback()
 
 
 def fetch_profile_rows(
@@ -701,6 +764,105 @@ def _store_profiles(db: Session, *, profiles: dict[uuid.UUID, ColumnProfile], st
             set_={column: getattr(stmt.excluded, column) for column in _PROFILE_UPSERT_COLUMNS},
         )
     )
+
+
+def _resolve(names: dict[str, object], wanted: str):
+    """Exact match first, then case-insensitive (Oracle/HANA report upper-case
+    catalog names for objects discovered in another case)."""
+    if wanted in names:
+        return names[wanted]
+    lowered = {k.lower(): v for k, v in names.items()}
+    return lowered.get(wanted.lower())
+
+
+def _store_reported_schema_metadata(
+    db: Session,
+    *,
+    data_source_id: uuid.UUID,
+    constraints: dict[tuple[str, str], tuple],
+    foreign_keys: dict[str, list],
+) -> None:
+    """Stores catalog facts (nullable/unique/indexed per column) and declared
+    foreign keys from a discovery. Declared edges are refreshed from what the
+    catalog now says, but a relationship an auditor confirmed or rejected, and
+    every inferred edge, is left exactly as it is — discovery only speaks for
+    what the schema declares."""
+    entity_rows = db.execute(select(DataEntity.entity_id, DataEntity.entity_name).where(DataEntity.data_source_id == data_source_id)).all()
+    entity_by_name = {name: entity_id for entity_id, name in entity_rows}
+    field_rows = db.execute(
+        select(DataField.field_id, DataField.field_name, DataField.entity_id).where(
+            DataField.entity_id.in_(list(entity_by_name.values()))
+        )
+    ).all()
+    fields: dict[uuid.UUID, dict[str, uuid.UUID]] = {}
+    for field_id, field_name, entity_id in field_rows:
+        fields.setdefault(entity_id, {})[field_name] = field_id
+    name_by_entity = {entity_id: name for name, entity_id in entity_by_name.items()}
+
+    rows = []
+    for (entity_name, field_name), (nullable, unique, indexed) in constraints.items():
+        entity_id = entity_by_name.get(entity_name)
+        field_id = fields.get(entity_id, {}).get(field_name) if entity_id else None
+        if field_id is not None:
+            rows.append({"field_id": field_id, "is_nullable": nullable, "is_unique": bool(unique), "is_indexed": bool(indexed)})
+    if rows:
+        stmt = pg_insert(DataFieldConstraint).values(rows)
+        db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[DataFieldConstraint.field_id],
+                set_={c: getattr(stmt.excluded, c) for c in ("is_nullable", "is_unique", "is_indexed")},
+            )
+        )
+
+    if not foreign_keys:
+        return
+    unique_by_field = {
+        field_id: is_unique
+        for field_id, is_unique in db.execute(
+            select(DataFieldConstraint.field_id, DataFieldConstraint.is_unique).where(
+                DataFieldConstraint.field_id.in_([fid for per_entity in fields.values() for fid in per_entity.values()])
+            )
+        )
+    }
+    reported_entity_ids = [entity_by_name[name] for name in foreign_keys if name in entity_by_name]
+    child_field_ids = [fid for eid in reported_entity_ids for fid in fields.get(eid, {}).values()]
+    if child_field_ids:
+        db.execute(
+            delete(DataRelationship).where(
+                DataRelationship.child_field_id.in_(child_field_ids),
+                DataRelationship.kind == "declared_fk",
+                DataRelationship.status == "detected",
+            )
+        )
+    edges = []
+    for entity_name, fks in foreign_keys.items():
+        entity_id = entity_by_name.get(entity_name)
+        if entity_id is None:
+            continue
+        for fk in fks:
+            parent_entity_id = _resolve(entity_by_name, fk.referred_table)
+            if parent_entity_id is None:
+                continue  # the target lives outside this data source's discovered tables
+            for child_col, parent_col in zip(fk.columns, fk.referred_columns):
+                child_id = _resolve(fields.get(entity_id, {}), child_col)
+                parent_id = _resolve(fields.get(parent_entity_id, {}), parent_col)
+                if child_id is None or parent_id is None:
+                    continue
+                edges.append(
+                    {
+                        "data_source_id": data_source_id,
+                        "child_field_id": child_id,
+                        "parent_field_id": parent_id,
+                        "kind": "declared_fk",
+                        "constraint_name": fk.name,
+                        "parent_unique": unique_by_field.get(parent_id),
+                        "cardinality": "one_to_one" if unique_by_field.get(child_id) else "many_to_one",
+                        "confidence": 100.0,
+                        "evidence": {"source": "declared foreign key", "child_table": name_by_entity[entity_id]},
+                    }
+                )
+    if edges:
+        db.execute(pg_insert(DataRelationship).values(edges).on_conflict_do_nothing())
 
 
 def _store_reported_profiles(db: Session, *, data_source_id: uuid.UUID, reported: dict[tuple[str, str], object]) -> None:
@@ -787,6 +949,293 @@ def profile_entity_columns(
     return len(profiles)
 
 
+# ---- relationship inference (see app/core/relationship_inference.py) --------
+_MAX_RELATIONSHIP_CANDIDATES = 700
+_MONGO_DISTINCT_CAP = 5000
+
+
+def _measure_sql(conn, candidate: Candidate) -> Measurement | None:
+    """Exact containment of the child column's distinct values in the parent
+    column, in ONE round trip: how many distinct child values, how many of
+    them exist on the parent side, how many distinct parent values. Built from
+    table()/column() constructs (identifiers quoted per dialect, nothing
+    reflected). Differently-typed columns are compared as text, since a uuid
+    against a varchar is an error on some engines."""
+    child_col = sql_column(candidate.child.name)
+    parent_col = sql_column(candidate.parent.name)
+    child_t = sql_table(candidate.child.entity_name, child_col)
+    parent_t = sql_table(candidate.parent.entity_name, parent_col)
+    if (candidate.child.data_type or "") != (candidate.parent.data_type or ""):
+        child_expr, parent_expr = cast(child_col, String), cast(parent_col, String)
+    else:
+        child_expr, parent_expr = child_col, parent_col
+
+    child_distinct = select(func.count(distinct(child_expr))).select_from(child_t).where(child_col.is_not(None)).scalar_subquery()
+    matched = (
+        select(func.count(distinct(child_expr)))
+        .select_from(child_t)
+        .where(child_col.is_not(None), child_expr.in_(select(parent_expr).select_from(parent_t).where(parent_col.is_not(None))))
+        .scalar_subquery()
+    )
+    parent_distinct = select(func.count(distinct(parent_expr))).select_from(parent_t).where(parent_col.is_not(None)).scalar_subquery()
+    parent_rows = select(func.count()).select_from(parent_t).where(parent_col.is_not(None)).scalar_subquery()
+    row = conn.execute(select(child_distinct, matched, parent_distinct, parent_rows)).one()
+    return Measurement(
+        child_distinct=int(row[0]), matched_distinct=int(row[1]), parent_distinct=int(row[2]), parent_rows=int(row[3])
+    )
+
+
+def _measure_mongo(database, candidate: Candidate) -> Measurement | None:
+    child_values = [v for v in database[candidate.child.entity_name].distinct(candidate.child.name) if v is not None]
+    try:
+        child_set = list({v for v in child_values})
+    except TypeError:
+        return None  # unhashable values (nested documents) — not a key column
+    capped = len(child_set) > _MONGO_DISTINCT_CAP
+    child_set = child_set[:_MONGO_DISTINCT_CAP]
+    if not child_set:
+        return Measurement(0, 0, 0)
+    parent_collection = database[candidate.parent.entity_name]
+    matched = parent_collection.distinct(candidate.parent.name, {candidate.parent.name: {"$in": child_set}})
+    parent_distinct = len([v for v in parent_collection.distinct(candidate.parent.name) if v is not None])
+    parent_rows = parent_collection.count_documents({candidate.parent.name: {"$ne": None}})
+    return Measurement(
+        child_distinct=len(child_set), matched_distinct=len({v for v in matched if v is not None}),
+        parent_distinct=parent_distinct, capped=capped, parent_rows=parent_rows,
+    )
+
+
+def _requirement_candidates(db: Session, data_source_id: uuid.UUID, columns: list[ColumnRef]) -> list[Candidate]:
+    """Pairs a control's rule NEEDS joined, measured whatever the columns are
+    called: `journal_entries.prepared_by` and `user.user_id` share no name, but
+    GL-002 says they must relate, so that is exactly what to check. Both
+    directions are measured, since which side is the referencing one is the
+    data's answer, not ours."""
+    import json
+
+    from app.core.canonical_model import infer_object_for_entity
+    from app.core.join_requirements import join_requirements_for, reference_roles_agree
+    from app.core.join_resolution import candidate_columns
+    from app.models.control_library import ControlRuleTemplate
+    from app.models.risk_control import Control
+
+    by_entity: dict[str, list[ColumnRef]] = {}
+    for c in columns:
+        by_entity.setdefault(c.entity_id, []).append(c)
+    if not by_entity:
+        return []
+
+    rows = db.execute(
+        select(ControlTableBinding.control_id, ControlTableBinding.canonical_table_name, ControlTableBinding.entity_id).where(
+            ControlTableBinding.status == "bound",
+            ControlTableBinding.entity_id.in_([uuid.UUID(e) for e in by_entity]),
+        )
+    ).all()
+    objects_by_control: dict[uuid.UUID, dict[str, str]] = {}
+    for control_id, table_name, entity_id in rows:
+        objects_by_control.setdefault(control_id, {}).setdefault(infer_object_for_entity(table_name) or table_name, str(entity_id))
+    if not objects_by_control:
+        return []
+
+    library_by_control = dict(
+        db.execute(select(Control.control_id, Control.control_library_id).where(Control.control_id.in_(list(objects_by_control)))).all()
+    )
+    templates = {
+        t.control_library_id: json.loads(t.rule_definition)
+        for t in db.scalars(
+            select(ControlRuleTemplate).where(ControlRuleTemplate.control_library_id.in_({v for v in library_by_control.values() if v}))
+        )
+    }
+
+    seen: set[tuple[str, str]] = set()
+    out: list[Candidate] = []
+    for control_id, object_entity in objects_by_control.items():
+        definition = templates.get(library_by_control.get(control_id))
+        if not definition:
+            continue
+        for req in join_requirements_for(definition):
+            left_entity, right_entity = object_entity.get(req.left_object), object_entity.get(req.right_object)
+            if left_entity is None or right_entity is None or left_entity == right_entity:
+                continue
+            # A column that names a different actor (approved_by for a prepared_by
+            # requirement) is the wrong pair however well its values match: never measured.
+            lefts = [
+                (c, n) for c, n in candidate_columns(req.left_object, req.left_field, by_entity.get(left_entity, []))
+                if reference_roles_agree(req.left_field, c.name) != "mismatch"
+            ]
+            rights = [
+                (c, n) for c, n in candidate_columns(req.right_object, req.right_field, by_entity.get(right_entity, []))
+                if reference_roles_agree(req.right_field, c.name) != "mismatch"
+            ]
+            for lc, _ in lefts:
+                for rc, _ in rights:
+                    for child, parent in ((lc, rc), (rc, lc)):
+                        key = (child.field_id, parent.field_id)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(
+                            Candidate(child, parent, name_affinity=1.0, parent_unique=parent.is_primary_key or parent.is_unique, requirement_driven=True)
+                        )
+    return out
+
+
+def _columns_for_inference(db: Session, data_source_id: uuid.UUID) -> list[ColumnRef]:
+    rows = db.execute(
+        select(DataField, DataEntity.entity_name, DataFieldConstraint, DataFieldProfile)
+        .join(DataEntity, DataEntity.entity_id == DataField.entity_id)
+        .outerjoin(DataFieldConstraint, DataFieldConstraint.field_id == DataField.field_id)
+        .outerjoin(DataFieldProfile, DataFieldProfile.field_id == DataField.field_id)
+        .where(DataEntity.data_source_id == data_source_id)
+    )
+    return [
+        ColumnRef(
+            field_id=str(field.field_id),
+            entity_id=str(field.entity_id),
+            entity_name=entity_name,
+            name=field.field_name,
+            data_type=field.data_type,
+            is_primary_key=bool(field.is_primary_key),
+            is_unique=bool(constraint.is_unique) if constraint is not None else False,
+            distinct_ratio=profile.distinct_ratio if profile is not None else None,
+            sample_size=profile.sample_size if profile is not None else 0,
+            null_ratio=profile.null_ratio if profile is not None else None,
+        )
+        for field, entity_name, constraint, profile in rows
+    ]
+
+
+def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) -> int | None:
+    """Measures the plausible undeclared relationships between this source's
+    tables on the client's own data and stores the ones the data supports (see
+    app/core/relationship_inference.py). Only direct connections can be reached
+    from here; None means it could not be done at all. Re-running replaces the
+    previous inferred edges an auditor hasn't ruled on, and never touches
+    declared foreign keys or anything confirmed or rejected."""
+    connections = _connected_direct_connections(db, data_source_id)
+    if not connections:
+        return None
+    columns = _columns_for_inference(db, data_source_id)
+    candidates = generate_candidates(columns)
+    driven = _requirement_candidates(db, data_source_id, columns)
+    already = {(c.child.field_id, c.parent.field_id) for c in driven}
+    # The control's own pairs first, then the name-driven ones.
+    candidates = driven + [c for c in candidates if (c.child.field_id, c.parent.field_id) not in already]
+    if not candidates:
+        return 0
+
+    # Tables a control is already bound to matter most; measure those pairs first.
+    bound = {
+        str(entity_id)
+        for entity_id in db.scalars(
+            select(ControlTableBinding.entity_id).where(
+                ControlTableBinding.entity_id.in_({uuid.UUID(c.child.entity_id) for c in candidates} | {uuid.UUID(c.parent.entity_id) for c in candidates})
+            )
+        )
+        if entity_id is not None
+    }
+    candidates.sort(key=lambda c: (c.requirement_driven, (c.child.entity_id in bound) + (c.parent.entity_id in bound)), reverse=True)
+    candidates = candidates[:_MAX_RELATIONSHIP_CANDIDATES]
+
+    # Measuring the client's database can take minutes. End the read transaction
+    # first: a session left idle that long has its connection dropped by the
+    # database (Neon does), and the write below would fail on it.
+    # Detach the connection objects first: touching an expired one after the
+    # commit would silently start a new transaction and hold it open again.
+    for connection in connections:
+        try:
+            db.expunge(connection)
+        except Exception:  # noqa: BLE001 — already detached (or not a session-managed object)
+            pass
+    db.commit()
+    measured: list[tuple[Candidate, Measurement]] = []
+    for connection in connections:
+        try:
+            measured = _measure_all(connection, candidates)
+            break
+        except Exception:  # noqa: BLE001 — try the next connection; the driver's text is not worth leaking
+            logger.info("relationship inference failed on one connection")
+            continue
+    else:
+        return None
+
+    edges = []
+    for candidate, m in measured:
+        if not (candidate.requirement_driven or candidate.parent_unique or m.parent_is_key):
+            continue  # a parent that isn't a key on the client's data can't be referenced
+        if not worth_storing(m, candidate.name_affinity):
+            continue
+        confidence, cardinality = score_inferred(candidate, m)
+        edges.append(
+            {
+                "data_source_id": data_source_id,
+                "child_field_id": uuid.UUID(candidate.child.field_id),
+                "parent_field_id": uuid.UUID(candidate.parent.field_id),
+                "kind": "inferred",
+                "containment": round(m.containment * 100, 2),
+                "child_distinct": m.child_distinct,
+                "parent_distinct": m.parent_distinct,
+                "parent_unique": candidate.parent_unique or m.parent_is_key,
+                "cardinality": cardinality,
+                "confidence": confidence,
+                "evidence": {
+                    "source": "value containment measured on the client's data",
+                    "matched_distinct": m.matched_distinct,
+                    "name_affinity": candidate.name_affinity,
+                    "capped": m.capped,
+                },
+            }
+        )
+    db.execute(
+        delete(DataRelationship).where(
+            DataRelationship.data_source_id == data_source_id,
+            DataRelationship.kind == "inferred",
+            DataRelationship.status == "detected",
+        )
+    )
+    if edges:
+        db.execute(pg_insert(DataRelationship).values(edges).on_conflict_do_nothing())
+    db.commit()
+    return len(edges)
+
+
+def _measure_all(connection: DataConnection, candidates: list[Candidate]) -> list[tuple[Candidate, Measurement]]:
+    """One connection for the whole run; a pair that errors (an incomparable
+    type, a permission gap) is skipped, not fatal."""
+    out: list[tuple[Candidate, Measurement]] = []
+    if connection.db_type == "mongodb":
+        from app.services.mongo_connector import _build_mongo_client
+
+        client = _build_mongo_client(connection, password=decrypt_secret(connection.encrypted_password))
+        try:
+            database = client[connection.database_name]
+            for candidate in candidates:
+                try:
+                    m = _measure_mongo(database, candidate)
+                except Exception:  # noqa: BLE001
+                    continue
+                if m is not None:
+                    out.append((candidate, m))
+        finally:
+            client.close()
+        return out
+
+    engine = _build_direct_engine(connection)
+    try:
+        for candidate in candidates:
+            try:
+                with engine.connect() as conn:
+                    _apply_read_guards(conn, connection.db_type)
+                    m = _measure_sql(conn, candidate)
+            except Exception:  # noqa: BLE001 — e.g. a type the engine can't compare; skip this pair only
+                continue
+            if m is not None:
+                out.append((candidate, m))
+    finally:
+        engine.dispose()
+    return out
+
+
 def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:
     """Profiles every table of a data source, one at a time, in its own
     database session — meant for a daemon thread started after discovery (or
@@ -812,6 +1261,26 @@ def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:
             except Exception:  # noqa: BLE001
                 db.rollback()
                 logger.exception("profiling entity %s failed", entity_id)
+        # Profiles say which columns look like keys, so relationships come last.
+        try:
+            infer_relationships_for_source(db, data_source_id=data_source_id)
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("relationship inference for source %s failed", data_source_id)
+    finally:
+        db.close()
+
+
+def infer_relationships_in_background(data_source_id: uuid.UUID) -> None:
+    """Relationship inference only (profiles already exist), for a refresh."""
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        infer_relationships_for_source(db, data_source_id=data_source_id)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("relationship inference for source %s failed", data_source_id)
     finally:
         db.close()
 

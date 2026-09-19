@@ -11,6 +11,7 @@ from app.core.canonical_model import (
     mapping_status_for_confidence,
     suggest_canonical_field,
 )
+from app.core.join_requirements import required_join_key_fields
 from app.core.value_profile import (
     LOW_VALUE_FIT_THRESHOLD,
     VALUE_CONTRADICTION_CONFIDENCE_CAP,
@@ -51,7 +52,29 @@ def _flag_rules_needing_review(db: Session, *, audit_test_id: uuid.UUID, changed
             rule.needs_review = True
 
 
-def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[MappingSuggestion]:
+def _join_flags_for_entity(db: Session, *, audit_test_id: uuid.UUID, entity_id: uuid.UUID) -> dict[uuid.UUID, str]:
+    """field_id -> reason, for this table's columns that serve as a join key the
+    data does not support (contradicted) or that has more than one plausible
+    pairing (ambiguous). Reads stored relationship evidence only."""
+    from app.services.join_resolution_service import build_join_report
+
+    mine = {f.field_id for f in db.scalars(select(DataField).where(DataField.entity_id == entity_id))}
+    flags: dict[uuid.UUID, str] = {}
+    for join in build_join_report(db, audit_test_id=audit_test_id).joins:
+        if join.verdict not in ("contradicted", "ambiguous"):
+            continue
+        involved = [c for c in (join.left, join.right) if c is not None]
+        for alt in join.alternatives:
+            involved.extend([alt.left, alt.right])
+        for c in involved:
+            if c.field_id in mine:
+                flags.setdefault(c.field_id, f"{join.requires_left} ↔ {join.requires_right}: {join.reason}")
+    return flags
+
+
+def suggest_mappings_for_entity(
+    db: Session, *, entity_id: uuid.UUID, audit_test_id: uuid.UUID | None = None
+) -> list[MappingSuggestion]:
     entity = db.get(DataEntity, entity_id)
     preferred_object = infer_object_for_entity(entity.entity_name) if entity else None
 
@@ -68,6 +91,9 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
         fit = score_table_fit(columns, entity.entity_name)
         if fit is not None and fit.effective is not None and fit.effective < LOW_CONTENT_FIT_THRESHOLD:
             preferred_object = None
+    # With a control in view, a column serving as a join key is also judged by
+    # whether the relationship it is meant to carry actually holds.
+    join_flags = _join_flags_for_entity(db, audit_test_id=audit_test_id, entity_id=entity_id) if audit_test_id else {}
     suggestions = []
     for field in fields:
         canonical_field, confidence = suggest_canonical_field(
@@ -84,6 +110,10 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
             # raise a score on a good value fit — names stay primary.
             if value_fit is not None and value_fit < LOW_VALUE_FIT_THRESHOLD:
                 confidence = min(confidence, VALUE_CONTRADICTION_CONFIDENCE_CAP)
+        relationship_reason = join_flags.get(field.field_id) if canonical_field else None
+        if relationship_reason:
+            # Never auto-accepted: a person confirms which pair really carries the join.
+            confidence = min(confidence, VALUE_CONTRADICTION_CONFIDENCE_CAP)
         suggestions.append(
             MappingSuggestion(
                 field_id=field.field_id,
@@ -93,6 +123,7 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
                 confidence_score=confidence,
                 value_fit_score=value_fit,
                 value_fit_reason=value_reason if value_fit is not None and value_fit < LOW_VALUE_FIT_THRESHOLD else None,
+                relationship_reason=relationship_reason,
             )
         )
     return suggestions
@@ -384,6 +415,7 @@ def _readiness_for_definition(db: Session, *, audit_test_id: uuid.UUID, rule_def
     a control's template — before a rule even exists yet), compute which
     canonical objects/fields it needs and which are mapped already."""
     required = required_fields_by_object_for(rule_definition)
+    join_keys = required_join_key_fields(rule_definition)
     existing_mappings = list_mappings(db, audit_test_id=audit_test_id)
 
     objects: list[RequiredObjectStatus] = []
@@ -401,7 +433,9 @@ def _readiness_for_definition(db: Session, *, audit_test_id: uuid.UUID, rule_def
         for field_name in sorted(fields):
             m = object_mappings.get(field_name)
             if m is None:
-                field_statuses.append(RequiredFieldStatus(canonical_field=field_name, mapped=False))
+                field_statuses.append(
+                    RequiredFieldStatus(canonical_field=field_name, mapped=False, is_join_key=field_name in join_keys.get(canonical_object, set()))
+                )
                 overall_ready = False
             else:
                 physical_field = db.get(DataField, m.field_id) if m.field_id else None
@@ -412,6 +446,7 @@ def _readiness_for_definition(db: Session, *, audit_test_id: uuid.UUID, rule_def
                         mapping_id=m.mapping_id,
                         field_name=physical_field.field_name if physical_field else None,
                         mapping_status=m.mapping_status,
+                        is_join_key=field_name in join_keys.get(canonical_object, set()),
                     )
                 )
 
@@ -523,6 +558,12 @@ def _maybe_auto_generate_rule(db: Session, *, audit_test_id: uuid.UUID, organiza
 
     readiness = get_template_requirements(db, audit_test_id=audit_test_id)
     if not readiness.has_rule or not readiness.ready:
+        return
+    # A join the data contradicts must not silently become a live test: a person
+    # reviews it first (they can still generate the rule by hand once they have).
+    from app.services.join_resolution_service import build_join_report
+
+    if build_join_report(db, audit_test_id=audit_test_id).blocking:
         return
     existing = db.scalar(
         select(TestRule).where(TestRule.audit_test_id == audit_test_id, TestRule.status.in_(("pending_approval", "active")))

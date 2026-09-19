@@ -16,6 +16,9 @@ class MappingSuggestion(OrmModel):
     # suggestion was demoted for it); None means no objection, not "verified".
     value_fit_score: float | None = None
     value_fit_reason: str | None = None
+    # Set when this column is a join key whose relationship the data does not
+    # support (or that has more than one plausible pairing) - see join_resolution.
+    relationship_reason: str | None = None
 
 
 class TestDataMappingCreate(OrmModel):
@@ -63,6 +66,8 @@ class RequiredFieldStatus(OrmModel):
     mapping_id: uuid.UUID | None = None
     field_name: str | None = None
     mapping_status: str | None = None
+    # A field the rule joins on: it identifies rows rather than describing them.
+    is_join_key: bool = False
 
 
 class RequiredObjectStatus(OrmModel):
@@ -124,3 +129,64 @@ class RelationshipCheckOut(OrmModel):
     match_rate: float
     status: RelationshipCheckStatus
     detail: str
+
+
+JoinVerdict = Literal["valid", "ambiguous", "contradicted", "unverified", "unresolved"]
+
+
+class JoinColumnOut(OrmModel):
+    field_id: uuid.UUID | None = None
+    table: str
+    column: str
+
+
+class JoinAlternativeOut(OrmModel):
+    left: JoinColumnOut
+    right: JoinColumnOut
+    score: float
+
+
+class JoinResolutionOut(OrmModel):
+    """One join a control's rule needs (e.g. api_access.user_id <-> user.user_id),
+    resolved against the client's actual tables: which columns satisfy it, and
+    how much the schema and the data back that up."""
+
+    primitive: str
+    requires_left: str
+    requires_right: str
+    verdict: JoinVerdict
+    reason: str
+    left: JoinColumnOut | None = None
+    right: JoinColumnOut | None = None
+    relationship: Literal["declared_fk", "inferred", "none"] = "none"
+    relationship_id: uuid.UUID | None = None
+    containment: float | None = None
+    evidence: list[str] = []
+    alternatives: list[JoinAlternativeOut] = []
+
+
+class JoinPathStepOut(OrmModel):
+    from_column: str
+    to_column: str
+
+
+class JoinPathOut(OrmModel):
+    """How two of a control's tables connect, possibly through bridge tables.
+    Shown for the auditor's understanding; tests still join two tables directly."""
+
+    from_table: str
+    to_table: str
+    steps: list[JoinPathStepOut]
+    executed: bool = False
+
+
+class JoinReportOut(OrmModel):
+    joins: list[JoinResolutionOut]
+    paths: list[JoinPathOut]
+    # True when any join is contradicted by the data: the rule is not generated
+    # automatically until a person reviews it.
+    blocking: bool = False
+
+
+class RelationshipRuling(OrmModel):
+    status: Literal["confirmed", "rejected", "detected"]

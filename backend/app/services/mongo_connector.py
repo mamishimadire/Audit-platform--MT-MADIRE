@@ -125,7 +125,25 @@ def _flatten(doc: dict, prefix: str = "") -> dict[str, object]:
     return flat
 
 
-def _discover_collection(name: str, sampled_docs: list[dict]) -> DiscoveredEntity:
+def _index_facts(index_info: dict | None) -> tuple[set[str], set[str]] | None:
+    """(unique single-field paths, indexed leading paths) from pymongo's
+    index_information(). None when indexes could not be read."""
+    if index_info is None:
+        return None
+    unique: set[str] = set()
+    indexed: set[str] = set()
+    for name, info in index_info.items():
+        keys = [k for k, _direction in info.get("key", [])]
+        if not keys:
+            continue
+        indexed.add(keys[0])
+        if (info.get("unique") or name == "_id_") and len(keys) == 1:
+            unique.add(keys[0])
+    return unique, indexed
+
+
+def _discover_collection(name: str, sampled_docs: list[dict], index_info: dict | None = None) -> DiscoveredEntity:
+    index_facts = _index_facts(index_info)
     total = len(sampled_docs)
     presence: dict[str, int] = {}
     types_seen: dict[str, set[str]] = {}
@@ -156,7 +174,17 @@ def _discover_collection(name: str, sampled_docs: list[dict]) -> DiscoveredEntit
             type_text = "mixed: " + "/".join(labels)
         if presence[path] < total:
             type_text += " (optional)"
-        fields.append(DiscoveredField(field_name=path, data_type=type_text, is_primary_key=(path == "_id")))
+        fields.append(
+            DiscoveredField(
+                field_name=path,
+                data_type=type_text,
+                is_primary_key=(path == "_id"),
+                # A field missing from some sampled documents is nullable; otherwise Mongo doesn't say.
+                is_nullable=True if presence[path] < total else None,
+                is_unique=(path in index_facts[0]) if index_facts is not None else None,
+                is_indexed=(path in index_facts[1]) if index_facts is not None else None,
+            )
+        )
 
     description = (
         f"Inferred from {total} sampled document(s) — other documents in this collection may have additional, "
@@ -211,7 +239,11 @@ def discover_mongo_schema(connection: DataConnection) -> list[DiscoveredEntity]:
         entities = []
         for collection_name in database.list_collection_names():
             sampled = list(database[collection_name].aggregate([{"$sample": {"size": SAMPLE_SIZE}}]))
-            entities.append(_discover_collection(collection_name, sampled))
+            try:
+                index_info = database[collection_name].index_information()
+            except Exception:  # noqa: BLE001 — indexes are a bonus; never fail discovery over them
+                index_info = None
+            entities.append(_discover_collection(collection_name, sampled, index_info))
         return entities
     finally:
         client.close()

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import enforce_same_organization, get_current_gateway, get_current_user, require_permissions
 from app.db.session import get_db
-from app.models.data_source import DataConnection, DataConnectionChange, DataEntity, DataSource, Gateway
+from app.models.data_source import DataConnection, DataConnectionChange, DataEntity, DataRelationship, DataSource, Gateway
 from app.models.rbac import User
 from app.schemas.data_source import (
     ConnectionTestResult,
@@ -23,7 +23,9 @@ from app.schemas.data_source import (
     DiscoveryPayload,
     HiddenToggleRequest,
 )
+from app.schemas.data_mapping import RelationshipRuling
 from app.schemas.user import EligibleApproverOut
+from app.services.audit_log_service import log_action
 from app.services.data_connection_change_service import (
     approve_connection_change,
     cancel_connection_change,
@@ -43,6 +45,7 @@ from app.services.data_source_service import (
     list_data_sources,
     list_entities,
     list_entities_for_organization,
+    infer_relationships_in_background,
     list_fields,
     profile_data_source_in_background,
     profile_entity_columns,
@@ -410,6 +413,51 @@ def profile_data_source_route(
         target=profile_data_source_in_background, args=(data_source_id,), daemon=True, name="column-profiling"
     ).start()
     return {"started": True}
+
+
+@router.post("/data-sources/{data_source_id}/relationships/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_relationships_route(
+    data_source_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_permissions("data_sources:manage"))
+) -> dict:
+    """Re-measures how this source's tables relate (declared foreign keys are
+    read at discovery; this measures the undeclared ones on the client's own
+    data). Runs in the background; needs a connected direct connection."""
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    threading.Thread(
+        target=infer_relationships_in_background, args=(data_source_id,), daemon=True, name="relationship-inference"
+    ).start()
+    return {"started": True}
+
+
+@router.patch("/relationships/{relationship_id}")
+def rule_on_relationship_route(
+    relationship_id: uuid.UUID,
+    payload: RelationshipRuling,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("audit_framework:manage")),
+) -> dict:
+    """An auditor confirms or rejects a detected relationship. Neither
+    re-discovery nor re-inference ever overwrites that ruling."""
+    relationship = db.get(DataRelationship, relationship_id)
+    if relationship is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relationship not found")
+    source = _get_source_or_404(db, relationship.data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    old_status = relationship.status
+    relationship.status = payload.status
+    log_action(
+        db,
+        action=f"Set a detected table relationship to '{payload.status}'",
+        organization_id=source.organization_id,
+        user_id=user.user_id,
+        entity_type="data_relationships",
+        entity_id=relationship.relationship_id,
+        old_value={"status": old_status},
+        new_value={"status": payload.status},
+    )
+    db.commit()
+    return {"relationship_id": str(relationship_id), "status": relationship.status}
 
 
 @router.post("/entities/{entity_id}/profile")

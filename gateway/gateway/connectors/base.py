@@ -12,7 +12,16 @@ from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy import column as sql_column, table as sql_table
 from sqlalchemy.engine import Engine
 
+from gateway.schema_metadata import derive_column_constraints, normalize_foreign_keys
+
 _PROFILE_STATEMENT_TIMEOUT_MS = 15_000
+
+
+def _safe(call, table_name: str, **kwargs):
+    try:
+        return call(table_name, **kwargs)
+    except Exception:  # noqa: BLE001 — unsupported by this database or not permitted; discovery carries on without it
+        return None
 
 
 @dataclass
@@ -55,16 +64,35 @@ class SqlAlchemyConnector:
             columns = inspector.get_columns(table_name, schema=schema)
             pk_constraint = inspector.get_pk_constraint(table_name, schema=schema) or {}
             pk_columns = set(pk_constraint.get("constrained_columns") or [])
+            # Catalog facts beyond names/types. Each read is best-effort: a
+            # database that can't report one (or a permission gap) must never
+            # fail discovery; the fact is simply not reported.
+            unique_constraints = _safe(inspector.get_unique_constraints, table_name, schema=schema)
+            indexes = _safe(inspector.get_indexes, table_name, schema=schema)
+            foreign_keys = normalize_foreign_keys(_safe(inspector.get_foreign_keys, table_name, schema=schema))
+            facts = derive_column_constraints(
+                [col["name"] for col in columns],
+                nullable_by_column={col["name"]: col.get("nullable") for col in columns},
+                pk_columns=pk_columns,
+                unique_constraints=unique_constraints,
+                indexes=indexes,
+            )
             fields = [
                 {
                     "field_name": col["name"],
                     "data_type": str(col["type"]),
                     "is_primary_key": col["name"] in pk_columns,
                     "is_sensitive": False,  # sensitivity is an auditor judgement call, not auto-detected
+                    "is_nullable": facts[col["name"]]["is_nullable"],
+                    "is_unique": facts[col["name"]]["is_unique"] if (unique_constraints is not None or pk_columns) else None,
+                    "is_indexed": facts[col["name"]]["is_indexed"] if indexes is not None else None,
                 }
                 for col in columns
             ]
-            entities.append({"entity_name": table_name, "entity_type": "table", "fields": fields})
+            entity = {"entity_name": table_name, "entity_type": "table", "fields": fields}
+            if foreign_keys is not None:
+                entity["foreign_keys"] = foreign_keys
+            entities.append(entity)
         return entities
 
     def fetch_dataframe(self, entity_name: str, columns: list[str]) -> pd.DataFrame:
