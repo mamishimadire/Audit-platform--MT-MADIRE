@@ -2,6 +2,7 @@ import threading
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.api.deps import enforce_same_organization, get_current_gateway, get_current_user, require_permissions
@@ -22,10 +23,13 @@ from app.schemas.data_source import (
     DirectConnectionCreate,
     DiscoveryPayload,
     HiddenToggleRequest,
+    RelationshipMeasurementsIn,
+    RelationshipRequestOut,
 )
 from app.schemas.data_mapping import RelationshipRuling
 from app.schemas.user import EligibleApproverOut
 from app.services.audit_log_service import log_action
+from app.services.gateway_relationship_service import relationship_requests_for_gateway, store_gateway_measurements
 from app.services.data_connection_change_service import (
     approve_connection_change,
     cancel_connection_change,
@@ -424,6 +428,13 @@ def refresh_relationships_route(
     data). Runs in the background; needs a connected direct connection."""
     source = _get_source_or_404(db, data_source_id)
     enforce_same_organization(source.organization_id, user, db)
+    # A Gateway measures for itself: clearing its stamp makes its next poll ask again.
+    db.execute(
+        update(DataConnection)
+        .where(DataConnection.data_source_id == data_source_id, DataConnection.gateway_id.is_not(None))
+        .values(relationships_measured_at=None)
+    )
+    db.commit()
     threading.Thread(
         target=infer_relationships_in_background, args=(data_source_id,), daemon=True, name="relationship-inference"
     ).start()
@@ -509,6 +520,33 @@ def report_test_result(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Gateway credentials do not match this gateway")
     connection = _get_connection_owned_by_gateway(db, connection_id, gateway)
     return record_connection_test_result(db, connection=connection, success=payload.success)
+
+
+@router.get("/gateways/{gateway_id}/relationship-requests", response_model=list[RelationshipRequestOut])
+def get_relationship_requests(
+    gateway_id: uuid.UUID, db: Session = Depends(get_db), gateway: Gateway = Depends(get_current_gateway)
+) -> list[RelationshipRequestOut]:
+    """The column pairs this Gateway should measure on its own database now (see
+    gateway_relationship_service). Pull-based like due tests: the Gateway asks."""
+    if gateway.gateway_id != gateway_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your gateway")
+    return relationship_requests_for_gateway(db, gateway_id=gateway_id)
+
+
+@router.post("/gateways/{gateway_id}/connections/{connection_id}/relationship-measurements")
+def report_relationship_measurements(
+    gateway_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    payload: RelationshipMeasurementsIn,
+    db: Session = Depends(get_db),
+    gateway: Gateway = Depends(get_current_gateway),
+) -> dict:
+    """Counts a Gateway measured (never values). Only pairs the platform asked for
+    are accepted; see store_gateway_measurements."""
+    if gateway.gateway_id != gateway_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your gateway")
+    connection = _get_connection_owned_by_gateway(db, connection_id, gateway)
+    return {"stored": store_gateway_measurements(db, connection=connection, measurements=payload.measurements)}
 
 
 @router.post("/gateways/{gateway_id}/connections/{connection_id}/discovery", response_model=list[DataEntityOut])

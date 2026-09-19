@@ -2,7 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import MetaData, String, Table, cast, create_engine, delete, distinct, func, insert, inspect, select, text, update
+from sqlalchemy import MetaData, String, Table, cast, create_engine, delete, distinct, func, insert, inspect, select, text, tuple_, update
 from sqlalchemy import column as sql_column, table as sql_table
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine, URL
@@ -1105,26 +1105,21 @@ def _columns_for_inference(db: Session, data_source_id: uuid.UUID) -> list[Colum
     ]
 
 
-def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) -> int | None:
-    """Measures the plausible undeclared relationships between this source's
-    tables on the client's own data and stores the ones the data supports (see
-    app/core/relationship_inference.py). Only direct connections can be reached
-    from here; None means it could not be done at all. Re-running replaces the
-    previous inferred edges an auditor hasn't ruled on, and never touches
-    declared foreign keys or anything confirmed or rejected."""
-    connections = _connected_direct_connections(db, data_source_id)
-    if not connections:
-        return None
+def build_inference_candidates(db: Session, data_source_id: uuid.UUID) -> list[Candidate]:
+    """The column pairs worth measuring for one data source: the pairs a control's
+    rule needs joined first (whatever the columns are called), then the
+    name-driven ones, tables a control is bound to before the rest, capped.
+    Database reads only: it needs no connection to the client's data, so the same
+    list serves a direct connection (measured by the platform) and a Gateway
+    (which measures inside the client's network and reports numbers back)."""
     columns = _columns_for_inference(db, data_source_id)
     candidates = generate_candidates(columns)
     driven = _requirement_candidates(db, data_source_id, columns)
     already = {(c.child.field_id, c.parent.field_id) for c in driven}
-    # The control's own pairs first, then the name-driven ones.
     candidates = driven + [c for c in candidates if (c.child.field_id, c.parent.field_id) not in already]
     if not candidates:
-        return 0
+        return []
 
-    # Tables a control is already bound to matter most; measure those pairs first.
     bound = {
         str(entity_id)
         for entity_id in db.scalars(
@@ -1135,30 +1130,25 @@ def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) ->
         if entity_id is not None
     }
     candidates.sort(key=lambda c: (c.requirement_driven, (c.child.entity_id in bound) + (c.parent.entity_id in bound)), reverse=True)
-    candidates = candidates[:_MAX_RELATIONSHIP_CANDIDATES]
+    return candidates[:_MAX_RELATIONSHIP_CANDIDATES]
 
-    # Measuring the client's database can take minutes. End the read transaction
-    # first: a session left idle that long has its connection dropped by the
-    # database (Neon does), and the write below would fail on it.
-    # Detach the connection objects first: touching an expired one after the
-    # commit would silently start a new transaction and hold it open again.
-    for connection in connections:
-        try:
-            db.expunge(connection)
-        except Exception:  # noqa: BLE001 — already detached (or not a session-managed object)
-            pass
-    db.commit()
-    measured: list[tuple[Candidate, Measurement]] = []
-    for connection in connections:
-        try:
-            measured = _measure_all(connection, candidates)
-            break
-        except Exception:  # noqa: BLE001 — try the next connection; the driver's text is not worth leaking
-            logger.info("relationship inference failed on one connection")
-            continue
-    else:
-        return None
 
+def store_inferred_edges(
+    db: Session,
+    data_source_id: uuid.UUID,
+    measured: list[tuple[Candidate, Measurement]],
+    *,
+    scope: set[tuple[str, str]] | None = None,
+) -> int:
+    """Turns measurements into stored `inferred` edges. Only what the data
+    supports is kept: the parent must be a key (declared, measured, or the
+    control itself says so), and the containment worth recording.
+
+    Replaces the previous inferred edges an auditor hasn't ruled on — every one
+    for the source when `scope` is None (a full measurement), or only those for
+    the pairs in `scope` (a Gateway reporting on the pairs it was asked about, so
+    a partial or failed run never erases what an earlier run found). Declared
+    foreign keys and anything confirmed or rejected are never touched. Commits."""
     edges = []
     for candidate, m in measured:
         if not (candidate.requirement_driven or candidate.parent_unique or m.parent_is_key):
@@ -1186,17 +1176,60 @@ def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) ->
                 },
             }
         )
-    db.execute(
-        delete(DataRelationship).where(
-            DataRelationship.data_source_id == data_source_id,
-            DataRelationship.kind == "inferred",
-            DataRelationship.status == "detected",
-        )
+    stale = delete(DataRelationship).where(
+        DataRelationship.data_source_id == data_source_id,
+        DataRelationship.kind == "inferred",
+        DataRelationship.status == "detected",
     )
+    if scope is not None:
+        pairs = [(uuid.UUID(c), uuid.UUID(p)) for c, p in scope]
+        if pairs:
+            stale = stale.where(tuple_(DataRelationship.child_field_id, DataRelationship.parent_field_id).in_(pairs))
+        else:
+            stale = None
+    if stale is not None:
+        db.execute(stale)
     if edges:
         db.execute(pg_insert(DataRelationship).values(edges).on_conflict_do_nothing())
     db.commit()
     return len(edges)
+
+
+def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) -> int | None:
+    """Measures the plausible undeclared relationships between this source's
+    tables on the client's own data and stores the ones the data supports (see
+    app/core/relationship_inference.py). Only direct connections can be reached
+    from here (a Gateway measures for itself, see gateway_relationship_service);
+    None means it could not be done at all."""
+    connections = _connected_direct_connections(db, data_source_id)
+    if not connections:
+        return None
+    candidates = build_inference_candidates(db, data_source_id)
+    if not candidates:
+        return 0
+
+    # Measuring the client's database can take minutes. End the read transaction
+    # first: a session left idle that long has its connection dropped by the
+    # database (Neon does), and the write below would fail on it.
+    # Detach the connection objects first: touching an expired one after the
+    # commit would silently start a new transaction and hold it open again.
+    for connection in connections:
+        try:
+            db.expunge(connection)
+        except Exception:  # noqa: BLE001 — already detached (or not a session-managed object)
+            pass
+    db.commit()
+    measured: list[tuple[Candidate, Measurement]] = []
+    for connection in connections:
+        try:
+            measured = _measure_all(connection, candidates)
+            break
+        except Exception:  # noqa: BLE001 — try the next connection; the driver's text is not worth leaking
+            logger.info("relationship inference failed on one connection")
+            continue
+    else:
+        return None
+    return store_inferred_edges(db, data_source_id, measured)
 
 
 def _measure_all(connection: DataConnection, candidates: list[Candidate]) -> list[tuple[Candidate, Measurement]]:

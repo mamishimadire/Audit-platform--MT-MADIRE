@@ -12,6 +12,7 @@ from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy import column as sql_column, table as sql_table
 from sqlalchemy.engine import Engine
 
+from gateway import relationships
 from gateway.schema_metadata import derive_column_constraints, normalize_foreign_keys
 
 _PROFILE_STATEMENT_TIMEOUT_MS = 15_000
@@ -135,6 +136,26 @@ class SqlAlchemyConnector:
             except Exception:  # noqa: BLE001 — a guard the server refuses must not block profiling
                 conn.rollback()
             return [dict(row._mapping) for row in conn.execute(statement)]
+
+    def measure_relationships(self, pairs: list[dict]) -> list[dict]:
+        """Counts (never values) for each requested column pair, on this database: how many
+        distinct child values there are and how many of them exist on the parent side (see
+        gateway/relationships.py). Same read-only guards as sample_rows."""
+
+        def one(pair: dict) -> dict | None:
+            with self._engine.connect() as conn:
+                try:
+                    dialect = self._engine.dialect.name
+                    if dialect == "postgresql":
+                        conn.execute(text(f"SET LOCAL statement_timeout = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+                        conn.execute(text("SET TRANSACTION READ ONLY"))
+                    elif dialect == "mysql":
+                        conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+                except Exception:  # noqa: BLE001 — a guard the server refuses must not block measuring
+                    conn.rollback()
+                return relationships.measure_sql(conn, pair, self.config.schema)
+
+        return relationships.measure_all(one, pairs)
 
     def close(self) -> None:
         self._engine.dispose()

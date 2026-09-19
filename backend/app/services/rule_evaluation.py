@@ -168,7 +168,27 @@ def evaluate(rule: dict, records: dict[str, list[dict]]) -> RuleResult:
                 if _matches(r, secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
             ]
 
-        matched_keys = {r[secondary_join_field] for r in secondary_candidates if r.get(secondary_join_field) is not None}
+        bridge_object = rule.get("bridge_object")
+        if bridge_object is not None:
+            # Two hops: primary.join_field -> bridge -> secondary. The secondary key
+            # must be stated (it names a column on the secondary, not on primary).
+            secondary_key_field = rule["secondary_join_field"]
+            bridge_join_field = rule["bridge_join_field"]
+            bridge_secondary_field = rule["bridge_secondary_join_field"]
+            secondary_keys = {r[secondary_key_field] for r in secondary_candidates if r.get(secondary_key_field) is not None}
+            bridge_rows = records[bridge_object]
+            bridge_condition = rule.get("bridge_condition")
+            if bridge_condition is not None:
+                bridge_rows = [
+                    r for r in bridge_rows if _matches(r, bridge_condition["field"], bridge_condition["operator"], bridge_condition.get("value"))
+                ]
+            matched_keys = {
+                r[bridge_join_field]
+                for r in bridge_rows
+                if r.get(bridge_join_field) is not None and r.get(bridge_secondary_field) in secondary_keys
+            }
+        else:
+            matched_keys = {r[secondary_join_field] for r in secondary_candidates if r.get(secondary_join_field) is not None}
         hits = [r for r in candidates if r.get(join_field) not in matched_keys]
         return RuleResult(
             len(primary), [{"record_identifier": _record_identifier(r, [join_field]), "exception_data": r} for r in hits]

@@ -68,6 +68,18 @@ what is sent.
 Turn it off with `profiling_enabled: false`, or for one connection with
 `profiling: false`. Tests: `.venv\Scripts\python.exe -m unittest discover -s tests`.
 
+### Relationship measurement (what leaves this machine)
+
+The platform works out how your tables join (which column of one table refers to which
+column of another) so it can check a control's join keys are the right ones. It asks the
+Gateway for a list of column pairs; the Gateway counts, on your own database, how many
+distinct values of one column also exist in the other, and sends back **only those counts**
+(for example "12 distinct values, 12 found"). No value, row or column content is sent.
+The platform accepts a count only for a pair it asked about.
+
+Turn it off with `relationships_enabled: false`, or for one connection with
+`relationships: false`.
+
 ## 3. Run
 
 ```bash

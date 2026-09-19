@@ -141,8 +141,17 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
         join_field = rule_definition["join_field"]
         secondary_field = rule_definition.get("secondary_join_field") or join_field
         source = primary
-        joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
+        bridge = rule_definition.get("bridge_object")
+        if bridge:
+            joins = [
+                f"{primary}.{join_field} = {bridge}.{rule_definition['bridge_join_field']}",
+                f"{bridge}.{rule_definition['bridge_secondary_join_field']} = {secondary}.{secondary_field}",
+            ]
+        else:
+            joins = [f"{primary}.{join_field} = {secondary}.{secondary_field}"]
         filters = [_describe_condition(primary, rule_definition["primary_condition"], parameters)] if rule_definition.get("primary_condition") else []
+        if bridge and rule_definition.get("bridge_condition"):
+            filters.append(_describe_condition(bridge, rule_definition["bridge_condition"], parameters))
         if rule_definition.get("gate_object"):
             gate_obj = rule_definition["gate_object"]
             gate_field = rule_definition["gate_join_field"]
@@ -150,17 +159,18 @@ def build_rule_preview(db: Session, *, audit_test_id: uuid.UUID, rule_definition
             joins.append(f"{primary}.{gate_field} = {gate_obj}.{gate_secondary_field}")
             if rule_definition.get("gate_condition"):
                 filters.append(_describe_condition(gate_obj, rule_definition["gate_condition"], parameters))
+        via = f" (through {bridge})" if bridge else ""
         if rule_definition.get("secondary_condition"):
             filters.append(_describe_condition(secondary, rule_definition["secondary_condition"], parameters))
-            test_condition = f"A {primary} record has no matching {secondary} record where " + _describe_condition(
+            test_condition = f"A {primary} record has no matching {secondary} record{via} where " + _describe_condition(
                 secondary, rule_definition["secondary_condition"], parameters
             )
-            pass_condition = f"Every {primary} record has a matching {secondary} record where " + _describe_condition(
+            pass_condition = f"Every {primary} record has a matching {secondary} record{via} where " + _describe_condition(
                 secondary, rule_definition["secondary_condition"], parameters
             )
         else:
-            test_condition = f"A {primary} record has no matching {secondary} record"
-            pass_condition = f"Every {primary} record has a matching {secondary} record"
+            test_condition = f"A {primary} record has no matching {secondary} record{via}"
+            pass_condition = f"Every {primary} record has a matching {secondary} record{via}"
 
     elif rule_type == "cross_match_condition":
         primary, secondary = rule_definition["primary_object"], rule_definition["secondary_object"]

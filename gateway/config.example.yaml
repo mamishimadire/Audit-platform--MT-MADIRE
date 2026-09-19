@@ -18,6 +18,13 @@ profiling_enabled: true
 profile_interval_hours: 24
 profile_sample_rows: 500
 
+# Relationship measurement: the platform asks which columns of your tables might
+# refer to each other (e.g. api_access.user_id -> users.user_id) and the Gateway counts,
+# on YOUR database, how many distinct values of one column also exist in the other.
+# Only those COUNTS are sent back - never a value, a row or a column's contents. Set
+# false to turn it off entirely, or add `relationships: false` to a single connection.
+relationships_enabled: true
+
 connections:
   - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
     type: postgresql # postgresql | mysql | sql_server | mongodb
@@ -30,6 +37,7 @@ connections:
     # password: "only-if-you-must — password_env is strongly preferred"
     schema: null # optional; defaults to the database's default schema
     # profiling: false # uncomment to keep this connection out of column profiling
+    # relationships: false # uncomment to keep this connection out of relationship measurement
 
   # MongoDB example — self-hosted, on a private network with no public
   # address at all. This is exactly the case a direct connection can never

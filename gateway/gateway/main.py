@@ -82,6 +82,10 @@ def run_once(settings: GatewaySettings, client: PlatformClient) -> None:
         run_profiling(settings, client)
     except Exception:  # noqa: BLE001
         logger.exception("Column profiling failed; will retry later")
+    try:
+        run_relationship_measurements(settings, client)
+    except Exception:  # noqa: BLE001
+        logger.exception("Relationship measurement failed; will retry later")
 
 
 def run_profiling(settings: GatewaySettings, client: PlatformClient) -> None:
@@ -113,6 +117,33 @@ def run_profiling(settings: GatewaySettings, client: PlatformClient) -> None:
         finally:
             connector.close()
             _next_profile_due[entry.connection_id] = time.monotonic() + retry_in
+
+
+def run_relationship_measurements(settings: GatewaySettings, client: PlatformClient) -> None:
+    """Asks the platform which column pairs it wants measured, counts them on this
+    Gateway's own databases and sends back ONLY the counts (see gateway/relationships.py).
+    The platform decides what is due (at most daily per connection), so most polls
+    return nothing. Off entirely with relationships_enabled: false, or per connection
+    with relationships: false."""
+    if not settings.relationships_enabled:
+        return
+    connection_by_id = {c.connection_id: c for c in settings.connections}
+    for request in client.get_relationship_requests():
+        entry = connection_by_id.get(str(request["connection_id"]))
+        if entry is None or not entry.relationships or not request.get("pairs"):
+            continue
+        connector = build_connector(entry.source_type, entry.connector_config)
+        try:
+            success, _detail = connector.test_connection()
+            if not success:
+                continue
+            measurements = connector.measure_relationships(request["pairs"])
+            client.report_relationship_measurements(entry.connection_id, measurements)
+            logger.info("Connection %s: measured %d of %d requested relationships", entry.connection_id, len(measurements), len(request["pairs"]))
+        except Exception:  # noqa: BLE001 — one connection failing never stops the others
+            logger.exception("Measuring relationships on connection %s failed", entry.connection_id)
+        finally:
+            connector.close()
 
 
 def run_due_tests(settings: GatewaySettings, client: PlatformClient, connection_by_id: dict[str, ConnectionEntry]) -> None:

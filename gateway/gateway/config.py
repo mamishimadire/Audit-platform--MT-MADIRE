@@ -14,6 +14,8 @@ class ConnectionEntry:
     connector_config: ConnectorConfig
     # Per-connection opt-out of column profiling (see gateway/profiling.py).
     profiling: bool = True
+    # Per-connection opt-out of relationship measurement (see gateway/relationships.py).
+    relationships: bool = True
 
 
 @dataclass
@@ -26,6 +28,8 @@ class GatewaySettings:
     profiling_enabled: bool = True
     profile_interval_hours: int = 24
     profile_sample_rows: int = 500
+    # Relationship measurement: counts only, never values. Off entirely with false.
+    relationships_enabled: bool = True
 
 
 def _resolve_password(raw: dict) -> str:
@@ -58,6 +62,7 @@ def load_settings(path: Path) -> GatewaySettings:
                     mongodb_srv=bool(entry.get("mongodb_srv", False)),
                 ),
                 profiling=bool(entry.get("profiling", True)),
+                relationships=bool(entry.get("relationships", True)),
             )
         )
     return GatewaySettings(
@@ -67,4 +72,5 @@ def load_settings(path: Path) -> GatewaySettings:
         profiling_enabled=bool(raw.get("profiling_enabled", True)),
         profile_interval_hours=max(1, int(raw.get("profile_interval_hours", 24))),
         profile_sample_rows=max(50, min(int(raw.get("profile_sample_rows", 500)), 5000)),
+        relationships_enabled=bool(raw.get("relationships_enabled", True)),
     )

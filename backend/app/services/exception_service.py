@@ -203,10 +203,11 @@ def _natural_summary(rule_definition: dict | None, exception_data: dict, record_
         primary_obj = _humanize_object(rule_definition["primary_object"])
         secondary_obj = _humanize_object(rule_definition["secondary_object"])
         secondary_condition = rule_definition.get("secondary_condition")
+        via = f" (through {_humanize_object(rule_definition['bridge_object'])})" if rule_definition.get("bridge_object") else ""
         if secondary_condition is not None:
             condition_text = _describe_literal_condition(secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
-            return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record where {condition_text}."
-        return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record at all."
+            return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record{via} where {condition_text}."
+        return f"{primary_obj.capitalize()} {ident} has no matching {secondary_obj} record{via} at all."
 
     if rule_type == "duplicate":
         obj = _humanize_object(rule_definition["object"])

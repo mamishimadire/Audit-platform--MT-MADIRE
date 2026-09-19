@@ -504,6 +504,19 @@ function ConnectionRow({
         </div>
       )}
 
+      {connection.connection_mode === 'gateway' && connection.gateway_id && canManage && !revoked && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            onClick={runRelationships}
+            disabled={relating}
+            title="Asks the Gateway to measure, on the client's own database, how this source's tables relate. Only counts come back, never values. The Gateway does it on its next check-in."
+            className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60"
+          >
+            {relating ? 'Requesting…' : relatingStarted ? 'Requested: the Gateway measures on its next check-in' : 'Detect relationships'}
+          </button>
+        </div>
+      )}
+
       {connection.connection_mode === 'direct' && canManage && !revoked && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button

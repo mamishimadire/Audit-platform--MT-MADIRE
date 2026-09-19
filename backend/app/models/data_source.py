@@ -109,6 +109,9 @@ class DataConnection(Base, TimestampMixin):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL")
     )
+    # When this connection's Gateway last reported measured relationships (see
+    # gateway_relationship_service). NULL = never, and also "measure again".
+    relationships_measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DataConnectionChange(Base):

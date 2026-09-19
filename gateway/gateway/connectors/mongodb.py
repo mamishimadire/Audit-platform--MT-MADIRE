@@ -33,6 +33,7 @@ from bson.decimal128 import Decimal128
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+from gateway import relationships
 from gateway.connectors.base import ConnectorConfig
 
 _CONNECT_TIMEOUT_MS = 8000
@@ -225,6 +226,11 @@ class MongoConnector:
         if "_id" not in paths:
             projection["_id"] = 0
         return [_flatten(doc) for doc in database[entity_name].find({}, projection).limit(limit)]
+
+    def measure_relationships(self, pairs: list[dict]) -> list[dict]:
+        """Counts (never values) for each requested field pair, on this database (see gateway/relationships.py)."""
+        database = self._client_for()[self.config.database]
+        return relationships.measure_all(lambda pair: relationships.measure_mongo(database, pair), pairs)
 
     def close(self) -> None:
         if self._client is not None:

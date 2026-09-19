@@ -103,7 +103,7 @@ for the full re-derivation):
 """
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ParameterReference(BaseModel):
@@ -228,6 +228,38 @@ class MissingMatchRule(BaseModel):
     gate_join_field: str | None = None  # canonical field name on primary_object, joining to gate_object
     gate_secondary_join_field: str | None = None  # field name on gate_object; defaults to gate_join_field
     gate_condition: FieldCondition | None = None
+    # A BRIDGE table between primary and secondary, for evidence that only exists
+    # two hops away: primary.join_field -> bridge.bridge_join_field, then
+    # bridge.bridge_secondary_join_field -> secondary.secondary_join_field.
+    # E.g. API-002: an api_access grant is only authorised if its user appears in
+    # user_roles AND that user is an active user: api_access.user_id ->
+    # user_roles.user_id, user_roles.user_id -> user.user_id (secondary_condition
+    # status == active). A primary row is flagged when NO path through the bridge
+    # reaches a (filtered) secondary row. bridge_condition filters bridge rows
+    # first. All of bridge_object / bridge_join_field / bridge_secondary_join_field
+    # are required together, and secondary_join_field must then be stated (it must
+    # not silently default to join_field, which names a column on primary).
+    bridge_object: str | None = None
+    bridge_join_field: str | None = None  # field name on bridge_object, joined to primary.join_field
+    bridge_secondary_join_field: str | None = None  # field name on bridge_object, joined to secondary_join_field
+    bridge_condition: FieldCondition | None = None
+
+    @model_validator(mode="after")
+    def _all_or_nothing_hops(self) -> "MissingMatchRule":
+        gate = (self.gate_object, self.gate_join_field)
+        if any(v is not None for v in gate) and not all(v is not None for v in gate):
+            raise ValueError("gate_object and gate_join_field must be set together")
+        if self.gate_condition is not None and self.gate_object is None:
+            raise ValueError("gate_condition needs gate_object")
+        bridge = (self.bridge_object, self.bridge_join_field, self.bridge_secondary_join_field)
+        if any(v is not None for v in bridge):
+            if not all(v is not None for v in bridge):
+                raise ValueError("bridge_object, bridge_join_field and bridge_secondary_join_field must be set together")
+            if self.secondary_join_field is None:
+                raise ValueError("secondary_join_field must be set when a bridge is used")
+        elif self.bridge_condition is not None:
+            raise ValueError("bridge_condition needs bridge_object")
+        return self
 
     def _secondary_field(self) -> str:
         return self.secondary_join_field or self.join_field
@@ -241,6 +273,8 @@ class MissingMatchRule(BaseModel):
         objects = {self.primary_object, self.secondary_object}
         if self.gate_object is not None:
             objects.add(self.gate_object)
+        if self.bridge_object is not None:
+            objects.add(self.bridge_object)
         return objects
 
     def required_fields_by_object(self) -> dict[str, set[str]]:
@@ -260,6 +294,11 @@ class MissingMatchRule(BaseModel):
             add(self.gate_object, self._gate_field())
             if self.gate_condition is not None:
                 add(self.gate_object, self.gate_condition.field)
+        if self.bridge_object is not None:
+            add(self.bridge_object, self.bridge_join_field)
+            add(self.bridge_object, self.bridge_secondary_join_field)
+            if self.bridge_condition is not None:
+                add(self.bridge_object, self.bridge_condition.field)
         return fields_by_obj
 
 

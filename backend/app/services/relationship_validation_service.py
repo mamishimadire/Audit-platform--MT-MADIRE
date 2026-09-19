@@ -16,6 +16,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.core.join_requirements import join_requirements_for
 from app.models.audit_test import TestDataMapping
 from app.models.data_source import DataEntity
 from app.schemas.data_mapping import RelationshipCheckOut
@@ -28,27 +29,10 @@ _MIN_HEALTHY_MATCH_RATE = 50.0
 
 
 def required_joins_for(rule_definition: dict) -> list[tuple[str, str, str, str]]:
-    """(primary_object, secondary_object, join_field, secondary_join_field)
-    — only missing_match and cross_match_condition actually join two
-    objects; threshold/duplicate operate on a single object, nothing to
-    validate here. A self-join (e.g. OP-006's "critical AND unresolved"
-    trick — the same object used as both sides to express a compound
-    condition on one table) has nothing meaningful to check either: a set
-    always overlaps itself completely, so that case is excluded rather
-    than reported as a trivial 100%. secondary_join_field defaults to
-    join_field when the two sides share a canonical field name (the
-    common case, and the only shape that existed before that became
-    optional)."""
-    rule_type = rule_definition.get("rule_type")
-    if rule_type not in ("missing_match", "cross_match_condition"):
-        return []
-    primary = rule_definition.get("primary_object")
-    secondary = rule_definition.get("secondary_object")
-    join_field = rule_definition.get("join_field")
-    secondary_join_field = rule_definition.get("secondary_join_field") or join_field
-    if not primary or not secondary or not join_field or primary == secondary:
-        return []
-    return [(primary, secondary, join_field, secondary_join_field)]
+    """(left_object, right_object, left_field, right_field) for every join the
+    rule performs — all primitives, gate and bridge hops included (delegates to
+    app.core.join_requirements, the single definition of "what a rule joins")."""
+    return [(j.left_object, j.right_object, j.left_field, j.right_field) for j in join_requirements_for(rule_definition)]
 
 
 def _mapped_physical_field(mappings: list[TestDataMapping], canonical_field: str) -> TestDataMapping | None:

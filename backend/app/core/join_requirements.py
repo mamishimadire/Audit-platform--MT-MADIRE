@@ -54,12 +54,19 @@ def join_requirements_for(rule_definition: dict) -> list[JoinRequirement]:
     found: list[JoinRequirement | None] = []
 
     if rule_type in ("missing_match", "cross_match_condition"):
-        found.append(
-            _pair(
-                rule_type, d.get("primary_object"), d.get("join_field"),
-                d.get("secondary_object"), d.get("secondary_join_field") or d.get("join_field"),
+        if rule_type == "missing_match" and d.get("bridge_object"):
+            # primary -> bridge, then bridge -> secondary: two relationships to prove.
+            found.append(_pair(rule_type, d.get("primary_object"), d.get("join_field"), d.get("bridge_object"), d.get("bridge_join_field")))
+            found.append(
+                _pair(rule_type, d.get("bridge_object"), d.get("bridge_secondary_join_field"), d.get("secondary_object"), d.get("secondary_join_field"))
             )
-        )
+        else:
+            found.append(
+                _pair(
+                    rule_type, d.get("primary_object"), d.get("join_field"),
+                    d.get("secondary_object"), d.get("secondary_join_field") or d.get("join_field"),
+                )
+            )
         if rule_type == "missing_match" and d.get("gate_object") and d.get("gate_join_field"):
             found.append(
                 _pair(

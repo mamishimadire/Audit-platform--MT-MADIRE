@@ -258,3 +258,38 @@ class DataFieldOut(OrmModel):
     data_type: str | None
     is_primary_key: bool
     is_sensitive: bool
+
+
+class RelationshipPairRequest(OrmModel):
+    """A column pair a Gateway is asked to measure on its own database."""
+
+    child_field_id: uuid.UUID
+    parent_field_id: uuid.UUID
+    child_entity: str
+    child_column: str
+    child_type: str | None = None
+    parent_entity: str
+    parent_column: str
+    parent_type: str | None = None
+
+
+class RelationshipRequestOut(OrmModel):
+    connection_id: uuid.UUID
+    pairs: list[RelationshipPairRequest]
+
+
+class RelationshipMeasurementIn(OrmModel):
+    """Counts only: how many distinct child values there are, how many of them exist
+    on the parent side, and how many distinct values / rows the parent has."""
+
+    child_field_id: uuid.UUID
+    parent_field_id: uuid.UUID
+    child_distinct: int
+    matched_distinct: int
+    parent_distinct: int
+    parent_rows: int | None = None
+    capped: bool = False
+
+
+class RelationshipMeasurementsIn(OrmModel):
+    measurements: list[RelationshipMeasurementIn]

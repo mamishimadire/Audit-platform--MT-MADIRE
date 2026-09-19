@@ -14,7 +14,7 @@ from gateway import deployment_config, logging_setup
 from gateway.client import PlatformClient
 from gateway.identity import DEFAULT_IDENTITY_PATH, GatewayIdentity, save_identity
 
-GATEWAY_VERSION = "0.3.0"  # 0.2.0: column profiling; 0.3.0: declared keys/constraints with discovery
+GATEWAY_VERSION = "0.4.0"  # 0.2.0: column profiling; 0.3.0: declared keys/constraints; 0.4.0: relationship measurement
 
 logging_setup.configure()
 logger = logging.getLogger("gateway.register")

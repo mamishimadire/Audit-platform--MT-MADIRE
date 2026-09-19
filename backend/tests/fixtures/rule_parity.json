@@ -1,0 +1,131 @@
+[
+  {
+    "name": "api002_bridge_active_user_who_holds_a_role",
+    "rule": {
+      "rule_type": "missing_match",
+      "primary_object": "api_access",
+      "join_field": "user_id",
+      "bridge_object": "user_roles",
+      "bridge_join_field": "user_id",
+      "bridge_secondary_join_field": "user_id",
+      "secondary_object": "user",
+      "secondary_join_field": "user_id",
+      "secondary_condition": {"field": "status", "operator": "eq", "value": "active"}
+    },
+    "records": {
+      "api_access": [
+        {"api_id": "A1", "user_id": "U1"},
+        {"api_id": "A2", "user_id": "U2"},
+        {"api_id": "A3", "user_id": "U3"},
+        {"api_id": "A4", "user_id": "U4"},
+        {"api_id": "A5", "user_id": "U5"},
+        {"api_id": "A6", "user_id": null}
+      ],
+      "user_roles": [
+        {"user_id": "U1", "role": "ap_clerk"},
+        {"user_id": "U2", "role": "auditor"},
+        {"user_id": "U2", "role": "viewer"},
+        {"user_id": "U4", "role": "ap_clerk"},
+        {"user_id": "U9", "role": "ap_clerk"},
+        {"user_id": null, "role": "orphan"}
+      ],
+      "user": [
+        {"user_id": "U1", "status": "active"},
+        {"user_id": "U2", "status": "active"},
+        {"user_id": "U3", "status": "active"},
+        {"user_id": "U4", "status": "inactive"}
+      ]
+    },
+    "expected": {"records_analyzed": 6, "flagged": ["A3", "A4", "A5", "A6"]}
+  },
+  {
+    "name": "bridge_condition_ignores_revoked_roles",
+    "rule": {
+      "rule_type": "missing_match",
+      "primary_object": "api_access",
+      "join_field": "user_id",
+      "bridge_object": "user_roles",
+      "bridge_join_field": "user_id",
+      "bridge_secondary_join_field": "role",
+      "bridge_condition": {"field": "revoked", "operator": "eq", "value": false},
+      "secondary_object": "role",
+      "secondary_join_field": "role_name"
+    },
+    "records": {
+      "api_access": [
+        {"api_id": "A1", "user_id": "U1"},
+        {"api_id": "A2", "user_id": "U2"},
+        {"api_id": "A3", "user_id": "U3"}
+      ],
+      "user_roles": [
+        {"user_id": "U1", "role": "ap_clerk", "revoked": false},
+        {"user_id": "U2", "role": "ap_clerk", "revoked": true},
+        {"user_id": "U3", "role": "ghost_role", "revoked": false}
+      ],
+      "role": [
+        {"role_name": "ap_clerk"},
+        {"role_name": "auditor"}
+      ]
+    },
+    "expected": {"records_analyzed": 3, "flagged": ["A2", "A3"]}
+  },
+  {
+    "name": "gate_and_bridge_compose",
+    "rule": {
+      "rule_type": "missing_match",
+      "primary_object": "api_access",
+      "join_field": "user_id",
+      "primary_condition": {"field": "scope", "operator": "eq", "value": "write"},
+      "gate_object": "user",
+      "gate_join_field": "user_id",
+      "gate_condition": {"field": "status", "operator": "eq", "value": "active"},
+      "bridge_object": "user_roles",
+      "bridge_join_field": "user_id",
+      "bridge_secondary_join_field": "role",
+      "secondary_object": "role",
+      "secondary_join_field": "role_name"
+    },
+    "records": {
+      "api_access": [
+        {"api_id": "A1", "user_id": "U1", "scope": "write"},
+        {"api_id": "A2", "user_id": "U2", "scope": "write"},
+        {"api_id": "A3", "user_id": "U3", "scope": "read"},
+        {"api_id": "A4", "user_id": "U4", "scope": "write"}
+      ],
+      "user": [
+        {"user_id": "U1", "status": "active"},
+        {"user_id": "U2", "status": "active"},
+        {"user_id": "U4", "status": "inactive"}
+      ],
+      "user_roles": [
+        {"user_id": "U1", "role": "ap_clerk"}
+      ],
+      "role": [
+        {"role_name": "ap_clerk"}
+      ]
+    },
+    "expected": {"records_analyzed": 4, "flagged": ["A2"]}
+  },
+  {
+    "name": "legacy_missing_match_without_a_bridge_is_unchanged",
+    "rule": {
+      "rule_type": "missing_match",
+      "primary_object": "api_access",
+      "secondary_object": "user",
+      "join_field": "user_id",
+      "secondary_condition": {"field": "status", "operator": "eq", "value": "active"}
+    },
+    "records": {
+      "api_access": [
+        {"api_id": "A1", "user_id": "U1"},
+        {"api_id": "A2", "user_id": "U2"},
+        {"api_id": "A3", "user_id": "U3"}
+      ],
+      "user": [
+        {"user_id": "U1", "status": "active"},
+        {"user_id": "U2", "status": "inactive"}
+      ]
+    },
+    "expected": {"records_analyzed": 3, "flagged": ["A2", "A3"]}
+  }
+]

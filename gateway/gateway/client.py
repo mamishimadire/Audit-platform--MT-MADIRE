@@ -74,3 +74,24 @@ class PlatformClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def get_relationship_requests(self) -> list[dict]:
+        """The column pairs the platform wants measured on this Gateway's databases now."""
+        resp = requests.get(
+            f"{self.base_url}/gateways/{self.identity.gateway_id}/relationship-requests",
+            headers=self._auth_headers(),
+            timeout=self.timeout * 4,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def report_relationship_measurements(self, connection_id: str, measurements: list[dict]) -> dict:
+        """Counts only: no value from the client's database is ever part of this payload."""
+        resp = requests.post(
+            f"{self.base_url}/gateways/{self.identity.gateway_id}/connections/{connection_id}/relationship-measurements",
+            json={"measurements": measurements},
+            headers=self._auth_headers(),
+            timeout=self.timeout * 4,
+        )
+        resp.raise_for_status()
+        return resp.json()

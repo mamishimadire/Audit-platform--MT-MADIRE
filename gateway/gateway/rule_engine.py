@@ -150,7 +150,22 @@ def evaluate(rule: dict, dataframes: dict[str, pd.DataFrame]) -> RuleResult:
                 _apply_condition(secondary, secondary_condition["field"], secondary_condition["operator"], secondary_condition.get("value"))
             ]
 
-        matched_keys = set(secondary_candidates[secondary_join_field].dropna())
+        bridge_object = rule.get("bridge_object")
+        if bridge_object is not None:
+            # Two hops: primary.join_field -> bridge -> secondary. The secondary key
+            # must be stated (it names a column on the secondary, not on primary).
+            secondary_key_field = rule["secondary_join_field"]
+            bridge_join_field = rule["bridge_join_field"]
+            bridge_secondary_field = rule["bridge_secondary_join_field"]
+            secondary_keys = set(secondary_candidates[secondary_key_field].dropna())
+            bridge_df = dataframes[bridge_object]
+            bridge_condition = rule.get("bridge_condition")
+            if bridge_condition is not None:
+                bridge_df = bridge_df[_apply_condition(bridge_df, bridge_condition["field"], bridge_condition["operator"], bridge_condition.get("value"))]
+            reaches_secondary = bridge_df[bridge_df[bridge_secondary_field].isin(secondary_keys)]
+            matched_keys = set(reaches_secondary[bridge_join_field].dropna())
+        else:
+            matched_keys = set(secondary_candidates[secondary_join_field].dropna())
         hits = candidates[~candidates[join_field].isin(matched_keys)]
         return RuleResult(
             records_analyzed=len(primary),
