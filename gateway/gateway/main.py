@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gateway import logging_setup, rule_engine
+from gateway import logging_setup, profiling, rule_engine
 from gateway.client import PlatformClient
 from gateway.config import ConnectionEntry, GatewaySettings, load_settings
 from gateway.connectors import build_connector
@@ -36,6 +36,12 @@ _STATUS_EXCEPTION = "exception"
 _STATUS_MAPPING_REQUIRED = "mapping_required"
 _STATUS_ERROR = "error"
 _STATUS_INSUFFICIENT_DATA = "insufficient_data"
+
+
+# connection_id -> monotonic time its next column profile is due. Kept in
+# memory: a restart simply profiles once more, which is cheap.
+_next_profile_due: dict[str, float] = {}
+_PROFILE_RETRY_SECONDS = 3600
 
 
 def _classify_completed_run(records_analyzed: int | None, exceptions_found: int) -> str:
@@ -69,6 +75,44 @@ def run_once(settings: GatewaySettings, client: PlatformClient) -> None:
 
     client.heartbeat(version=GATEWAY_VERSION)
     logger.info("Heartbeat sent")
+
+    # Last, so a slow first profile can never delay a due audit test or the
+    # heartbeat, and a failure here can never fail the cycle.
+    try:
+        run_profiling(settings, client)
+    except Exception:  # noqa: BLE001
+        logger.exception("Column profiling failed; will retry later")
+
+
+def run_profiling(settings: GatewaySettings, client: PlatformClient) -> None:
+    """Once per profile_interval_hours per connection: sample each table,
+    summarise its columns (see gateway/profiling.py for exactly what is and
+    is never included) and send them along with a fresh discovery. Off
+    entirely with profiling_enabled: false, or per connection with
+    profiling: false."""
+    if not settings.profiling_enabled:
+        return
+    for entry in settings.connections:
+        if not entry.profiling or time.monotonic() < _next_profile_due.get(entry.connection_id, 0.0):
+            continue
+        connector = build_connector(entry.source_type, entry.connector_config)
+        retry_in = settings.profile_interval_hours * 3600
+        try:
+            success, _detail = connector.test_connection()
+            if not success:
+                retry_in = _PROFILE_RETRY_SECONDS
+                continue
+            entities = connector.discover()
+            profiled = profiling.attach_profiles(connector, entities, sample_rows=settings.profile_sample_rows)
+            if profiled:
+                client.report_discovery(entry.connection_id, entities)
+            logger.info("Connection %s: profiled %d of %d tables", entry.connection_id, profiled, len(entities))
+        except Exception:  # noqa: BLE001 — retry sooner than a full interval, but never crash the loop
+            retry_in = _PROFILE_RETRY_SECONDS
+            logger.exception("Profiling connection %s failed", entry.connection_id)
+        finally:
+            connector.close()
+            _next_profile_due[entry.connection_id] = time.monotonic() + retry_in
 
 
 def run_due_tests(settings: GatewaySettings, client: PlatformClient, connection_by_id: dict[str, ConnectionEntry]) -> None:

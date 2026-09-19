@@ -9,7 +9,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
+from sqlalchemy import column as sql_column, table as sql_table
 from sqlalchemy.engine import Engine
+
+_PROFILE_STATEMENT_TIMEOUT_MS = 15_000
 
 
 @dataclass
@@ -76,6 +79,34 @@ class SqlAlchemyConnector:
         table = Table(entity_name, metadata, autoload_with=self._engine, schema=self.config.schema)
         stmt = select(*(table.c[name] for name in columns))
         return pd.read_sql(stmt, self._engine)
+
+    def sample_rows(self, entity_name: str, columns: list[tuple[str, str | None]], limit: int) -> list[dict]:
+        """The first `limit` rows of the named (column, declared type) pairs,
+        for column profiling (see gateway/profiling.py). One query, built
+        from table()/column() constructs so identifiers are still quoted
+        per-dialect but no reflection round trips are spent on it. Read-only
+        by construction (a single SELECT), plus a statement timeout and a
+        read-only transaction where the engine supports them; a guard the
+        server rejects is skipped rather than fatal."""
+        names = [name for name, _ in columns]
+        if not names:
+            return []
+        statement = (
+            select(*(sql_column(name) for name in names))
+            .select_from(sql_table(entity_name, schema=self.config.schema))
+            .limit(limit)
+        )
+        with self._engine.connect() as conn:
+            try:
+                dialect = self._engine.dialect.name
+                if dialect == "postgresql":
+                    conn.execute(text(f"SET LOCAL statement_timeout = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+                    conn.execute(text("SET TRANSACTION READ ONLY"))
+                elif dialect == "mysql":
+                    conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+            except Exception:  # noqa: BLE001 — a guard the server refuses must not block profiling
+                conn.rollback()
+            return [dict(row._mapping) for row in conn.execute(statement)]
 
     def close(self) -> None:
         self._engine.dispose()

@@ -296,3 +296,171 @@ def test_mapping_suggestion_is_demoted_when_the_data_contradicts_the_name(db, ge
     assert all(after[name].confidence_score <= before[name].confidence_score for name in after)
     assert after["username"].confidence_score == before["username"].confidence_score
     assert after["username"].value_fit_score is None
+
+
+# ---- Gateway-reported profiles -------------------------------------------------
+import importlib.util
+from pathlib import Path
+
+from app.core.value_profile import sanitize_reported_profile
+from app.schemas.data_source import DiscoveredEntity, DiscoveredField, DiscoveredFieldProfile, DiscoveryPayload
+
+_GATEWAY_PROFILING = Path(__file__).resolve().parents[2] / "gateway" / "gateway" / "profiling.py"
+
+
+def _load_gateway_profiling():
+    spec = importlib.util.spec_from_file_location("gateway_profiling_under_test", _GATEWAY_PROFILING)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_DRIFT_CASES = [
+    ("status", ["Active", "LOCKED", "active", None, "Active"], False),
+    ("status", ["Comedy", "Drama"] * 15, False),
+    ("status", ["a", "b"], True),
+    ("password_hash", ["x", "y", "x"], False),
+    ("email", ["a@b.com", "c@d.com"], False),
+    ("payment_status", ["paid", "due", "paid"], False),
+    ("last_login", ["2024-01-01", "2024-02-03", None], False),
+    ("user_id", [str(uuid.uuid4()) for _ in range(6)], False),
+    ("amount", [1, 2.5, 3, None, 4], False),
+    ("is_admin", [True, False, True], False),
+    ("code", [f"v{i}" for i in range(25)], False),
+    ("note", ["x" * 41, "y", ""], False),
+    ("mixed", ["a", 1, "b", 2], False),
+    ("empty", [None, None, None], False),
+]
+
+
+def test_gateway_and_platform_profile_builders_never_drift():
+    """The Gateway ships its own copy of the profile builder (it cannot import
+    from the backend). Same inputs must give the same profile, or a change to
+    the privacy policy on one side would silently miss the other."""
+    gateway = _load_gateway_profiling()
+    for name, values, sensitive in _DRIFT_CASES:
+        theirs = gateway.build_column_profile(name, list(values), is_sensitive=sensitive)
+        ours = build_column_profile(name, list(values), is_sensitive=sensitive)
+        assert (
+            theirs["sample_size"], theirs["null_ratio"], theirs["distinct_count"],
+            theirs["distinct_ratio"], theirs["value_kind"], theirs["max_length"],
+        ) == (
+            ours.sample_size, ours.null_ratio, ours.distinct_count,
+            ours.distinct_ratio, ours.value_kind, ours.max_length,
+        ), name
+        assert (tuple(theirs["top_values"]) if theirs["top_values"] is not None else None) == ours.top_values, name
+        DiscoveredFieldProfile(**theirs)  # the Gateway's wire shape must parse as the platform's schema
+    for name in ["password", "first_name", "iban", "payment_status", "shipping_method", "status", "api_token", "dob", "syntax"]:
+        assert gateway.is_pii_named(name) == is_pii_named(name), name
+    assert gateway.MAX_STORED_DISTINCT_VALUES == 20 and gateway.MAX_STORED_VALUE_LENGTH == 40
+
+
+def _reported(**overrides):
+    base = {
+        "sample_size": 10, "null_ratio": 0.1, "distinct_count": 3, "distinct_ratio": 0.33,
+        "value_kind": "text", "top_values": ["Active", "locked"], "max_length": 6,
+    }
+    return {**base, **overrides}
+
+
+def test_platform_screens_reported_values_against_its_own_rules():
+    ok = sanitize_reported_profile("status", False, _reported())
+    assert ok.top_values == ("active", "locked")
+    # A Gateway claiming values for a PII-named column, or one the auditor flagged sensitive here, is overruled.
+    assert sanitize_reported_profile("email", False, _reported()).top_values is None
+    assert sanitize_reported_profile("status", True, _reported()).top_values is None
+    # Too many, too long, or identifier/date-like values are dropped however they were reported.
+    assert sanitize_reported_profile("status", False, _reported(top_values=[f"v{i}" for i in range(25)])).top_values is None
+    assert sanitize_reported_profile("status", False, _reported(top_values=["x" * 41])).top_values is None
+    assert sanitize_reported_profile("status", False, _reported(value_kind="identifier")).top_values is None
+
+
+def test_platform_clamps_and_rejects_malformed_reports():
+    clamped = sanitize_reported_profile(
+        "status", False, _reported(null_ratio=7, distinct_ratio=-1, distinct_count=999, value_kind="bogus")
+    )
+    assert clamped.null_ratio == 1.0 and clamped.distinct_ratio == 0.0 and clamped.distinct_count == 10
+    assert clamped.value_kind is None
+    assert sanitize_reported_profile("status", False, {"sample_size": 0}) is None
+    assert sanitize_reported_profile("status", False, _reported(sample_size="lots")) is None
+    assert sanitize_reported_profile("status", False, _reported(sample_size=10**9)) is None
+
+
+def _payload(entity_name, fields):
+    return DiscoveryPayload(entities=[DiscoveredEntity(entity_name=entity_name, fields=fields)])
+
+
+def _wire(**overrides):
+    return DiscoveredFieldProfile(**_reported(**overrides))
+
+
+def test_gateway_discovery_stores_screened_profiles_and_keeps_them_when_omitted(db, test_org):
+    source = DataSource(
+        organization_id=test_org.organization_id, source_name="gateway profile test", source_type="postgresql", environment="cloud"
+    )
+    db.add(source)
+    db.commit()
+    plain = [
+        DiscoveredField(field_name="status", data_type="TEXT"),
+        DiscoveredField(field_name="email", data_type="TEXT"),
+        DiscoveredField(field_name="username", data_type="TEXT"),
+    ]
+    try:
+        data_source_service.replace_discovery(
+            db,
+            data_source_id=source.data_source_id,
+            payload=_payload(
+                "system_users",
+                [
+                    DiscoveredField(field_name="status", data_type="TEXT", profile=_wire()),
+                    DiscoveredField(field_name="email", data_type="TEXT", profile=_wire()),
+                    DiscoveredField(field_name="username", data_type="TEXT"),
+                ],
+            ),
+        )
+
+        def stored():
+            db.expire_all()
+            rows = (
+                db.query(DataField.field_name, DataFieldProfile)
+                .join(DataFieldProfile, DataFieldProfile.field_id == DataField.field_id)
+                .join(DataEntity, DataEntity.entity_id == DataField.entity_id)
+                .filter(DataEntity.data_source_id == source.data_source_id)
+            )
+            return {name: p for name, p in rows}
+
+        first = stored()
+        assert set(first) == {"status", "email"}  # username sent no profile
+        assert first["status"].top_values == ["active", "locked"]
+        assert first["email"].top_values is None  # PII-named: values stripped on arrival
+
+        # A later discovery from a Gateway that sends no profile (or an older build) must not wipe them.
+        data_source_service.replace_discovery(db, data_source_id=source.data_source_id, payload=_payload("system_users", plain))
+        assert set(stored()) == {"status", "email"}
+
+        # And a refreshed profile replaces the old one.
+        data_source_service.replace_discovery(
+            db,
+            data_source_id=source.data_source_id,
+            payload=_payload("system_users", [DiscoveredField(field_name="status", data_type="TEXT", profile=_wire(top_values=["disabled"]))]),
+        )
+        assert stored()["status"].top_values == ["disabled"]
+    finally:
+        db.delete(db.get(DataSource, source.data_source_id))
+        db.commit()
+
+
+def test_columns_that_were_never_sampled_get_no_profile(db, genre_status_entity, monkeypatch):
+    """A binary column is skipped by the sampler; profiling it as all-empty
+    would be a false statement about the data."""
+    entity = genre_status_entity
+    rows = [{"user_id": "u1", "username": "a", "status": "active"}, {"user_id": "u2", "username": "b", "status": "locked"}]
+    monkeypatch.setattr(data_source_service, "fetch_profile_rows", lambda *a, **k: rows)
+    assert data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=[SimpleNamespace()]) == 3
+    names = {
+        f.field_name
+        for f in db.query(DataField)
+        .join(DataFieldProfile, DataFieldProfile.field_id == DataField.field_id)
+        .filter(DataField.entity_id == entity.entity_id)
+    }
+    assert names == {"user_id", "username", "status"}  # last_login and email were absent from every row

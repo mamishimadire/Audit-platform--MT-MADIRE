@@ -244,12 +244,20 @@ export function RequiredTablesChecklist({
   const [unbindingTable, setUnbindingTable] = useState<string | null>(null)
   const bindingFor = (table: string) => progress?.bindings.find((b) => b.canonical_table_name === table)
 
+  const [unbindError, setUnbindError] = useState<string | null>(null)
+
   const confirmUnbind = async () => {
     if (!unbindingTable) return
     const table = unbindingTable
     setUnbindingTable(null)
-    await apiClient.delete(`/organizations/${organizationId}/controls/${controlId}/table-bindings/${encodeURIComponent(table)}`)
-    onRefreshProgress(controlId)
+    setUnbindError(null)
+    try {
+      await apiClient.delete(`/organizations/${organizationId}/controls/${controlId}/table-bindings/${encodeURIComponent(table)}`)
+      onRefreshProgress(controlId)
+    } catch (err: any) {
+      // e.g. an active control must be deactivated before its bindings can change — say so instead of silently doing nothing.
+      setUnbindError(err?.response?.data?.detail ?? `Could not unbind '${table}'.`)
+    }
   }
 
   if (!progress) return <p className="mt-2 text-xs text-ink-soft">Loading…</p>
@@ -332,6 +340,7 @@ export function RequiredTablesChecklist({
           </div>
         )
       })}
+      {unbindError && <p className="px-3 py-2 text-xs text-red-600">{unbindError}</p>}
       <ConfirmDialog
         open={unbindingTable !== null}
         title="Unbind table"

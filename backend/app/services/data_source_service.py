@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.value_profile import build_column_profile
+from app.core.value_profile import ColumnProfile, build_column_profile, sanitize_reported_profile
 from app.models.control_library import ControlTableBinding
 from app.models.data_source import DataConnection, DataEntity, DataField, DataFieldProfile, DataSource
 from app.schemas.data_source import (
@@ -351,6 +351,7 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
             existing_fields_by_entity.setdefault(field.entity_id, {})[field.field_name] = field
 
     seen_entity_names: set[str] = set()
+    reported_profiles: dict[tuple[str, str], object] = {}
     new_entity_rows = []
     new_field_rows = []
     stale_field_ids: list[uuid.UUID] = []
@@ -380,6 +381,8 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
         seen_field_names = set()
         for f in discovered.fields:
             seen_field_names.add(f.field_name)
+            if f.profile is not None:
+                reported_profiles[(discovered.entity_name, f.field_name)] = f.profile
             existing_field = existing_fields.get(f.field_name)
             if existing_field is not None:
                 existing_field.data_type = f.data_type
@@ -410,6 +413,8 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
         db.execute(insert(DataEntity), new_entity_rows)
     if new_field_rows:
         db.execute(insert(DataField), new_field_rows)
+    if reported_profiles:
+        _store_reported_profiles(db, data_source_id=data_source_id, reported=reported_profiles)
 
     db.commit()
     return list(db.scalars(select(DataEntity).where(DataEntity.entity_id.in_(result_entity_ids))))
@@ -665,6 +670,59 @@ def fetch_profile_rows(
     return _sample_sql_rows(connection, table_name=entity_name, columns=columns, limit=limit)
 
 
+def _store_profiles(db: Session, *, profiles: dict[uuid.UUID, ColumnProfile], stale_field_ids: list[uuid.UUID] | None = None) -> None:
+    """Upserts profiles (and drops stale ones) in the caller's transaction;
+    the caller commits. Shared by platform-side profiling and by a Gateway's
+    reported profiles, so both paths store identically."""
+    if stale_field_ids:
+        db.execute(delete(DataFieldProfile).where(DataFieldProfile.field_id.in_(stale_field_ids)))
+    if not profiles:
+        return
+    now = datetime.now(timezone.utc)
+    stmt = pg_insert(DataFieldProfile).values(
+        [
+            {
+                "field_id": field_id,
+                "sample_size": p.sample_size,
+                "null_ratio": p.null_ratio,
+                "distinct_count": p.distinct_count,
+                "distinct_ratio": p.distinct_ratio,
+                "value_kind": p.value_kind,
+                "top_values": list(p.top_values) if p.top_values is not None else None,
+                "max_length": p.max_length,
+                "profiled_at": now,
+            }
+            for field_id, p in profiles.items()
+        ]
+    )
+    db.execute(
+        stmt.on_conflict_do_update(
+            index_elements=[DataFieldProfile.field_id],
+            set_={column: getattr(stmt.excluded, column) for column in _PROFILE_UPSERT_COLUMNS},
+        )
+    )
+
+
+def _store_reported_profiles(db: Session, *, data_source_id: uuid.UUID, reported: dict[tuple[str, str], object]) -> None:
+    """Screens and stores the column profiles a Gateway sent along with its
+    discovery. Keyed (entity name, field name); a column the Gateway sent no
+    profile for keeps whatever profile it already had."""
+    rows = db.execute(
+        select(DataField.field_id, DataField.field_name, DataField.is_sensitive, DataEntity.entity_name)
+        .join(DataEntity, DataEntity.entity_id == DataField.entity_id)
+        .where(DataEntity.data_source_id == data_source_id, DataEntity.entity_name.in_({k[0] for k in reported}))
+    )
+    profiles: dict[uuid.UUID, ColumnProfile] = {}
+    for field_id, field_name, is_sensitive, entity_name in rows:
+        raw = reported.get((entity_name, field_name))
+        if raw is None:
+            continue
+        profile = sanitize_reported_profile(field_name, bool(is_sensitive), raw.model_dump())
+        if profile is not None:
+            profiles[field_id] = profile
+    _store_profiles(db, profiles=profiles)
+
+
 def _connected_direct_connections(db: Session, data_source_id: uuid.UUID) -> list[DataConnection]:
     return list(
         db.scalars(
@@ -709,39 +767,24 @@ def profile_entity_columns(
         return None
 
     stale_ids = []
-    upserts = []
+    profiles: dict[uuid.UUID, ColumnProfile] = {}
+    # A column that was never actually read (binary, or absent from every
+    # sampled document) must not be profiled as "all empty" — that would be a
+    # false statement about the data, and could wrongly contradict a mapping.
+    sampled_keys = set().union(*(row.keys() for row in rows)) if rows else set()
     for field in fields:
+        if rows and field.field_name not in sampled_keys:
+            continue
         profile = build_column_profile(
             field.field_name, [row.get(field.field_name) for row in rows], is_sensitive=field.is_sensitive
         )
         if profile is None:
             stale_ids.append(field.field_id)  # empty table: an old profile would now be a lie
-            continue
-        upserts.append(
-            {
-                "field_id": field.field_id,
-                "sample_size": profile.sample_size,
-                "null_ratio": profile.null_ratio,
-                "distinct_count": profile.distinct_count,
-                "distinct_ratio": profile.distinct_ratio,
-                "value_kind": profile.value_kind,
-                "top_values": list(profile.top_values) if profile.top_values is not None else None,
-                "max_length": profile.max_length,
-                "profiled_at": datetime.now(timezone.utc),
-            }
-        )
-    if stale_ids:
-        db.execute(delete(DataFieldProfile).where(DataFieldProfile.field_id.in_(stale_ids)))
-    if upserts:
-        stmt = pg_insert(DataFieldProfile).values(upserts)
-        db.execute(
-            stmt.on_conflict_do_update(
-                index_elements=[DataFieldProfile.field_id],
-                set_={column: getattr(stmt.excluded, column) for column in _PROFILE_UPSERT_COLUMNS},
-            )
-        )
+        else:
+            profiles[field.field_id] = profile
+    _store_profiles(db, profiles=profiles, stale_field_ids=stale_ids)
     db.commit()
-    return len(upserts)
+    return len(profiles)
 
 
 def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:

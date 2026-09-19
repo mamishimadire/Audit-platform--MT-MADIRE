@@ -192,6 +192,16 @@ class MongoConnector:
         rows = [_flatten(doc) for doc in cursor]
         return pd.DataFrame(rows, columns=columns)
 
+    def sample_rows(self, entity_name: str, columns: list[tuple[str, str | None]], limit: int) -> list[dict]:
+        """Up to `limit` documents, flattened to the same dotted paths
+        discovery reports, for column profiling (see gateway/profiling.py)."""
+        database = self._client_for()[self.config.database]
+        paths = [name for name, _ in columns]
+        projection = {path: 1 for path in paths}
+        if "_id" not in paths:
+            projection["_id"] = 0
+        return [_flatten(doc) for doc in database[entity_name].find({}, projection).limit(limit)]
+
     def close(self) -> None:
         if self._client is not None:
             self._client.close()

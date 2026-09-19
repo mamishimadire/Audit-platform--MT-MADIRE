@@ -221,6 +221,63 @@ def _value_kind_of(value: object) -> Kind:
     return "text"
 
 
+def may_store_values(field_name: str, is_sensitive: bool, distinct: Iterable[str], value_kind: str | None) -> bool:
+    """The one rule for when a profile may hold real values: only a small,
+    enum-like, non-sensitive, non-PII-named column whose values are short
+    and are not identifiers or timestamps. Used both when the platform
+    builds a profile itself and when it screens one a Gateway reported."""
+    values = list(distinct)
+    return (
+        not is_sensitive
+        and not is_pii_named(field_name)
+        and 0 < len(values) <= MAX_STORED_DISTINCT_VALUES
+        and all(len(v) <= MAX_STORED_VALUE_LENGTH for v in values)
+        and value_kind not in {"identifier", "datetime"}
+    )
+
+
+_REPORTABLE_KINDS = frozenset({"identifier", "datetime", "boolean", "numeric", "text"})
+
+
+def sanitize_reported_profile(field_name: str, is_sensitive: bool, reported: dict) -> ColumnProfile | None:
+    """A Gateway computes its own profile inside the client's network, but
+    the platform never trusts what arrives: numbers are clamped to sane
+    ranges, the kind must be a known one, and `top_values` is dropped unless
+    the same storage rule as build_column_profile allows real values for
+    THIS column, judged against the platform's own is_sensitive flag (an
+    auditor's decision, which a Gateway can't see or override), not the
+    Gateway's word. None when the report is unusable."""
+    try:
+        sample_size = int(reported["sample_size"])
+        distinct_count = int(reported["distinct_count"])
+        null_ratio = float(reported["null_ratio"])
+        distinct_ratio = float(reported["distinct_ratio"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if sample_size < 1 or sample_size > 1_000_000:
+        return None
+    kind = reported.get("value_kind")
+    value_kind = kind if kind in _REPORTABLE_KINDS else None
+
+    top_values: tuple[str, ...] | None = None
+    raw_values = reported.get("top_values")
+    if isinstance(raw_values, list):
+        cleaned = sorted({str(v).strip().lower() for v in raw_values if v is not None and str(v).strip() != ""})
+        if may_store_values(field_name, is_sensitive, cleaned, value_kind):
+            top_values = tuple(cleaned)
+
+    max_length = reported.get("max_length")
+    return ColumnProfile(
+        sample_size=sample_size,
+        null_ratio=round(min(max(null_ratio, 0.0), 1.0), 4),
+        distinct_count=min(max(distinct_count, 0), sample_size),
+        distinct_ratio=round(min(max(distinct_ratio, 0.0), 1.0), 4),
+        value_kind=value_kind,  # type: ignore[arg-type]
+        top_values=top_values,
+        max_length=int(max_length) if isinstance(max_length, (int, float)) and max_length >= 0 else None,
+    )
+
+
 def build_column_profile(
     field_name: str, values: Sequence[object], *, is_sensitive: bool = False
 ) -> ColumnProfile | None:
@@ -249,13 +306,7 @@ def build_column_profile(
             value_kind = top_kind  # type: ignore[assignment]
 
     top_values: tuple[str, ...] | None = None
-    if (
-        not is_sensitive
-        and not is_pii_named(field_name)
-        and 0 < len(distinct) <= MAX_STORED_DISTINCT_VALUES
-        and all(len(t) <= MAX_STORED_VALUE_LENGTH for t in distinct)
-        and value_kind not in {"identifier", "datetime"}
-    ):
+    if may_store_values(field_name, is_sensitive, distinct, value_kind):
         top_values = tuple(sorted(distinct))
 
     return ColumnProfile(

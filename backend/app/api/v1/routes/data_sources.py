@@ -425,7 +425,7 @@ def profile_entity_route(
     if profiled is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not read this table. Profiling needs a connected direct (non-Gateway) connection.",
+            detail="Could not read this table from the platform. This needs a connected direct connection; a Gateway profiles its own tables and sends the result with its discovery.",
         )
     return {"profiled": profiled}
 

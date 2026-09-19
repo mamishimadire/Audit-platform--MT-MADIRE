@@ -190,11 +190,28 @@ class ConnectionTestResult(OrmModel):
     detail: str | None = None
 
 
+class DiscoveredFieldProfile(OrmModel):
+    """A Gateway-computed column profile (see app.core.value_profile). Shape
+    only: the platform re-screens it (sanitize_reported_profile) before
+    storing anything, and never trusts `top_values` on its own say-so."""
+
+    sample_size: int
+    null_ratio: float
+    distinct_count: int
+    distinct_ratio: float
+    value_kind: str | None = None
+    top_values: list[str] | None = None
+    max_length: int | None = None
+
+
 class DiscoveredField(OrmModel):
     field_name: str
     data_type: str | None = None
     is_primary_key: bool = False
     is_sensitive: bool = False
+    # Optional: a Gateway that predates column profiling (or has it turned
+    # off) simply doesn't send one, and any existing profile is kept.
+    profile: DiscoveredFieldProfile | None = None
 
 
 class DiscoveredEntity(OrmModel):

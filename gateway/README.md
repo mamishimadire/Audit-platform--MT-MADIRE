@@ -50,6 +50,24 @@ Edit `config.yaml`: set `platform_url`, and for each connection paste the
 source there and attach this gateway. Prefer `password_env` over a
 plaintext `password` in the file.
 
+### Column profiling (what leaves this machine)
+
+Once a day (`profile_interval_hours`) the gateway samples up to
+`profile_sample_rows` rows from each table and sends the platform a small
+**summary** of each column: how many were empty, how many distinct values, and
+whether it holds dates, numbers or text. This lets the platform check a column
+holds the right *kind* of data, not just the right name.
+
+Real values are sent **only** for small, non-sensitive, enum-like columns such
+as a `status` (at most 20 distinct values, each at most 40 characters). They are
+never sent for a column named like a password, email, phone, address, salary,
+bank/card detail or similar, and never for identifiers, dates or free text. The
+platform screens every summary again on arrival and can only store less than
+what is sent.
+
+Turn it off with `profiling_enabled: false`, or for one connection with
+`profiling: false`. Tests: `.venv\Scripts\python.exe -m unittest discover -s tests`.
+
 ## 3. Run
 
 ```bash
