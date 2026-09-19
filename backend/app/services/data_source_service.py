@@ -1,12 +1,17 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import MetaData, Table, create_engine, delete, distinct, insert, inspect, select, update
+from sqlalchemy import MetaData, Table, create_engine, delete, distinct, insert, inspect, select, text, update
+from sqlalchemy import column as sql_column, table as sql_table
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.models.data_source import DataConnection, DataEntity, DataField, DataSource
+from app.core.value_profile import build_column_profile
+from app.models.control_library import ControlTableBinding
+from app.models.data_source import DataConnection, DataEntity, DataField, DataFieldProfile, DataSource
 from app.schemas.data_source import (
     DataConnectionCreate,
     DataSourceCreate,
@@ -16,6 +21,8 @@ from app.schemas.data_source import (
     DiscoveryPayload,
 )
 from app.services.audit_log_service import log_action
+
+logger = logging.getLogger(__name__)
 
 # Short, fixed connect timeout regardless of DB type — a direct connection
 # targets a host/port the caller supplies, so a slow or unreachable target
@@ -596,6 +603,174 @@ def fetch_direct_records(connection: DataConnection, *, entity_name: str, field_
 
         return fetch_mongo_records(connection, collection_name=entity_name, field_paths=field_names, limit=limit)
     return _fetch_sql_records(connection, table_name=entity_name, column_names=field_names, limit=limit)
+
+
+# ---- column value profiling (see app/core/value_profile.py) ----------------
+_PROFILE_SAMPLE_ROWS = 500
+_PROFILE_STATEMENT_TIMEOUT_MS = 15_000
+# A data source can have hundreds of tables; profiling is background work and
+# the tables that matter (the ones a control needs) are a small fraction.
+_MAX_PROFILED_ENTITIES_PER_SOURCE = 400
+_PROFILE_UPSERT_COLUMNS = (
+    "sample_size", "null_ratio", "distinct_count", "distinct_ratio", "value_kind", "top_values", "max_length", "profiled_at",
+)
+
+
+_BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw")
+
+
+def _sample_sql_rows(
+    connection: DataConnection, *, table_name: str, columns: list[tuple[str, str | None]], limit: int
+) -> list[dict]:
+    """The first `limit` rows of the named (column, declared type) pairs — one
+    query per table. Built from lightweight table()/column() constructs, so
+    SQLAlchemy still quotes every identifier per dialect (names come from our
+    own discovery metadata, never end-user input) but nothing is reflected:
+    reflection is a dozen catalog round trips per table, which is what made
+    profiling a remote database crawl. Best-effort guards this path adds
+    because it reads tables nobody asked us to test yet: a statement timeout
+    and a read-only transaction where the engine supports them, and no binary
+    columns (never worth pulling over the wire). A guard a particular server
+    rejects (e.g. a pooler that forbids SET) is skipped, not fatal."""
+    wanted = [
+        name for name, data_type in columns if not any(marker in (data_type or "").lower() for marker in _BINARY_TYPE_MARKERS)
+    ]
+    if not wanted:
+        return []
+    statement = select(*[sql_column(name) for name in wanted]).select_from(sql_table(table_name)).limit(limit)
+    engine = _build_direct_engine(connection)
+    try:
+        with engine.connect() as conn:
+            try:
+                if connection.db_type == "postgresql":
+                    conn.execute(text(f"SET LOCAL statement_timeout = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+                    conn.execute(text("SET TRANSACTION READ ONLY"))
+                elif connection.db_type == "mysql":
+                    conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+            except Exception:  # noqa: BLE001 — a guard the server refuses must not block profiling
+                conn.rollback()
+            return [dict(row._mapping) for row in conn.execute(statement)]
+    finally:
+        engine.dispose()
+
+
+def fetch_profile_rows(
+    connection: DataConnection, *, entity_name: str, columns: list[tuple[str, str | None]], limit: int
+) -> list[dict]:
+    """Sampled rows for profiling, from whichever engine the connection is."""
+    if connection.db_type == "mongodb":
+        from app.services.mongo_connector import fetch_records as fetch_mongo_records
+
+        return fetch_mongo_records(connection, collection_name=entity_name, field_paths=[name for name, _ in columns], limit=limit)
+    return _sample_sql_rows(connection, table_name=entity_name, columns=columns, limit=limit)
+
+
+def _connected_direct_connections(db: Session, data_source_id: uuid.UUID) -> list[DataConnection]:
+    return list(
+        db.scalars(
+            select(DataConnection).where(
+                DataConnection.data_source_id == data_source_id,
+                DataConnection.connection_mode == "direct",
+                DataConnection.connection_status == "connected",
+            )
+        )
+    )
+
+
+def profile_entity_columns(
+    db: Session, *, entity_id: uuid.UUID, connections: list[DataConnection] | None = None, sample_rows: int = _PROFILE_SAMPLE_ROWS
+) -> int | None:
+    """Samples one table over a direct connection and stores a profile per
+    column (what it holds, never more than the privacy policy in
+    build_column_profile allows). Returns how many columns were profiled, or
+    None when it could not be done at all (no connected direct connection, or
+    the read failed) — never an exception carrying driver text, which can
+    echo the DSN. Gateway-only sources are not reachable from here."""
+    entity = db.get(DataEntity, entity_id)
+    if entity is None:
+        return None
+    fields = list(db.scalars(select(DataField).where(DataField.entity_id == entity_id)))
+    if not fields:
+        return 0
+    if connections is None:
+        connections = _connected_direct_connections(db, entity.data_source_id)
+
+    rows: list[dict] | None = None
+    for connection in connections:
+        try:
+            rows = fetch_profile_rows(
+                connection, entity_name=entity.entity_name, columns=[(f.field_name, f.data_type) for f in fields], limit=sample_rows
+            )
+            break
+        except Exception:  # noqa: BLE001 — try the next connection; the driver's text is not worth leaking
+            logger.info("profiling %s failed on one connection", entity.entity_name)
+            continue
+    if rows is None:
+        return None
+
+    stale_ids = []
+    upserts = []
+    for field in fields:
+        profile = build_column_profile(
+            field.field_name, [row.get(field.field_name) for row in rows], is_sensitive=field.is_sensitive
+        )
+        if profile is None:
+            stale_ids.append(field.field_id)  # empty table: an old profile would now be a lie
+            continue
+        upserts.append(
+            {
+                "field_id": field.field_id,
+                "sample_size": profile.sample_size,
+                "null_ratio": profile.null_ratio,
+                "distinct_count": profile.distinct_count,
+                "distinct_ratio": profile.distinct_ratio,
+                "value_kind": profile.value_kind,
+                "top_values": list(profile.top_values) if profile.top_values is not None else None,
+                "max_length": profile.max_length,
+                "profiled_at": datetime.now(timezone.utc),
+            }
+        )
+    if stale_ids:
+        db.execute(delete(DataFieldProfile).where(DataFieldProfile.field_id.in_(stale_ids)))
+    if upserts:
+        stmt = pg_insert(DataFieldProfile).values(upserts)
+        db.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[DataFieldProfile.field_id],
+                set_={column: getattr(stmt.excluded, column) for column in _PROFILE_UPSERT_COLUMNS},
+            )
+        )
+    db.commit()
+    return len(upserts)
+
+
+def profile_data_source_in_background(data_source_id: uuid.UUID) -> None:
+    """Profiles every table of a data source, one at a time, in its own
+    database session — meant for a daemon thread started after discovery (or
+    on demand), so a large source never holds up a request. One table's
+    failure never stops the rest."""
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        connections = _connected_direct_connections(db, data_source_id)
+        if not connections:
+            return
+        entity_ids = list(db.scalars(select(DataEntity.entity_id).where(DataEntity.data_source_id == data_source_id)))
+        # Tables a control is already bound to are the ones whose fit is being
+        # judged right now — profile those first, then the rest up to the cap.
+        bound = set(
+            db.scalars(select(ControlTableBinding.entity_id).where(ControlTableBinding.entity_id.in_(entity_ids)))
+        ) if entity_ids else set()
+        entity_ids = sorted(entity_ids, key=lambda entity_id: entity_id not in bound)[:_MAX_PROFILED_ENTITIES_PER_SOURCE]
+        for entity_id in entity_ids:
+            try:
+                profile_entity_columns(db, entity_id=entity_id, connections=connections)
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                logger.exception("profiling entity %s failed", entity_id)
+    finally:
+        db.close()
 
 
 def list_entities_for_organization(db: Session, *, organization_id: uuid.UUID) -> list[DataEntity]:

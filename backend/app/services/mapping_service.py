@@ -9,8 +9,13 @@ from app.core.canonical_model import (
     LOW_CONTENT_FIT_THRESHOLD,
     infer_object_for_entity,
     mapping_status_for_confidence,
-    score_table_content_fit,
     suggest_canonical_field,
+)
+from app.core.value_profile import (
+    LOW_VALUE_FIT_THRESHOLD,
+    VALUE_CONTRADICTION_CONFIDENCE_CAP,
+    score_table_fit,
+    score_value_fit,
 )
 from app.models.audit_test import ControlAuditTest, TestDataMapping, TestRule
 from app.models.control_library import ControlRuleTemplate
@@ -25,6 +30,7 @@ from app.schemas.data_mapping import (
 )
 from app.schemas.test_rule import required_fields_by_object_for
 from app.services.audit_log_service import log_action
+from app.services.column_info_service import columns_for_entities
 
 
 def _flag_rules_needing_review(db: Session, *, audit_test_id: uuid.UUID, changed_canonical_field: str) -> None:
@@ -50,22 +56,34 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
     preferred_object = infer_object_for_entity(entity.entity_name) if entity else None
 
     fields = list(db.scalars(select(DataField).where(DataField.entity_id == entity_id)))
+    columns = columns_for_entities(db, [entity_id]).get(entity_id, [])
+    info_by_name = {c.name: c for c in columns}
     # The table's NAME is what suggested preferred_object, and that hint
     # boosts every column into it. If the table's own columns barely resemble
-    # that object (an unrelated table that shares a common name), don't let
-    # the name vouch for it — fall back to the unconstrained, already-capped
-    # search instead of confidently boosting into the wrong object.
-    if preferred_object is not None and entity is not None and fields:
-        fit = score_table_content_fit(
-            [f.field_name for f in fields], entity.entity_name, {f.field_name for f in fields if f.is_primary_key}
-        )
-        if fit is not None and fit < LOW_CONTENT_FIT_THRESHOLD:
+    # that object (an unrelated table that shares a common name) — by their
+    # names, or by what they actually hold — don't let the name vouch for it:
+    # fall back to the unconstrained, already-capped search instead of
+    # confidently boosting into the wrong object.
+    if preferred_object is not None and entity is not None and columns:
+        fit = score_table_fit(columns, entity.entity_name)
+        if fit is not None and fit.effective is not None and fit.effective < LOW_CONTENT_FIT_THRESHOLD:
             preferred_object = None
     suggestions = []
     for field in fields:
         canonical_field, confidence = suggest_canonical_field(
             field.field_name, is_primary_key=field.is_primary_key, preferred_object=preferred_object
         )
+        value_fit: float | None = None
+        value_reason: str | None = None
+        info = info_by_name.get(field.field_name)
+        if canonical_field and info is not None:
+            value_fit, value_reason = score_value_fit(canonical_field, data_type=info.data_type, profile=info.profile)
+            # A name can't tell that a column holds the wrong KIND of data
+            # (genre text under "status", free text under "last_login").
+            # Demote so it can't auto-accept and a person confirms it; never
+            # raise a score on a good value fit — names stay primary.
+            if value_fit is not None and value_fit < LOW_VALUE_FIT_THRESHOLD:
+                confidence = min(confidence, VALUE_CONTRADICTION_CONFIDENCE_CAP)
         suggestions.append(
             MappingSuggestion(
                 field_id=field.field_id,
@@ -73,6 +91,8 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
                 data_type=field.data_type,
                 suggested_canonical_field=canonical_field,
                 confidence_score=confidence,
+                value_fit_score=value_fit,
+                value_fit_reason=value_reason if value_fit is not None and value_fit < LOW_VALUE_FIT_THRESHOLD else None,
             )
         )
     return suggestions

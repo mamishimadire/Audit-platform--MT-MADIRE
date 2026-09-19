@@ -11,6 +11,11 @@ class MappingSuggestion(OrmModel):
     data_type: str | None
     suggested_canonical_field: str
     confidence_score: float
+    # What the column actually holds vs what the canonical field needs — see
+    # app.core.value_profile. Only set when it is a contradiction (the
+    # suggestion was demoted for it); None means no objection, not "verified".
+    value_fit_score: float | None = None
+    value_fit_reason: str | None = None
 
 
 class TestDataMappingCreate(OrmModel):

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.core.canonical_model import LOW_CONTENT_FIT_THRESHOLD, score_table_content_fit, suggest_canonical_field
 from app.core.control_library_data import CONTROL_LIBRARY
+from app.core.value_profile import ColumnInfo
 from app.services import control_binding_service
 
 REAL_USERS_COLUMNS = [
@@ -38,10 +39,10 @@ def test_same_named_decoy_is_ranked_below_the_real_table(monkeypatch):
     decoy = SimpleNamespace(entity_id=uuid.uuid4(), entity_name="system_users", data_source_id=uuid.uuid4())
     monkeypatch.setattr(
         control_binding_service,
-        "_field_names_by_entity",
+        "columns_for_entities",
         lambda db, ids: {
-            real.entity_id: [(n, n == "user_id") for n in ("user_id", "username", "status", "last_login", "employee_id", "roles")],
-            decoy.entity_id: [("_id", True), ("title", False), ("plot", False), ("year", False)],
+            real.entity_id: [ColumnInfo(n, is_primary_key=n == "user_id") for n in ("user_id", "username", "status", "last_login", "employee_id", "roles")],
+            decoy.entity_id: [ColumnInfo("_id", is_primary_key=True), *(ColumnInfo(n) for n in ("title", "plot", "year"))],
         },
     )
     control_binding_service._content_fit.cache_clear()

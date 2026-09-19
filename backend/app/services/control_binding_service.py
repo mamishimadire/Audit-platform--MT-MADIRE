@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 from app.core.canonical_model import (
     LOW_CONTENT_FIT_THRESHOLD,
     TABLE_SUGGESTION_MIN_SCORE,
-    score_table_content_fit,
     score_table_name_match,
 )
+from app.core.value_profile import ColumnInfo, score_table_fit
 from app.models.control_library import ControlLibraryEntry, ControlTableBinding
-from app.models.data_source import DataEntity, DataField, DataSource
+from app.models.data_source import DataEntity, DataSource
 from app.models.risk_control import Control
 from app.schemas.control_binding import (
     ControlTableBindingCreate,
@@ -25,6 +25,7 @@ from app.schemas.control_binding import (
     TableBindingSuggestionOut,
 )
 from app.services.audit_log_service import log_action
+from app.services.column_info_service import columns_for_entities
 
 # Enough to give an auditor a real choice without drowning a 130-collection
 # data source's worth of near-misses under one required table.
@@ -33,31 +34,20 @@ _CONTENT_FIT_SHORTLIST = 6
 
 
 @lru_cache(maxsize=4096)
-def _content_fit(fields: tuple[tuple[str, bool], ...], required_table_name: str) -> float | None:
-    """Cached: a table's columns and the required name it's judged against
-    rarely change, and the same pair is re-scored on every Controls page
-    load otherwise. `fields` is sorted (name, is_primary_key) pairs."""
-    return score_table_content_fit(
-        [name for name, _ in fields], required_table_name, frozenset(name for name, is_pk in fields if is_pk)
-    )
+def _content_fit(columns: tuple[ColumnInfo, ...], required_table_name: str) -> float | None:
+    """Cached: a table's columns (and profiles) and the required name it is
+    judged against rarely change, and the same pair is re-scored on every
+    Controls page load otherwise. ColumnInfo is immutable and carries its
+    profile, so a fresh profile is simply a different key. `columns` is
+    sorted by name. Combines the structural (names) and value (types/samples)
+    signals — see value_profile.TableFit."""
+    fit = score_table_fit(columns, required_table_name)
+    return fit.effective if fit is not None else None
 
 
-def _table_content_fit(fields: list[tuple[str, bool]] | None, required_table_name: str) -> float | None:
+def _table_content_fit(columns: list[ColumnInfo] | None, required_table_name: str) -> float | None:
     # No discovered columns at all means nothing to judge, not a bad fit.
-    return _content_fit(tuple(sorted(fields)), required_table_name) if fields else None
-
-
-def _field_names_by_entity(db: Session, entity_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[tuple[str, bool]]]:
-    """One query for every candidate's already-discovered (column name,
-    is_primary_key) pairs — no live call to the client's database."""
-    if not entity_ids:
-        return {}
-    by_entity: dict[uuid.UUID, list[tuple[str, bool]]] = {}
-    for entity_id, field_name, is_pk in db.execute(
-        select(DataField.entity_id, DataField.field_name, DataField.is_primary_key).where(DataField.entity_id.in_(entity_ids))
-    ):
-        by_entity.setdefault(entity_id, []).append((field_name, bool(is_pk)))
-    return by_entity
+    return _content_fit(tuple(sorted(columns, key=lambda c: c.name)), required_table_name) if columns else None
 
 
 def _org_entity_rows(db: Session, *, organization_id: uuid.UUID):
@@ -85,7 +75,7 @@ def _suggest_bindings(
     organization_id: uuid.UUID,
     unbound_tables: list[str],
     rows=None,
-    fields_by_entity: dict[uuid.UUID, list[tuple[str, bool]]] | None = None,
+    fields_by_entity: dict[uuid.UUID, list[ColumnInfo]] | None = None,
 ) -> dict[str, list[TableBindingSuggestionOut]]:
     """For each still-unmapped required table, rank every discovered table
     across the organization's data sources by name similarity — so the
@@ -120,7 +110,7 @@ def _suggest_bindings(
         shortlist_fields = (
             fields_by_entity
             if fields_by_entity is not None
-            else _field_names_by_entity(db, [entity.entity_id for _, entity, _ in shortlist])
+            else columns_for_entities(db, [entity.entity_id for _, entity, _ in shortlist])
         )
 
         ranked = []
@@ -182,7 +172,7 @@ def get_binding_progress(db: Session, *, control: Control) -> TableBindingProgre
     bindings = list_bindings(db, control_id=control.control_id)
     by_table = {b.canonical_table_name: b for b in bindings}
 
-    bound_fields = _field_names_by_entity(db, [b.entity_id for b in bindings if b.entity_id])
+    bound_fields = columns_for_entities(db, [b.entity_id for b in bindings if b.entity_id])
     out_bindings = []
     for b in bindings:
         entity = db.get(DataEntity, b.entity_id) if b.entity_id else None
@@ -260,7 +250,7 @@ def get_binding_progress_for_controls(
     org_rows = _org_entity_rows(db, organization_id=controls[0].organization_id) if controls else []
     # Same idea for the columns content-fit scoring needs: one query for the
     # whole organization, not one per unbound table per control.
-    org_fields = _field_names_by_entity(db, [entity.entity_id for entity, _ in org_rows])
+    org_fields = columns_for_entities(db, [entity.entity_id for entity, _ in org_rows])
 
     result: dict[uuid.UUID, TableBindingProgressOut] = {}
     for control in controls:

@@ -204,7 +204,14 @@ export function ColumnMappingGrid({
     const noConfidentMatch = !existing && !s.suggested_canonical_field
     return (
       <tr key={s.field_id} className="border-t border-line">
-        <td className="px-3 py-1.5 font-mono text-xs">{s.field_name}</td>
+        <td className="px-3 py-1.5 font-mono text-xs">
+          {s.field_name}
+          {!existing && s.value_fit_reason && (
+            <div className="mt-0.5 font-sans text-[11px] text-amber-600" title="Checked against the column's declared type and a small sample of its values">
+              ⚠ {s.value_fit_reason}
+            </div>
+          )}
+        </td>
         <td className="px-3 py-1.5 font-mono text-xs text-accent-ink">
           {noConfidentMatch ? <span className="italic text-ink-soft">no confident match</span> : existing?.canonical_field ?? s.suggested_canonical_field}
         </td>

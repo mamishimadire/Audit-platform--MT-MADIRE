@@ -226,6 +226,8 @@ function ConnectionRow({
   const { user } = useAuth()
   const [testing, setTesting] = useState(false)
   const [discovering, setDiscovering] = useState(false)
+  const [profiling, setProfiling] = useState(false)
+  const [profileStarted, setProfileStarted] = useState(false)
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [changes, setChanges] = useState<DataConnectionChangeOut[]>([])
@@ -284,6 +286,21 @@ function ConnectionRow({
       setActionError(err?.response?.data?.detail ?? 'Could not read the schema from this database.')
     } finally {
       setDiscovering(false)
+    }
+  }
+
+  // Discovery already starts this in the background; this is for a schema
+  // discovered before the platform read column contents, or a refresh later.
+  const runProfile = async () => {
+    setProfiling(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/data-sources/${connection.data_source_id}/profile`)
+      setProfileStarted(true)
+    } catch (err: any) {
+      setActionError(err?.response?.data?.detail ?? 'Could not start reading column contents.')
+    } finally {
+      setProfiling(false)
     }
   }
 
@@ -485,6 +502,14 @@ function ConnectionRow({
             className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60"
           >
             {discovering ? 'Reading schema…' : 'Discover schema'}
+          </button>
+          <button
+            onClick={runProfile}
+            disabled={profiling}
+            title="Reads a small sample of each table (never sensitive values are kept) so mapping can check a column holds the right kind of data, not just the right name"
+            className="rounded-md border border-line px-2 py-1 text-xs font-medium text-ink hover:bg-bg disabled:opacity-60"
+          >
+            {profiling ? 'Starting…' : profileStarted ? 'Reading column data in the background…' : 'Profile column data'}
           </button>
           {!pending && (
             <>

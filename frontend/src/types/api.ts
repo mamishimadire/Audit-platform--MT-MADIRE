@@ -732,6 +732,10 @@ export interface MappingSuggestion {
   data_type: string | null
   suggested_canonical_field: string
   confidence_score: number
+  // Set only when what the column holds contradicts the canonical field
+  // (the suggestion was capped so it can't auto-accept).
+  value_fit_score?: number | null
+  value_fit_reason?: string | null
 }
 
 export interface TestDataMappingOut {

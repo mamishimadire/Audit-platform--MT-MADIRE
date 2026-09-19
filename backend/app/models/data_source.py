@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -208,3 +208,23 @@ class DataField(Base):
     is_primary_key: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default="now()", nullable=False)
+
+
+class DataFieldProfile(Base):
+    """A sample-based summary of what one discovered column holds — see
+    app/core/value_profile.py for what's stored and the privacy policy that
+    decides whether `top_values` may hold real values."""
+
+    __tablename__ = "data_field_profiles"
+
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_fields.field_id", ondelete="CASCADE"), primary_key=True
+    )
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    null_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    distinct_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    distinct_ratio: Mapped[float] = mapped_column(Float, nullable=False)
+    value_kind: Mapped[str | None] = mapped_column(String(20))
+    top_values: Mapped[list | None] = mapped_column(JSONB)
+    max_length: Mapped[int | None] = mapped_column(Integer)
+    profiled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

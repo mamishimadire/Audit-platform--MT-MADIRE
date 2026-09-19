@@ -1,3 +1,4 @@
+import threading
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -43,6 +44,8 @@ from app.services.data_source_service import (
     list_entities,
     list_entities_for_organization,
     list_fields,
+    profile_data_source_in_background,
+    profile_entity_columns,
     record_connection_test_result,
     replace_discovery,
     set_all_connections_hidden,
@@ -177,7 +180,13 @@ def discover_connection_route(
             detail="Gateway-based connections report discovery from the Gateway itself, not from the platform.",
         )
     try:
-        return discover_direct_connection_schema(db, connection=connection)
+        entities = discover_direct_connection_schema(db, connection=connection)
+        # Reading what the columns actually hold is background work — a big
+        # source has hundreds of tables and discovery must not wait for it.
+        threading.Thread(
+            target=profile_data_source_in_background, args=(connection.data_source_id,), daemon=True, name="column-profiling"
+        ).start()
+        return entities
     except Exception as exc:  # noqa: BLE001 — surfaced as a clean 400, never a raw driver error with the DSN in it
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not read the schema from this database. Test the connection first.") from exc
 
@@ -386,6 +395,39 @@ def set_entity_hidden_route(
     return set_entity_hidden(
         db, entity=entity, hidden=payload.hidden, organization_id=source.organization_id, updated_by_user_id=user.user_id
     )
+
+
+@router.post("/data-sources/{data_source_id}/profile", status_code=status.HTTP_202_ACCEPTED)
+def profile_data_source_route(
+    data_source_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_permissions("data_sources:manage"))
+) -> dict:
+    """Starts reading what every table's columns actually hold (see
+    app/core/value_profile.py). Runs in the background; results show up on
+    the mapping and table-binding screens as they complete."""
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    threading.Thread(
+        target=profile_data_source_in_background, args=(data_source_id,), daemon=True, name="column-profiling"
+    ).start()
+    return {"started": True}
+
+
+@router.post("/entities/{entity_id}/profile")
+def profile_entity_route(
+    entity_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_permissions("data_sources:manage"))
+) -> dict:
+    entity = db.get(DataEntity, entity_id)
+    if entity is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
+    source = _get_source_or_404(db, entity.data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    profiled = profile_entity_columns(db, entity_id=entity_id)
+    if profiled is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not read this table. Profiling needs a connected direct (non-Gateway) connection.",
+        )
+    return {"profiled": profiled}
 
 
 @router.get("/entities/{entity_id}/fields", response_model=list[DataFieldOut])
