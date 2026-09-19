@@ -18,6 +18,9 @@ export interface BindingSuggestion {
   // confidence score the picker can show plainly as a guess, not a fact.
   source: 'reused' | 'name_match'
   confidence_score?: number
+  // How well the table's own columns cover the canonical object it's meant
+  // to stand in for — an independent check that name similarity can't fake.
+  content_fit_score?: number | null
 }
 
 /**
@@ -30,6 +33,10 @@ export interface BindingSuggestion {
  * suggestions, computed once per control against every discovered table
  * in the org — see control_binding_service._suggest_bindings).
  */
+const LOW_CONTENT_FIT = 30
+const lowFit = (fit?: number | null) => fit != null && fit < LOW_CONTENT_FIT
+const fitLabel = (fit?: number | null) => (fit != null ? `, ${Math.round(fit)}% column fit` : '')
+
 export function suggestionsFromProgress(bindingProgress: Record<string, TableBindingProgressOut>): Record<string, BindingSuggestion> {
   const reused: Record<string, BindingSuggestion & { bound_at: string }> = {}
   for (const progress of Object.values(bindingProgress)) {
@@ -61,6 +68,7 @@ export function suggestionsFromProgress(bindingProgress: Record<string, TableBin
         entity_name: top.entity_name,
         source: 'name_match',
         confidence_score: top.confidence_score,
+        content_fit_score: top.content_fit_score,
       }
     }
   }
@@ -194,7 +202,7 @@ export function TableBindingPicker({
         <p className="w-full text-xs text-accent-ink">
           {suggestion.source === 'reused'
             ? 'Suggested from another control that already uses this table — confirm, or change it above.'
-            : `Suggested by name match (${Math.round(suggestion.confidence_score ?? 0)}% confidence) — a guess, not a confirmed binding. Review before confirming, or change it above.`}
+            : `Suggested by name match (${Math.round(suggestion.confidence_score ?? 0)}% confidence${fitLabel(suggestion.content_fit_score)}) — a guess, not a confirmed binding. Review before confirming, or change it above.${lowFit(suggestion.content_fit_score) ? ' Its columns look unlike what this control needs — check this is the right table.' : ''}`}
         </p>
       )}
       {error && <p className="w-full text-xs text-red-600">{error}</p>}
@@ -286,7 +294,7 @@ export function RequiredTablesChecklist({
                       {suggestion &&
                         (suggestion.source === 'reused'
                           ? ' — suggestion available (reused from another control)'
-                          : ` — recommended: ${suggestion.entity_name} (${Math.round(suggestion.confidence_score ?? 0)}% name match)`)}
+                          : ` — recommended: ${suggestion.entity_name} (${Math.round(suggestion.confidence_score ?? 0)}% name match${fitLabel(suggestion.content_fit_score)})${lowFit(suggestion.content_fit_score) ? ' ⚠ columns look unlike what is needed' : ''}`)}
                     </span>
                   )}
                   {canManage && binding && (

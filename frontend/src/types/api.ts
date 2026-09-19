@@ -191,6 +191,7 @@ export interface TableBindingSuggestionOut {
   data_source_id: string
   source_name: string | null
   confidence_score: number
+  content_fit_score: number | null
 }
 
 export interface TableBindingProgressOut {

@@ -45,6 +45,10 @@ class TableBindingSuggestionOut(OrmModel):
     data_source_id: uuid.UUID
     source_name: str | None = None
     confidence_score: float
+    # Name match alone can't tell a real table from an unrelated one that
+    # shares its name — this is the independent second signal (see
+    # canonical_model.score_table_content_fit). None = not applicable.
+    content_fit_score: float | None = None
 
 
 class TableBindingProgressOut(OrmModel):

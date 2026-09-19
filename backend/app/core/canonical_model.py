@@ -474,7 +474,11 @@ _NO_OVERLAP_SEQ_RATIO_FLOOR = 75.0
 
 
 def suggest_canonical_field(
-    source_field_name: str, *, is_primary_key: bool = False, preferred_object: str | None = None
+    source_field_name: str,
+    *,
+    is_primary_key: bool = False,
+    preferred_object: str | None = None,
+    in_object_only: bool = False,
 ) -> tuple[str, float]:
     """Returns (best "object.field" match, confidence 0-100).
 
@@ -546,6 +550,12 @@ def suggest_canonical_field(
             # SAME object, which the loop above already picked the best of.
             return f"{preferred_object}.{best_in_object}", round(min(best_in_object_score + 25, 100.0), 2)
 
+    # Callers that only care whether a column has a genuine match INSIDE the
+    # preferred object (score_table_content_fit) skip the much more
+    # expensive unconstrained search below.
+    if in_object_only:
+        return "", 0.0
+
     best_field, best_score = "", 0.0
     for obj_name, fields in CANONICAL_MODEL.items():
         for field_name in fields:
@@ -600,3 +610,42 @@ def score_table_name_match(canonical_table_name: str, candidate_entity_name: str
         return 100.0
 
     return round(max(token_score, seq_ratio), 2)
+
+
+# Below this content fit, a table's own columns share too little with the
+# canonical object it's being asked to stand in for to trust its NAME alone.
+LOW_CONTENT_FIT_THRESHOLD = 30.0
+
+
+def score_table_content_fit(field_names: list[str], required_table_name: str) -> float | None:
+    """How well a candidate table's own discovered columns, taken as a
+    whole, cover the canonical object `required_table_name` resolves to —
+    independent of whether the table's NAME matches. score_table_name_match
+    returns 100 for a literal name match no matter what's inside, so an
+    unrelated table that merely shares a common name (a bundled sample
+    database's own "users" collection, a marketing contact list) is
+    indistinguishable from the real thing by name alone; this is the second,
+    independent signal.
+
+    Returns the percentage (0-100) of the target canonical object's own
+    fields that at least one candidate column matches in-object, or None
+    when required_table_name doesn't resolve to any modeled canonical object
+    (nothing to check against — the signal simply doesn't apply, which is
+    not the same as a bad fit).
+    """
+    if not field_names:
+        return None  # no discovered columns yet: nothing to judge, not a bad fit
+    target_object = infer_object_for_entity(required_table_name)
+    if target_object is None or target_object not in CANONICAL_MODEL:
+        return None
+    target_fields = CANONICAL_MODEL[target_object]
+    if not target_fields:
+        return None
+
+    covered: set[str] = set()
+    prefix = f"{target_object}."
+    for name in field_names:
+        matched, _score = suggest_canonical_field(name, preferred_object=target_object, in_object_only=True)
+        if matched.startswith(prefix):
+            covered.add(matched[len(prefix):])
+    return round(len(covered) / len(target_fields) * 100, 2)

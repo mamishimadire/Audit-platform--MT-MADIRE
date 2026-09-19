@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.canonical_model import infer_object_for_entity, mapping_status_for_confidence, suggest_canonical_field
+from app.core.canonical_model import (
+    LOW_CONTENT_FIT_THRESHOLD,
+    infer_object_for_entity,
+    mapping_status_for_confidence,
+    score_table_content_fit,
+    suggest_canonical_field,
+)
 from app.models.audit_test import ControlAuditTest, TestDataMapping, TestRule
 from app.models.control_library import ControlRuleTemplate
 from app.models.data_source import DataEntity, DataField, DataSource
@@ -43,7 +49,16 @@ def suggest_mappings_for_entity(db: Session, *, entity_id: uuid.UUID) -> list[Ma
     entity = db.get(DataEntity, entity_id)
     preferred_object = infer_object_for_entity(entity.entity_name) if entity else None
 
-    fields = db.scalars(select(DataField).where(DataField.entity_id == entity_id))
+    fields = list(db.scalars(select(DataField).where(DataField.entity_id == entity_id)))
+    # The table's NAME is what suggested preferred_object, and that hint
+    # boosts every column into it. If the table's own columns barely resemble
+    # that object (an unrelated table that shares a common name), don't let
+    # the name vouch for it — fall back to the unconstrained, already-capped
+    # search instead of confidently boosting into the wrong object.
+    if preferred_object is not None and entity is not None and fields:
+        fit = score_table_content_fit([f.field_name for f in fields], entity.entity_name)
+        if fit is not None and fit < LOW_CONTENT_FIT_THRESHOLD:
+            preferred_object = None
     suggestions = []
     for field in fields:
         canonical_field, confidence = suggest_canonical_field(
