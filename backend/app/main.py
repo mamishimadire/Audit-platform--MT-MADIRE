@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 import threading
 import time
@@ -39,13 +40,22 @@ def _direct_execution_loop() -> None:
         time.sleep(_DIRECT_EXECUTION_POLL_SECONDS)
 
 
+def _scheduler_enabled() -> bool:
+    """Whether this process should run the scheduled-test loop. Never under pytest, and never when
+    MT_AUDIT_DISABLE_SCHEDULER=1: local development shares the production database, so a second
+    instance running this loop executes the same due tests as production (found when a local
+    server started for an end-to-end check ran 4 scheduled tests a second time). Set the variable
+    for ANY local server that points at a shared database."""
+    return "pytest" not in sys.modules and os.environ.get("MT_AUDIT_DISABLE_SCHEDULER") != "1"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Tests run against the same live database as the app itself (see
     # tests/conftest.py) — if any test ever instantiates a TestClient, this
     # loop must not come alive and start mutating real schedules/executions
     # as a side effect of running the suite.
-    if "pytest" not in sys.modules:
+    if _scheduler_enabled():
         threading.Thread(target=_direct_execution_loop, daemon=True, name="direct-execution-loop").start()
     yield
 

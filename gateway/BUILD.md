@@ -20,6 +20,16 @@ cd gateway
   build_entry.py
 ```
 
+That one-liner predates Oracle, SAP HANA and Snowflake. The build actually used is `MadireGateway.spec`, which lists their drivers
+and dialects as hidden imports (they are loaded by name at run time, which PyInstaller cannot see):
+
+```bash
+.venv\Scripts\python.exe -m PyInstaller --noconfirm MadireGateway.spec
+```
+
+Build requirements: `pip install -r requirements.txt pyinstaller pywin32`. `snowflake-connector-python` brings `boto3`/`botocore`, so the
+executable is noticeably larger than it was with the four original engines.
+
 Output: `gateway/dist/MadireGateway.exe`. `backend/app/services/gateway_download_service.py`
 picks it up from that exact path automatically.
 

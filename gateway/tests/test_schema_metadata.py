@@ -49,14 +49,15 @@ class DiscoveryMetadataTests(unittest.TestCase):
         )
 
     def test_a_failing_catalog_call_is_reported_as_not_reported_never_as_none_exist(self):
-        import gateway.connectors.base as base
+        from unittest import mock
 
-        real = base._safe
-        base._safe = lambda call, table, **kw: None if getattr(call, "__name__", "") == "get_foreign_keys" else real(call, table, **kw)
-        try:
+        from sqlalchemy.engine.reflection import Inspector
+
+        # The catalogue read fails both ways it is attempted: batched for the whole schema, and table by table.
+        with mock.patch.object(Inspector, "get_multi_foreign_keys", side_effect=RuntimeError("no permission")), mock.patch.object(
+            Inspector, "get_foreign_keys", side_effect=RuntimeError("no permission")
+        ):
             entities = self.connector.discover()
-        finally:
-            base._safe = real
         self.assertTrue(all("foreign_keys" not in e for e in entities))
 
 

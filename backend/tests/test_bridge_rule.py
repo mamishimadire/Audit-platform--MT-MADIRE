@@ -97,3 +97,22 @@ def test_exception_wording_mentions_the_bridge():
     sentence = exception_service._natural_summary(API002, {"user_id": "U3", "api_id": "A3"}, "U3", "API-002")
     assert sentence is not None and "(through user role" in sentence.lower()
     assert "active" in sentence
+
+
+def test_the_scheduler_can_be_switched_off_for_any_local_server(monkeypatch):
+    """A local server pointed at the shared database must never run the production scheduler loop."""
+    import sys
+
+    from app import main
+
+    real_modules = dict(sys.modules)
+    monkeypatch.delitem(sys.modules, "pytest", raising=False)
+    monkeypatch.delenv("MT_AUDIT_DISABLE_SCHEDULER", raising=False)
+    assert main._scheduler_enabled() is True  # a normal server runs it
+    monkeypatch.setenv("MT_AUDIT_DISABLE_SCHEDULER", "1")
+    assert main._scheduler_enabled() is False
+    monkeypatch.setenv("MT_AUDIT_DISABLE_SCHEDULER", "0")
+    assert main._scheduler_enabled() is True
+    sys.modules.update({k: v for k, v in real_modules.items() if k not in sys.modules})
+    monkeypatch.undo()
+    assert main._scheduler_enabled() is False  # under pytest: never

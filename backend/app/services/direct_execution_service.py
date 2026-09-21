@@ -30,6 +30,7 @@ from app.models.monitoring import MonitoringSchedule
 from app.schemas.audit_engine import ExceptionReport, ExecutionReport
 from app.schemas.test_rule import required_objects_for
 from app.services import rule_evaluation
+from app.services.connectors import EntityNotHere
 from app.services.data_source_service import fetch_direct_records
 from app.services.execution_service import record_execution_report
 from app.services.rule_parameter_service import get_parameters, resolve_parameters
@@ -115,7 +116,8 @@ class _DueDirectTest:
         self.schedule_id = schedule_id
         self.rule_id = rule_id
         self.rule_definition = rule_definition
-        self.objects = objects  # canonical_object -> {"connection": DataConnection, "entity_name": str, "fields": {canonical: physical}}
+        # canonical_object -> {"connections": [DataConnection, ...] (the source's connected ones), "data_source_id", "entity_name": str, "fields": {canonical: physical}}
+        self.objects = objects
 
 
 def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
@@ -127,12 +129,12 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
     ).all()
     if not connections:
         return []
-    # A data source can have more than one direct connection on record (e.g.
-    # a stale/pending one alongside the live one) — the first connected one
-    # found is used, same tie-break sample_distinct_values already applies.
-    connection_by_source: dict[uuid.UUID, DataConnection] = {}
+    # A data source can have more than one connected direct connection — a database next to an uploaded
+    # file, say, since its tables are pooled under the source. Which one supplies a mapped table is
+    # only known by asking, so every connected one is a candidate (see _fetch_from_any).
+    connections_by_source: dict[uuid.UUID, list[DataConnection]] = {}
     for c in connections:
-        connection_by_source.setdefault(c.data_source_id, c)
+        connections_by_source.setdefault(c.data_source_id, []).append(c)
 
     due: list[_DueDirectTest] = []
     parameters_by_org: dict[uuid.UUID, dict[str, float]] = {}
@@ -173,8 +175,8 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
             if not mapping.canonical_field or "." not in mapping.canonical_field:
                 continue
             canonical_object, canonical_field = mapping.canonical_field.split(".", 1)
-            connection = connection_by_source.get(mapping.data_source_id)
-            if connection is None:
+            source_connections = connections_by_source.get(mapping.data_source_id)
+            if not source_connections:
                 continue  # this mapping's data source has no live direct connection
             entity = db.get(DataEntity, mapping.entity_id)
             field = db.get(DataField, mapping.field_id) if mapping.field_id else None
@@ -182,8 +184,10 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
                 continue
 
             if canonical_object not in objects:
-                objects[canonical_object] = {"connection": connection, "entity_name": entity.entity_name, "fields": {}}
-            elif objects[canonical_object]["connection"].connection_id != connection.connection_id or objects[canonical_object]["entity_name"] != entity.entity_name:
+                objects[canonical_object] = {
+                    "connections": source_connections, "data_source_id": mapping.data_source_id, "entity_name": entity.entity_name, "fields": {},
+                }
+            elif objects[canonical_object]["data_source_id"] != mapping.data_source_id or objects[canonical_object]["entity_name"] != entity.entity_name:
                 continue  # conflicting mappings for the same object — skip rather than guess
             objects[canonical_object]["fields"][canonical_field] = field.field_name
 
@@ -202,14 +206,31 @@ def _resolve_due_direct_tests(db: Session) -> list[_DueDirectTest]:
     return due
 
 
+def _fetch_from_any(connections: list[DataConnection], *, entity_name: str, field_names: list[str]) -> list[dict]:
+    """The rows of a mapped table from whichever of the source's connected connections supplies it. With
+    one connection this is exactly a plain fetch and raises its error unchanged. With several, a
+    connection that doesn't have the table is passed over; if none can supply it, the error worth
+    showing is the first one that was not merely "not my table"."""
+    first_real_error: Exception | None = None
+    last_error: Exception | None = None
+    for connection in connections:
+        try:
+            return fetch_direct_records(connection, entity_name=entity_name, field_names=field_names, limit=_FETCH_LIMIT)
+        except EntityNotHere as exc:
+            last_error = exc
+        except Exception as exc:  # noqa: BLE001 — remembered, and re-raised below if no other connection can help
+            first_real_error = first_real_error or exc
+            last_error = exc
+    raise (first_real_error or last_error)  # type: ignore[misc]
+
+
 def _run_one(due: _DueDirectTest) -> ExecutionReport:
     started_at = datetime.now(timezone.utc)
     try:
         records_by_object: dict[str, list[dict]] = {}
         for canonical_object, obj in due.objects.items():
-            connection: DataConnection = obj["connection"]
             physical_fields = list(obj["fields"].values())
-            raw_rows = fetch_direct_records(connection, entity_name=obj["entity_name"], field_names=physical_fields, limit=_FETCH_LIMIT)
+            raw_rows = _fetch_from_any(obj["connections"], entity_name=obj["entity_name"], field_names=physical_fields)
             rename = {physical: canonical for canonical, physical in obj["fields"].items()}
             records_by_object[canonical_object] = [
                 {rename.get(k, k): _json_safe(v) for k, v in row.items() if k in rename} for row in raw_rows

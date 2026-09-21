@@ -1,3 +1,4 @@
+import secrets
 import uuid
 
 from app.core.security import hash_password
@@ -13,7 +14,7 @@ def _make_system_admin(db_session) -> User:
         first_name="Ada",
         last_name="Admin",
         email=f"admin-{uuid.uuid4()}@example.com",
-        password_hash=hash_password("a-strong-bootstrap-password"),
+        password_hash=hash_password(secrets.token_urlsafe(32)),  # random: nobody can log in as this admin, even if a run is killed before cleanup
         status="active",
     )
     db_session.add(admin)

@@ -28,6 +28,14 @@ logger = logging.getLogger("gateway.relationships")
 _MONGO_DISTINCT_CAP = 5000
 
 
+def _text_cast_type(dialect_name: str):
+    """The type a key column is cast to when compared with a differently-typed one. Oracle rejects a
+    CAST(... AS VARCHAR2) with no length (ORA-00906) and HANA's bare NVARCHAR means length 1, so those two
+    get an explicit one; the other engines keep the unbounded string they always had. (Same function in the
+    platform's data_source_service: change them together.)"""
+    return String(4000) if dialect_name in ("oracle", "hana") else String
+
+
 def measure_sql(conn, pair: dict, schema: str | None = None) -> dict | None:
     """Exact containment of the child column's distinct values in the parent column, in
     ONE round trip. Built from table()/column() constructs (identifiers quoted per
@@ -38,7 +46,8 @@ def measure_sql(conn, pair: dict, schema: str | None = None) -> dict | None:
     child_t = sql_table(pair["child_entity"], child_col, schema=schema)
     parent_t = sql_table(pair["parent_entity"], parent_col, schema=schema)
     if (pair.get("child_type") or "") != (pair.get("parent_type") or ""):
-        child_expr, parent_expr = cast(child_col, String), cast(parent_col, String)
+        as_text = _text_cast_type(conn.dialect.name)
+        child_expr, parent_expr = cast(child_col, as_text), cast(parent_col, as_text)
     else:
         child_expr, parent_expr = child_col, parent_col
 

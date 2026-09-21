@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from sqlalchemy.engine import Engine, URL
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.net_guard import UnsafeDestination, resolve_public
 from app.core.relationship_inference import (
     Candidate,
     ColumnRef,
@@ -32,6 +34,7 @@ from app.models.data_source import (
     DataSource,
 )
 from app.schemas.data_source import (
+    ConnectorConnectionCreate,
     DataConnectionCreate,
     DataSourceCreate,
     DirectConnectionCreate,
@@ -39,7 +42,9 @@ from app.schemas.data_source import (
     DiscoveredField,
     DiscoveryPayload,
 )
+from app.services import connectors
 from app.services.audit_log_service import log_action
+from app.services.connectors import config as connector_settings, presets
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,11 @@ logger = logging.getLogger(__name__)
 # targets a host/port the caller supplies, so a slow or unreachable target
 # must fail fast rather than tying up a backend worker indefinitely.
 _CONNECT_TIMEOUT_SECONDS = 8
+
+# The most rows the platform reads from a file or API connection for one analysis pass (relationship
+# measurement, distinct-value checks). A file is already parsed in memory; an API connector applies its
+# own tighter page limits below this.
+_CONNECTOR_ROW_CAP = 100_000
 
 _DIRECT_DRIVER_BY_TYPE = {
     "postgresql": "postgresql+psycopg",
@@ -146,7 +156,37 @@ def _direct_engine_url(connection: DataConnection, *, password: str) -> URL:
     )
 
 
+_DEFAULT_DIRECT_PORTS = {"postgresql": 5432, "mysql": 3306, "mssql": 1433, "oracle": 1521, "sap_hana": 443}
+_SNOWFLAKE_ACCOUNT = re.compile(r"^[a-z0-9][a-z0-9._-]{0,120}$")
+
+
+def _direct_destination(connection: DataConnection) -> tuple[str, int]:
+    """The host and port the platform will actually dial for a direct SQL connection. For Snowflake the
+    `host` is an account identifier and the driver dials <account>.snowflakecomputing.com."""
+    if connection.db_type == "snowflake":
+        account = (connection.host or "").strip().lower()
+        if not _SNOWFLAKE_ACCOUNT.match(account):
+            raise ValueError("The Snowflake account identifier is not valid.")
+        suffixes = (".snowflakecomputing.com", ".snowflakecomputing.cn")
+        return (account if account.endswith(suffixes) else f"{account}.snowflakecomputing.com"), 443
+    return (connection.host or "").strip(), connection.port or _DEFAULT_DIRECT_PORTS.get(connection.db_type, 443)
+
+
+def _vet_direct_destination(connection: DataConnection) -> None:
+    """The platform only dials the public internet (see app.core.net_guard): a host that resolves to a
+    private, loopback, link-local or metadata address is refused BEFORE any driver is asked to connect,
+    so a connection cannot be used to probe the platform's own network. Every address the name resolves
+    to must be public. (The driver then resolves the name itself, so this narrows rather than removes a
+    DNS-rebinding window; the file, SFTP and API connections do pin the vetted address.)"""
+    host, port = _direct_destination(connection)
+    try:
+        resolve_public(host, port)
+    except UnsafeDestination as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _build_direct_engine(connection: DataConnection) -> Engine:
+    _vet_direct_destination(connection)
     password = decrypt_secret(connection.encrypted_password)
     url = _direct_engine_url(connection, password=password)
     return create_engine(url, connect_args=_direct_connect_args(connection), pool_pre_ping=False)
@@ -227,6 +267,7 @@ def create_direct_connection(
     db: Session, *, data_source_id: uuid.UUID, payload: DirectConnectionCreate, created_by_user_id: uuid.UUID,
     organization_id: uuid.UUID,
 ) -> DataConnection:
+    connector_settings.refuse_internal_literal(payload.host)
     existing = db.scalar(
         select(DataConnection).where(
             DataConnection.data_source_id == data_source_id,
@@ -278,9 +319,79 @@ def create_direct_connection(
     return connection
 
 
+def create_connector_connection(
+    db: Session, *, data_source_id: uuid.UUID, payload: ConnectorConnectionCreate, created_by_user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+) -> DataConnection:
+    """A file / SFTP / API connection. Its settings are validated per family (a ValueError with a message
+    fit to show), its credentials are stored as one encrypted blob, and nothing secret is logged."""
+    config = payload.config
+    if payload.preset:
+        if payload.db_type != "rest_api":
+            raise connector_settings.ConfigError("A preset is a template for a REST API connection.")
+        if payload.config:
+            raise connector_settings.ConfigError("Give either a preset or the settings, not both. Edit the connection afterwards to add to a preset.")
+        config = presets.expand(payload.preset, payload.preset_params)
+    elif payload.preset_params:
+        raise connector_settings.ConfigError("preset_params were given without a preset.")
+    prepared = connector_settings.prepare(payload.db_type, config, payload.secrets)
+    if prepared.host is not None:
+        same_server = db.scalars(
+            select(DataConnection).where(
+                DataConnection.data_source_id == data_source_id,
+                DataConnection.connection_mode == "direct",
+                DataConnection.db_type == payload.db_type,
+                DataConnection.host == prepared.host,
+                DataConnection.port == prepared.port,
+                DataConnection.username == prepared.username,
+            )
+        ).all()
+        if any((c.connector_config or {}) == (prepared.config or {}) for c in same_server):
+            raise ValueError("This data source already has a connection with the same server, user and settings.")
+
+    connection = DataConnection(
+        data_source_id=data_source_id,
+        connection_mode="direct",
+        db_type=payload.db_type,
+        connection_name=payload.connection_name,
+        host=prepared.host,
+        port=prepared.port,
+        username=prepared.username,
+        encrypted_password=connector_settings.pack_secrets(prepared.secrets),
+        connector_config=prepared.config,
+        connection_status="pending",
+        created_by=created_by_user_id,
+    )
+    db.add(connection)
+    db.flush()
+    log_action(
+        db,
+        action=f"Created {payload.db_type.replace('_', ' ')} data connection",
+        organization_id=organization_id,
+        user_id=created_by_user_id,
+        entity_type="data_connections",
+        entity_id=connection.connection_id,
+        new_value={"data_source_id": str(data_source_id), "db_type": payload.db_type, "host": prepared.host, "username": prepared.username},
+    )
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
 def test_direct_connection(db: Session, *, connection: DataConnection) -> tuple[bool, str]:
     """Actually connects to the target database — the only way to know a
     direct (non-Gateway) connection works, since there's no Gateway to ask."""
+    connector = connectors.for_connection(connection)
+    if connector is not None:
+        try:
+            success, detail = connector.test(connection)
+        except connectors.ConnectorError as exc:
+            success, detail = False, str(exc)  # written to be shown
+        except Exception:  # noqa: BLE001 — a network/parser error can echo an address or a credential
+            success, detail = False, "Could not reach this connection — check its settings and that it is reachable from the platform."
+        record_connection_test_result(db, connection=connection, success=success)
+        return success, detail
+
     if connection.db_type == "mongodb":
         # Not a SQLAlchemy engine — MongoDB has its own driver/connector
         # module entirely (see mongo_connector.py's docstring for why).
@@ -306,26 +417,52 @@ def test_direct_connection(db: Session, *, connection: DataConnection) -> tuple[
 
 
 def discover_direct_connection_schema(db: Session, *, connection: DataConnection) -> list[DataEntity]:
+    # Entities are pooled under the data source, not owned by a connection, so discovery from one of several
+    # connections must never delete the tables another one supplies (with their mappings). That is
+    # replace_discovery's decision (it has the session); it is told which connection is reporting.
+    reporter = getattr(connection, "connection_id", None)
+
+    connector = connectors.for_connection(connection)
+    if connector is not None:
+        entities = connector.discover(connection)
+        return replace_discovery(
+            db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities), reported_by_connection=reporter
+        )
+
     if connection.db_type == "mongodb":
         from app.services.mongo_connector import discover_mongo_schema
 
         entities = discover_mongo_schema(connection)
-        return replace_discovery(db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities))
+        return replace_discovery(
+            db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities), reported_by_connection=reporter
+        )
 
     engine = _build_direct_engine(connection)
     try:
         inspector = inspect(engine)
         entities: list[DiscoveredEntity] = []
-        for table_name in inspector.get_table_names():
-            pk_columns = set(inspector.get_pk_constraint(table_name).get("constrained_columns") or [])
-            columns = inspector.get_columns(table_name)
-            # Catalog facts beyond names/types. Each call is best-effort: a
+        table_names = inspector.get_table_names()
+        # One catalog query per FACT for the whole schema (SQLAlchemy 2.0's get_multi_*; native on
+        # PostgreSQL, Oracle and others) instead of one per fact PER TABLE: a remote database costs a
+        # network round trip each, which made a 17-table schema take over a minute. A dialect or call
+        # that can't batch falls back to the per-table read for that fact alone.
+        columns_by = _batched(inspector, "get_multi_columns")
+        pks_by = _batched(inspector, "get_multi_pk_constraint")
+        uniques_by = _batched(inspector, "get_multi_unique_constraints")
+        indexes_by = _batched(inspector, "get_multi_indexes")
+        fks_by = _batched(inspector, "get_multi_foreign_keys")
+        for table_name in table_names:
+            columns = columns_by[table_name] if columns_by is not None and table_name in columns_by else inspector.get_columns(table_name)
+            pk = pks_by[table_name] if pks_by is not None and table_name in pks_by else inspector.get_pk_constraint(table_name)
+            pk_columns = set((pk or {}).get("constrained_columns") or [])
+            # Catalog facts beyond names/types. Each read is best-effort: a
             # dialect that can't report one (Snowflake has no indexes, HANA and
             # Snowflake rarely declare foreign keys) or a permission gap must
             # never fail discovery — the fact is simply "not reported".
-            unique_constraints = _safe_inspector_call(inspector.get_unique_constraints, table_name)
-            indexes = _safe_inspector_call(inspector.get_indexes, table_name)
-            foreign_keys = normalize_foreign_keys(_safe_inspector_call(inspector.get_foreign_keys, table_name))
+            unique_constraints = uniques_by[table_name] if uniques_by is not None and table_name in uniques_by else _safe_inspector_call(inspector.get_unique_constraints, table_name)
+            indexes = indexes_by[table_name] if indexes_by is not None and table_name in indexes_by else _safe_inspector_call(inspector.get_indexes, table_name)
+            raw_fks = fks_by[table_name] if fks_by is not None and table_name in fks_by else _safe_inspector_call(inspector.get_foreign_keys, table_name)
+            foreign_keys = normalize_foreign_keys(raw_fks)
             facts = derive_column_constraints(
                 [col["name"] for col in columns],
                 nullable_by_column={col["name"]: col.get("nullable") for col in columns},
@@ -351,7 +488,18 @@ def discover_direct_connection_schema(db: Session, *, connection: DataConnection
     finally:
         engine.dispose()
 
-    return replace_discovery(db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities))
+    return replace_discovery(
+        db, data_source_id=connection.data_source_id, payload=DiscoveryPayload(entities=entities), reported_by_connection=reporter
+    )
+
+
+def _batched(inspector, method_name: str) -> dict[str, object] | None:
+    """{table name: result} from one of the inspector's get_multi_* calls for the default schema, or
+    None when the dialect or the call can't do it (the caller then reads table by table)."""
+    try:
+        return {table: result for (_schema, table), result in getattr(inspector, method_name)().items()}
+    except Exception:  # noqa: BLE001 — unsupported, or a permission gap on one catalog view
+        return None
 
 
 def _safe_inspector_call(call, table_name: str):
@@ -376,8 +524,15 @@ def record_connection_test_result(db: Session, *, connection: DataConnection, su
     return connection
 
 
-def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: DiscoveryPayload) -> list[DataEntity]:
+def replace_discovery(
+    db: Session, *, data_source_id: uuid.UUID, payload: DiscoveryPayload, reported_by_connection: uuid.UUID | None = None
+) -> list[DataEntity]:
     """
+    `reported_by_connection`: the direct connection this report came from. Entities are pooled under the data
+    source, so when the source has OTHER direct connections an entity missing from this report may simply belong
+    to one of them: nothing is removed then (fields of a table that IS reported are still reconciled). None
+    (a Gateway's report, which covers the whole source) prunes as before.
+
     Reconciles discovered entities/fields against what's already stored,
     rather than deleting and recreating everything. That distinction is not
     cosmetic: entity_id/field_id are what test_data_mappings points at
@@ -396,6 +551,17 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
         entity_ids = [e.entity_id for e in existing_entities.values()]
         for field in db.scalars(select(DataField).where(DataField.entity_id.in_(entity_ids))):
             existing_fields_by_entity.setdefault(field.entity_id, {})[field.field_name] = field
+
+    prune_missing = True
+    if reported_by_connection is not None:
+        others = db.scalar(
+            select(func.count()).select_from(DataConnection).where(
+                DataConnection.data_source_id == data_source_id,
+                DataConnection.connection_mode == "direct",
+                DataConnection.connection_id != reported_by_connection,
+            )
+        )
+        prune_missing = not others
 
     seen_entity_names: set[str] = set()
     reported_profiles: dict[tuple[str, str], object] = {}
@@ -456,7 +622,11 @@ def replace_discovery(db: Session, *, data_source_id: uuid.UUID, payload: Discov
             if name not in seen_field_names:
                 stale_field_ids.append(field.field_id)  # column genuinely no longer exists at the source
 
-    stale_entity_ids = [e.entity_id for name, e in existing_entities.items() if name not in seen_entity_names]
+    # prune_missing=False: this report covers only one of several connections that share the source,
+    # so an entity it doesn't list may simply belong to another one.
+    stale_entity_ids = (
+        [e.entity_id for name, e in existing_entities.items() if name not in seen_entity_names] if prune_missing else []
+    )
 
     if stale_field_ids:
         db.execute(delete(DataField).where(DataField.field_id.in_(stale_field_ids)))
@@ -626,6 +796,17 @@ def sample_distinct_values(db: Session, *, data_source_id: uuid.UUID, entity_nam
     ).all()
     for connection in connections:
         try:
+            connector = connectors.for_connection(connection)
+            if connector is not None:
+                rows = connector.fetch_records(connection, entity_name=entity_name, field_names=[field_name], limit=_CONNECTOR_ROW_CAP)
+                values: set[str] = set()
+                for row in rows:
+                    value = row.get(field_name)
+                    if value is not None:
+                        values.add(str(value))
+                        if len(values) >= limit:
+                            break
+                return values
             if connection.db_type == "mongodb":
                 from app.services.mongo_connector import sample_distinct_field_values
 
@@ -660,6 +841,9 @@ def fetch_direct_records(connection: DataConnection, *, entity_name: str, field_
     """Dispatches to the right connector for a direct (non-Gateway)
     connection — the one place direct_execution_service needs to know
     MongoDB isn't reached the same way the SQL engines are."""
+    connector = connectors.for_connection(connection)
+    if connector is not None:
+        return connector.fetch_records(connection, entity_name=entity_name, field_names=field_names, limit=limit)
     if connection.db_type == "mongodb":
         from app.services.mongo_connector import fetch_records as fetch_mongo_records
 
@@ -678,7 +862,7 @@ _PROFILE_UPSERT_COLUMNS = (
 )
 
 
-_BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw")
+_BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw", "lob", "bfile")  # "lob" also covers Oracle/HANA CLOB and NCLOB: the driver returns locators, not text
 
 
 def _sample_sql_rows(
@@ -720,6 +904,12 @@ def _apply_read_guards(conn, db_type: str) -> None:
             conn.execute(text("SET TRANSACTION READ ONLY"))
         elif db_type == "mysql":
             conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME = {_PROFILE_STATEMENT_TIMEOUT_MS}"))
+        elif db_type == "oracle":
+            # python-oracledb's per-call timeout (milliseconds); SET TRANSACTION must be the transaction's first statement.
+            conn.connection.dbapi_connection.call_timeout = _PROFILE_STATEMENT_TIMEOUT_MS
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+        elif db_type == "snowflake":
+            conn.execute(text(f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {_PROFILE_STATEMENT_TIMEOUT_MS // 1000}"))
     except Exception:  # noqa: BLE001
         conn.rollback()
 
@@ -728,6 +918,9 @@ def fetch_profile_rows(
     connection: DataConnection, *, entity_name: str, columns: list[tuple[str, str | None]], limit: int
 ) -> list[dict]:
     """Sampled rows for profiling, from whichever engine the connection is."""
+    connector = connectors.for_connection(connection)
+    if connector is not None:
+        return connector.fetch_records(connection, entity_name=entity_name, field_names=[name for name, _ in columns], limit=limit)
     if connection.db_type == "mongodb":
         from app.services.mongo_connector import fetch_records as fetch_mongo_records
 
@@ -956,6 +1149,13 @@ _MAX_RELATIONSHIP_CANDIDATES = 700
 _MONGO_DISTINCT_CAP = 5000
 
 
+def _text_cast_type(dialect_name: str):
+    """The type a key column is cast to when compared with a differently-typed one. Oracle rejects a
+    CAST(... AS VARCHAR2) with no length (ORA-00906) and HANA's bare NVARCHAR means length 1, so those two
+    get an explicit one; the other engines keep the unbounded string they always had."""
+    return String(4000) if dialect_name in ("oracle", "hana") else String
+
+
 def _measure_sql(conn, candidate: Candidate) -> Measurement | None:
     """Exact containment of the child column's distinct values in the parent
     column, in ONE round trip: how many distinct child values, how many of
@@ -968,7 +1168,8 @@ def _measure_sql(conn, candidate: Candidate) -> Measurement | None:
     child_t = sql_table(candidate.child.entity_name, child_col)
     parent_t = sql_table(candidate.parent.entity_name, parent_col)
     if (candidate.child.data_type or "") != (candidate.parent.data_type or ""):
-        child_expr, parent_expr = cast(child_col, String), cast(parent_col, String)
+        as_text = _text_cast_type(conn.dialect.name)
+        child_expr, parent_expr = cast(child_col, as_text), cast(parent_col, as_text)
     else:
         child_expr, parent_expr = child_col, parent_col
 
@@ -1005,6 +1206,65 @@ def _measure_mongo(database, candidate: Candidate) -> Measurement | None:
         child_distinct=len(child_set), matched_distinct=len({v for v in matched if v is not None}),
         parent_distinct=parent_distinct, capped=capped, parent_rows=parent_rows,
     )
+
+
+def _measure_values(child_values: list, parent_values: list, *, as_text: bool, capped: bool) -> Measurement | None:
+    """Containment of the child's distinct values in the parent's, over values already in memory (the
+    file and API connections; the SQL and Mongo paths ask their own database). Differently-typed
+    columns compare as text, exactly as _measure_sql does."""
+    key = (lambda v: str(v)) if as_text else (lambda v: v)
+    try:
+        child_set = {key(v) for v in child_values if v is not None}
+        parent_set = {key(v) for v in parent_values if v is not None}
+    except TypeError:
+        return None  # unhashable values (nested objects) — not a key column
+    parent_rows = sum(1 for v in parent_values if v is not None)
+    capped = capped or len(child_set) > _MONGO_DISTINCT_CAP
+    if len(child_set) > _MONGO_DISTINCT_CAP:
+        child_set = set(list(child_set)[:_MONGO_DISTINCT_CAP])
+    return Measurement(
+        child_distinct=len(child_set), matched_distinct=len(child_set & parent_set), parent_distinct=len(parent_set),
+        capped=capped, parent_rows=parent_rows,
+    )
+
+
+def _measure_in_memory(connections: list[DataConnection], candidates: list[Candidate]) -> list[tuple[Candidate, Measurement]]:
+    """Relationship measurement over rows read into memory: for file and API connections (there is no
+    database to ask), and for pairs whose two tables live on DIFFERENT connections of one source (a
+    database cannot join to another one). Each table is read ONCE, only the columns the candidates need
+    (an API is not called again per pair), from the first connection that supplies it; a table nobody
+    supplies, or that cannot be read, skips its pairs only. Rows cut off at the read cap make the result
+    a lower bound, and it is marked so."""
+    needed: dict[str, set[str]] = {}
+    for c in candidates:
+        needed.setdefault(c.child.entity_name, set()).add(c.child.name)
+        needed.setdefault(c.parent.entity_name, set()).add(c.parent.name)
+    rows_by_entity: dict[str, list[dict] | None] = {}
+    for entity_name, columns in needed.items():
+        rows_by_entity[entity_name] = None
+        for connection in connections:
+            try:
+                rows_by_entity[entity_name] = fetch_profile_rows(
+                    connection, entity_name=entity_name, columns=[(name, None) for name in sorted(columns)], limit=_CONNECTOR_ROW_CAP
+                )
+                break
+            except Exception:  # noqa: BLE001 — not this connection's table, or unreadable: try the next
+                continue
+    out: list[tuple[Candidate, Measurement]] = []
+    for candidate in candidates:
+        child_rows = rows_by_entity.get(candidate.child.entity_name)
+        parent_rows = rows_by_entity.get(candidate.parent.entity_name)
+        if child_rows is None or parent_rows is None:
+            continue
+        measurement = _measure_values(
+            [r.get(candidate.child.name) for r in child_rows],
+            [r.get(candidate.parent.name) for r in parent_rows],
+            as_text=(candidate.child.data_type or "") != (candidate.parent.data_type or ""),
+            capped=len(child_rows) >= _CONNECTOR_ROW_CAP or len(parent_rows) >= _CONNECTOR_ROW_CAP,
+        )
+        if measurement is not None:
+            out.append((candidate, measurement))
+    return out
 
 
 def _requirement_candidates(db: Session, data_source_id: uuid.UUID, columns: list[ColumnRef]) -> list[Candidate]:
@@ -1221,23 +1481,44 @@ def infer_relationships_for_source(db: Session, *, data_source_id: uuid.UUID) ->
         except Exception:  # noqa: BLE001 — already detached (or not a session-managed object)
             pass
     db.commit()
-    measured: list[tuple[Candidate, Measurement]] = []
+    # Every connection measures the pairs it can reach; the tables are pooled under the source, so a
+    # file connection and a database connection each supply some of them. A pair measured by an
+    # earlier connection is not measured again.
+    measured_by_pair: dict[Candidate, Measurement] = {}
+    any_connection_worked = False
     for connection in connections:
-        try:
-            measured = _measure_all(connection, candidates)
+        remaining = [c for c in candidates if c not in measured_by_pair]
+        if not remaining:
             break
+        try:
+            for candidate, measurement in _measure_all(connection, remaining):
+                measured_by_pair.setdefault(candidate, measurement)
+            any_connection_worked = True
         except Exception:  # noqa: BLE001 — try the next connection; the driver's text is not worth leaking
             logger.info("relationship inference failed on one connection")
             continue
-    else:
+    remaining = [c for c in candidates if c not in measured_by_pair]
+    if remaining and len(connections) > 1 and any(connectors.for_connection(c) is not None for c in connections):
+        # What is left are pairs whose tables are on different connections (a database cannot join to
+        # another one). With a file or API connection involved the key columns can be read and compared
+        # in memory, so a payroll file and an HR file uploaded separately are still related.
+        try:
+            for candidate, measurement in _measure_in_memory(connections, remaining):
+                measured_by_pair.setdefault(candidate, measurement)
+            any_connection_worked = True
+        except Exception:  # noqa: BLE001
+            logger.info("cross-connection relationship inference failed")
+    if not any_connection_worked:
         return None
-    return store_inferred_edges(db, data_source_id, measured)
+    return store_inferred_edges(db, data_source_id, list(measured_by_pair.items()))
 
 
 def _measure_all(connection: DataConnection, candidates: list[Candidate]) -> list[tuple[Candidate, Measurement]]:
     """One connection for the whole run; a pair that errors (an incomparable
     type, a permission gap) is skipped, not fatal."""
     out: list[tuple[Candidate, Measurement]] = []
+    if connectors.for_connection(connection) is not None:
+        return _measure_in_memory([connection], candidates)
     if connection.db_type == "mongodb":
         from app.services.mongo_connector import _build_mongo_client
 

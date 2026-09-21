@@ -28,7 +28,7 @@ relationships_enabled: true
 
 connections:
   - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
-    type: postgresql # postgresql | mysql | sql_server | mongodb
+    type: postgresql # postgresql | mysql | sql_server | mongodb | oracle | sap_hana | snowflake
     host: "192.168.1.10"
     port: 5432
     database: "FinanceDB"
@@ -53,3 +53,44 @@ connections:
     username: "audit_readonly"
     password_env: "MONGO_DB_PASSWORD"
     mongodb_srv: false # true for a mongodb+srv:// connection (e.g. most managed MongoDB hosts, including Atlas)
+
+  # Oracle (python-oracledb, "thin" mode: no Oracle Client install needed on this machine).
+  # `database` is the SERVICE NAME (e.g. ORCLPDB1). For an older database that is addressed by a SID, use
+  # oracle_connection_type: sid and put the SID in `database`.
+  - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
+    type: oracle
+    host: "10.0.5.30"
+    port: 1521
+    database: "ORCLPDB1"
+    # oracle_connection_type: service_name # service_name (default) | sid
+    username: "audit_readonly"
+    password_env: "ORACLE_DB_PASSWORD"
+    schema: "FINANCE" # optional; defaults to the user's own schema
+
+  # SAP HANA. A tenant-database connection needs only host and port (no `database`). TLS is on and the server
+  # certificate is validated unless you set sap_hana_encrypt: false.
+  - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
+    type: sap_hana
+    host: "10.0.5.40"
+    port: 30015
+    username: "AUDIT_READONLY"
+    password_env: "HANA_DB_PASSWORD"
+    # sap_hana_encrypt: true
+    schema: "SAPHANADB" # optional
+
+  # Snowflake. `host` is your ACCOUNT IDENTIFIER (e.g. xy12345.eu-west-1), not a URL. database, schema and
+  # snowflake_warehouse are required. Use a role that can only read what the audit needs.
+  - connection_id: "PASTE-THE-CONNECTION-ID-FROM-THE-DATA-SOURCES-UI"
+    type: snowflake
+    host: "xy12345.eu-west-1"
+    database: "FINANCE"
+    schema: "PUBLIC"
+    snowflake_warehouse: "AUDIT_WH"
+    snowflake_role: "AUDIT_READER" # optional
+    username: "AUDIT_READONLY"
+    password_env: "SNOWFLAKE_PASSWORD"
+    # Key-pair sign-in instead of a password: the PEM private key is read from a file or an environment
+    # variable (never written into this file), plus its passphrase if it has one.
+    # snowflake_auth_method: key_pair
+    # private_key_file: "C:/secrets/snowflake_rsa_key.p8"   # or: private_key_env: "SNOWFLAKE_PRIVATE_KEY"
+    # private_key_passphrase_env: "SNOWFLAKE_KEY_PASSPHRASE"

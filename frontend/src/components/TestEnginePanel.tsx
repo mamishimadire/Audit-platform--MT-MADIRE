@@ -61,6 +61,9 @@ function isoDate(d: Date): string {
 }
 
 type RuleType = 'threshold' | 'duplicate' | 'missing_match' | 'cross_match_condition'
+// The only rule types this form can express. Anything else (three-way match, reconciliation, baseline...)
+// cannot be edited here without losing parts of it, so editing is refused rather than silently rewriting it.
+const FORM_RULE_TYPES: string[] = ['threshold', 'duplicate', 'missing_match', 'cross_match_condition']
 
 interface Props {
   organizationId: string
@@ -110,6 +113,9 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
 
   const [showRuleForm, setShowRuleForm] = useState(false)
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
+  // The full definition of the rule being edited: the form only manages a few of its fields, so everything else
+  // (secondary key, conditions, gate, bridge...) is carried through untouched instead of being dropped on save.
+  const [originalDefinition, setOriginalDefinition] = useState<Record<string, unknown> | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null)
@@ -163,6 +169,13 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   useEffect(load, [organizationId, auditTestId])
 
   const buildDefinition = (): Record<string, unknown> => {
+    const managed = buildManagedFields()
+    // Editing a rule of the SAME type keeps every field the form does not manage; a changed type starts clean.
+    const carried = originalDefinition && originalDefinition.rule_type === ruleType ? originalDefinition : {}
+    return { ...carried, ...managed }
+  }
+
+  const buildManagedFields = (): Record<string, unknown> => {
     if (ruleType === 'threshold') {
       return { rule_type: 'threshold', object: f.object, field: f.field, operator: f.operator, value: isNaN(Number(f.value)) ? f.value : Number(f.value) }
     }
@@ -195,6 +208,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
       }
       setRuleName('')
       setEditingRuleId(null)
+      setOriginalDefinition(null)
       setShowRuleForm(false)
       load()
     } catch {
@@ -203,6 +217,14 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
   }
 
   const startEdit = (rule: TestRuleOut) => {
+    if (!FORM_RULE_TYPES.includes(rule.rule_type as string)) {
+      setError(
+        `This is a '${rule.rule_type}' rule, which this form cannot edit without losing parts of it. Delete it and create a new one, or change the control's template.`,
+      )
+      return
+    }
+    setError(null)
+    setOriginalDefinition({ ...(rule.rule_definition as Record<string, unknown>) })
     setEditingRuleId(rule.rule_id)
     setRuleName(rule.rule_name)
     setRuleType((rule.rule_type as RuleType) ?? 'cross_match_condition')
@@ -451,6 +473,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
               <button
                 onClick={() => {
                   setEditingRuleId(null)
+                  setOriginalDefinition(null)
                   setRuleName('')
                   setShowRuleForm(true)
                 }}
@@ -539,6 +562,7 @@ export function TestEnginePanel({ organizationId, auditTestId }: Props) {
                   onClick={() => {
                     setShowRuleForm(false)
                     setEditingRuleId(null)
+                    setOriginalDefinition(null)
                   }}
                   className="rounded-md border border-line px-3 py-1 text-xs font-medium text-ink-soft hover:bg-bg"
                 >

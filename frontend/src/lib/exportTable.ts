@@ -30,11 +30,19 @@ function cell(value: string | number | null | undefined): string {
   return value === null || value === undefined ? '' : String(value)
 }
 
+// A CSV cell that starts with = + - @ (or a tab / carriage return) is run as a FORMULA when the file is opened in
+// Excel or Sheets, and the data in an export comes from client systems, uploaded files and third-party APIs that
+// nobody at this platform controls (=HYPERLINK("http://…") leaks, =cmd|… runs). A leading apostrophe makes it plain
+// text. A value that is only a number is left alone, so amounts such as -1250.50 stay numbers.
+export function neutralizeFormula(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) && !/^-?\d+(\.\d+)?$/.test(value) ? `'${value}` : value
+}
+
 export function exportToCsv(filename: string, report: ExportReport) {
-  const escape = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
+  const escape = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
   const lines = [
     report.columns.map((c) => escape(c.label)).join(','),
-    ...report.rows.map((row) => report.columns.map((c) => escape(cell(row[c.key]))).join(',')),
+    ...report.rows.map((row) => report.columns.map((c) => escape(neutralizeFormula(cell(row[c.key])))).join(',')),
   ]
   // UTF-8 BOM so Excel opens accented/non-ASCII characters correctly.
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })

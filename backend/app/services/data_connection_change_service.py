@@ -22,7 +22,10 @@ from sqlalchemy.orm import Session
 from app.core.crypto import encrypt_secret
 from app.models.data_source import DataConnection, DataConnectionChange
 from app.schemas.data_source import DataConnectionUpdateRequest
+from app.services import connectors
 from app.services.audit_log_service import log_action
+from app.services.connectors import config as connector_settings
+from app.services.connectors.config import ConfigError
 
 # Payload field -> live DataConnection column, only where the name differs.
 _SECRET_FIELD_MAP = {
@@ -32,12 +35,63 @@ _SECRET_FIELD_MAP = {
 
 
 def _to_column_changes(payload: DataConnectionUpdateRequest) -> dict:
+    if payload.connector_config is not None or payload.secrets is not None:
+        raise ConfigError("connector_config and secrets only apply to file, SFTP and API connections.")
+    connector_settings.refuse_internal_literal(payload.host)
     changes: dict = {}
     for field, value in payload.model_dump(exclude_none=True).items():
         if field in _SECRET_FIELD_MAP:
             changes[_SECRET_FIELD_MAP[field]] = encrypt_secret(value)
         else:
             changes[field] = value
+    return changes
+
+
+# Database-only fields, and the bare `password` (which would overwrite a connector's one encrypted blob of
+# credentials with a plain string and break the connection once approved).
+_DATABASE_ONLY_FIELDS = (
+    "database_name", "oracle_connection_type", "sap_hana_encrypt", "snowflake_warehouse", "snowflake_schema",
+    "snowflake_role", "snowflake_auth_method", "snowflake_key_passphrase", "mongodb_srv", "password",
+)
+
+
+def _connector_changes(connection: DataConnection, payload: DataConnectionUpdateRequest) -> dict:
+    """The column changes for editing a file / SFTP / API connection, computed from the WHOLE new state and
+    validated exactly as at creation, so what is approved is always a connection that could have been
+    created. Only `secrets` may carry credentials, and they are encrypted here, once."""
+    given = payload.model_dump(exclude_none=True)
+    misplaced = [f for f in _DATABASE_ONLY_FIELDS if f in given]
+    if misplaced:
+        hint = " Use 'secrets' to change credentials." if "password" in misplaced else ""
+        raise ConfigError(f"{', '.join(misplaced)} does not apply to this type of connection.{hint}")
+    changes: dict = {}
+    if "connection_name" in given:
+        changes["connection_name"] = given["connection_name"]
+    wants_settings = any(k in given for k in ("host", "port", "username", "connector_config", "secrets"))
+    if not wants_settings:
+        return changes
+    if connection.db_type == "file_upload":
+        raise ConfigError("A file connection has no settings to change other than its name.")
+    columns = connector_settings.COLUMN_SETTINGS.get(connection.db_type, ())
+    stray = [c for c in ("host", "port", "username") if c in given and c not in columns]
+    if stray:
+        raise ConfigError(f"{', '.join(stray)} cannot be set directly on this type of connection; change it through connector_config.")
+
+    config = dict(connection.connector_config or {})
+    config.update(payload.connector_config or {})
+    for column in columns:
+        config[column] = given.get(column, getattr(connection, column))
+    moved = any(column in given and given[column] != getattr(connection, column) for column in ("host", "port"))
+    if moved and "host_key_sha256" not in (payload.connector_config or {}):
+        config.pop("host_key_sha256", None)  # a different server is a different identity: it is recorded afresh on the next test
+    secrets = payload.secrets if payload.secrets is not None else connector_settings.unpack_secrets(connection.encrypted_password)
+    prepared = connector_settings.prepare(connection.db_type, config, secrets)
+
+    changes["connector_config"] = prepared.config
+    if prepared.host is not None:  # the columns that identify the server (an API's host comes from its base URL)
+        changes.update(host=prepared.host, port=prepared.port, username=prepared.username)
+    if payload.secrets is not None:
+        changes["encrypted_password"] = connector_settings.pack_secrets(prepared.secrets)
     return changes
 
 
@@ -100,7 +154,7 @@ def request_connection_update(
         db,
         connection=connection,
         change_type="update",
-        proposed_changes=_to_column_changes(payload),
+        proposed_changes=_connector_changes(connection, payload) if connectors.is_connector_type(connection.db_type) else _to_column_changes(payload),
         requested_by_user_id=requested_by_user_id,
         organization_id=organization_id,
         action_label="Data connection edit requested — pending independent approval",
@@ -154,6 +208,10 @@ def approve_connection_change(
     elif change.change_type == "update":
         for column, value in change.proposed_changes.items():
             setattr(connection, column, value)
+        if connectors.is_connector_type(connection.db_type) and set(change.proposed_changes) - {"connection_name"}:
+            # New server, path or credentials: nothing is trusted until the connection is tested again
+            # (which also records the server's identity afresh), so the scheduler stops using it meanwhile.
+            connection.connection_status = "pending"
     # 'delete' needs no live-row change here — it's applied after the audit
     # log entry below, since that's the only durable record of what this
     # connection was once the row (and, via CASCADE, this very change row)

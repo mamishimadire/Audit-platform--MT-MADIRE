@@ -6,6 +6,12 @@ hiddenimports += collect_submodules('sqlalchemy.dialects')
 hiddenimports += collect_submodules('pymongo')
 hiddenimports += collect_submodules('bson')
 hiddenimports += collect_submodules('dns')  # dnspython — required for mongodb+srv:// (Atlas) URIs
+# Oracle (python-oracledb, thin mode), SAP HANA (hdbcli + sqlalchemy-hana) and Snowflake (connector + sqlalchemy dialect).
+# The dialects and drivers are loaded by name at run time, which PyInstaller cannot see, so they are listed.
+hiddenimports += ['oracledb', 'hdbcli', 'pyhdbcli', 'sqlalchemy_hana']
+hiddenimports += collect_submodules('oracledb')
+hiddenimports += collect_submodules('sqlalchemy_hana')
+hiddenimports += collect_submodules('snowflake')
 
 
 a = Analysis(

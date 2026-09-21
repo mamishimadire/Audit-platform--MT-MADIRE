@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -104,6 +104,10 @@ class DataConnection(Base, TimestampMixin):
     # False for a plain `mongodb://host:port/` self-hosted/replica-set
     # deployment. See migration 0040.
     mongodb_srv: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    # Non-secret, family-specific settings for the connection families that are not databases (uploaded
+    # files, SFTP, REST/SOAP APIs) — see migration 0083. Secrets never live here: they are one encrypted
+    # JSON blob in encrypted_password.
+    connector_config: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     connection_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending")
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -278,3 +282,27 @@ class DataRelationship(Base):
     evidence: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="detected")
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DataFile(Base):
+    """One uploaded version of a file on a file connection. Bytes inline in Postgres (like evidence
+    files). A new upload of the same file_name is a new version: the previous one is kept and
+    is_current flips, so mappings keyed by the file's name survive re-uploads and every version keeps its
+    sha256 for the audit trail."""
+
+    __tablename__ = "data_files"
+
+    file_id: Mapped[uuid.UUID] = uuid_pk("file_id")
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("data_connections.connection_id", ondelete="CASCADE"), nullable=False
+    )
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Deferred: up to 25 MB per row must never come back with an ordinary load or with the refresh that follows a
+    # commit. The connector fetches the bytes explicitly, only when it has to parse them.
+    file_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="SET NULL"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

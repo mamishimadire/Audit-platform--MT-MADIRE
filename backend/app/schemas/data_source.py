@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from app.schemas.common import OrmModel
 
@@ -103,6 +103,44 @@ class DirectConnectionCreate(OrmModel):
         return self
 
 
+ConnectorDbType = Literal["file_upload", "sftp", "rest_api", "soap_api"]
+
+
+class ConnectorConnectionCreate(OrmModel):
+    """A connection that is not a database: files the user uploads, an SFTP drop, or a REST/SOAP API.
+    `config` holds the non-secret settings (validated per family in app.services.connectors.config);
+    `secrets` holds every credential — write-only, encrypted as one blob, never returned."""
+
+    db_type: ConnectorDbType
+    connection_name: str | None = Field(default=None, max_length=150)
+    config: dict = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+    # A ready-made template for a well-known API (see app.services.connectors.presets): its few settings go
+    # in `preset_params`, and it expands into the `config` (which must then be left empty).
+    preset: str | None = Field(default=None, max_length=40)
+    preset_params: dict = Field(default_factory=dict)
+
+
+class DataFileOut(OrmModel):
+    file_id: uuid.UUID
+    connection_id: uuid.UUID
+    file_name: str
+    content_type: str | None = None
+    sha256: str
+    size_bytes: int
+    is_current: bool
+    uploaded_by: uuid.UUID | None = None
+    uploaded_at: datetime
+
+
+class DataFileUploadOut(DataFileOut):
+    # What this version breaks for anything already mapped to the file (a column or table gone, a type
+    # changed). When there are any, the catalogue is NOT refreshed automatically: doing so would delete
+    # the mappings to the vanished columns, so the user confirms by running "Discover schema".
+    warnings: list[str] = Field(default_factory=list)
+    discovered: bool = False
+
+
 class DataConnectionOut(OrmModel):
     connection_id: uuid.UUID
     data_source_id: uuid.UUID
@@ -114,6 +152,9 @@ class DataConnectionOut(OrmModel):
     port: int | None = None
     database_name: str | None = None
     username: str | None = None
+    # Non-secret settings of a file / SFTP / API connection. Never holds a credential (see
+    # app.services.connectors.config, which refuses config that looks like one).
+    connector_config: dict | None = None
     oracle_connection_type: str | None = None
     sap_hana_encrypt: bool = True
     snowflake_warehouse: str | None = None
@@ -151,6 +192,10 @@ class DataConnectionUpdateRequest(OrmModel):
     snowflake_auth_method: SnowflakeAuthMethod | None = None
     snowflake_key_passphrase: str | None = None
     mongodb_srv: bool | None = None
+    # Only for file / SFTP / API connections (a database connection refuses them). `connector_config` is
+    # merged over the current settings; `secrets`, when given, REPLACES every stored credential.
+    connector_config: dict | None = None
+    secrets: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _at_least_one_field(self) -> "DataConnectionUpdateRequest":

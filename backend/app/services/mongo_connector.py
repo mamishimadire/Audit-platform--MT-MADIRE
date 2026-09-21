@@ -30,6 +30,7 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 from app.core.crypto import decrypt_secret
+from app.core.net_guard import UnsafeDestination, resolve_public
 from app.models.data_source import DataConnection
 from app.schemas.data_source import DiscoveredEntity, DiscoveredField
 
@@ -42,7 +43,31 @@ _CONNECT_TIMEOUT_MS = 8000
 SAMPLE_SIZE = 100
 
 
+def _vet_mongo_destination(connection: DataConnection) -> None:
+    """Same policy as every other outbound connection (app.core.net_guard): only public addresses. An SRV
+    address (Atlas and most managed clusters) is a name that DNS turns into the real hosts, so it is those
+    hosts that are vetted; a plain address is vetted directly."""
+    host = (connection.host or "").strip()
+    targets: list[tuple[str, int]]
+    if connection.mongodb_srv:
+        try:
+            import dns.resolver
+
+            answers = dns.resolver.resolve(f"_mongodb._tcp.{host}", "SRV", lifetime=8)
+            targets = [(str(a.target).rstrip("."), int(a.port)) for a in answers]
+        except Exception as exc:  # noqa: BLE001 — a missing/blocked SRV record: nothing to vet, and pymongo could not connect either
+            raise ValueError("That cluster address could not be resolved.") from exc
+    else:
+        targets = [(host, connection.port or 27017)]
+    try:
+        for target, port in targets:
+            resolve_public(target, port)
+    except UnsafeDestination as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _build_mongo_client(connection: DataConnection, *, password: str) -> MongoClient:
+    _vet_mongo_destination(connection)
     # Credentials are passed as separate kwargs, never concatenated into the
     # URI string — pymongo handles the escaping itself, so a password
     # containing '@', ':' or '%' can't break the connection string (same

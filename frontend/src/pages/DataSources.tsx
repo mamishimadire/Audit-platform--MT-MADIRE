@@ -5,6 +5,8 @@ import { useAuth } from '../auth/AuthContext'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { AddConnectorForm, ConnectorEditForm, ConnectorSummary, FilePanel } from '../components/ConnectorPanels'
+import { CONNECTOR_TYPE_LABELS, isConnectorType } from '../lib/connectorTypes'
 import type {
   ConnectionTestResult,
   DataConnectionChangeOut,
@@ -197,6 +199,7 @@ const CONNECTION_CHANGE_FIELD_LABELS: Record<string, string> = {
   snowflake_role: 'Snowflake role',
   snowflake_auth_method: 'Snowflake auth method',
   mongodb_srv: 'MongoDB SRV mode',
+  connector_config: 'settings',
 }
 
 function describeConnectionChange(change: DataConnectionChangeOut): string {
@@ -353,6 +356,22 @@ function ConnectionRow({
     }
   }
 
+  const submitConnectorEdit = async (payload: Record<string, unknown>) => {
+    setSubmitting(true)
+    setActionError(null)
+    try {
+      await apiClient.post(`/connections/${connection.connection_id}/changes/update`, payload)
+      setEditing(false)
+      await loadChanges()
+      onChanged()
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail
+      setActionError(typeof detail === 'string' ? detail : 'Could not submit this change for approval.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const requestDisconnect = async () => {
     setSubmitting(true)
     setActionError(null)
@@ -441,7 +460,12 @@ function ConnectionRow({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm">
           {connection.connection_name && <div className="text-sm font-medium text-ink">{connection.connection_name}</div>}
-          {connection.connection_mode === 'direct' ? (
+          {connection.connection_mode === 'direct' && isConnectorType(connection.db_type) ? (
+            <>
+              <span className="mr-2 rounded bg-bg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-soft">{CONNECTOR_TYPE_LABELS[connection.db_type]}</span>
+              <ConnectorSummary connection={connection} />
+            </>
+          ) : connection.connection_mode === 'direct' ? (
             <span className="font-mono text-xs text-ink">
               {connection.db_type === 'snowflake' ? (
                 <>
@@ -580,8 +604,13 @@ function ConnectionRow({
         </div>
       )}
       {revoked && <p className="mt-2 text-xs text-ink-soft">Disconnected — kept for history, no longer tested or used.</p>}
+      {connection.db_type === 'file_upload' && !revoked && <FilePanel connection={connection} canManage={canManage} onChanged={onDiscovered} />}
 
-      {editing && (
+      {editing && isConnectorType(connection.db_type) && (
+        <ConnectorEditForm connection={connection} approverNames={approverNames} submitting={submitting} onSubmit={submitConnectorEdit} />
+      )}
+
+      {editing && !isConnectorType(connection.db_type) && (
         <div className="mt-2 space-y-2 rounded-md border border-line bg-bg p-2">
           <input
             placeholder="Connection name (optional label)"
@@ -838,7 +867,8 @@ function DataSourceCard({
   const [eligibleApprovers, setEligibleApprovers] = useState<EligibleApproverOut[]>([])
   const [showHiddenConnections, setShowHiddenConnections] = useState(false)
   const [showHiddenEntities, setShowHiddenEntities] = useState(false)
-  const [mode, setMode] = useState<'gateway' | 'direct'>('gateway')
+  // A source made for files or an API starts on the tab that adds those; a database source on the Gateway tab.
+  const [mode, setMode] = useState<'gateway' | 'direct' | 'connector'>(source.source_type === 'files' || source.source_type === 'api' ? 'connector' : 'gateway')
   const [selectedGatewayId, setSelectedGatewayId] = useState('')
   const [provider, setProvider] = useState<Provider | ''>('')
   const [direct, setDirect] = useState({
@@ -1028,9 +1058,17 @@ function DataSourceCard({
               >
                 Connect directly to a cloud database
               </button>
+              <button
+                onClick={() => setMode('connector')}
+                className={`rounded-md px-2 py-1 ${mode === 'connector' ? 'bg-accent text-white' : 'bg-bg text-ink-soft'}`}
+              >
+                Files, SFTP or an API
+              </button>
             </div>
 
-            {mode === 'gateway' ? (
+            {mode === 'connector' ? (
+              <AddConnectorForm dataSourceId={source.data_source_id} onCreated={load} />
+            ) : mode === 'gateway' ? (
               <div className="mt-2">
                 <p className="text-xs text-ink-soft">
                   For a database on your own network or this machine — anything not directly reachable from the
@@ -1431,6 +1469,12 @@ export function DataSourcesPage() {
               <option value="postgresql">PostgreSQL</option>
               <option value="sql_server">Microsoft SQL Server</option>
               <option value="mysql">MySQL</option>
+              <option value="oracle">Oracle Database</option>
+              <option value="sap_hana">SAP HANA</option>
+              <option value="snowflake">Snowflake</option>
+              <option value="mongodb">MongoDB</option>
+              <option value="files">Files (CSV / Excel upload, SFTP)</option>
+              <option value="api">API (REST / SOAP, Salesforce, Zoho, Dynamics)</option>
               <option value="hubspot">HubSpot (CRM)</option>
             </select>
             <select

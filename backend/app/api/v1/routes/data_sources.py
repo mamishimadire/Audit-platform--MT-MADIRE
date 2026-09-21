@@ -1,7 +1,8 @@
 import threading
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from app.models.data_source import DataConnection, DataConnectionChange, DataEnt
 from app.models.rbac import User
 from app.schemas.data_source import (
     ConnectionTestResult,
+    ConnectorConnectionCreate,
     DataConnectionChangeOut,
     DataConnectionCreate,
     DataConnectionOut,
@@ -18,6 +20,8 @@ from app.schemas.data_source import (
     DataConnectionUpdateRequest,
     DataEntityOut,
     DataFieldOut,
+    DataFileOut,
+    DataFileUploadOut,
     DataSourceCreate,
     DataSourceOut,
     DirectConnectionCreate,
@@ -41,6 +45,7 @@ from app.services.data_connection_change_service import (
 )
 from app.services.data_source_service import (
     create_connection,
+    create_connector_connection,
     create_data_source,
     create_direct_connection,
     discover_direct_connection_schema,
@@ -61,6 +66,10 @@ from app.services.data_source_service import (
     set_entity_hidden,
     test_direct_connection,
 )
+from app.services.connectors import ConnectorError, presets as connector_presets
+from app.services.connectors.config import ConfigError
+from app.services.connectors.file_connector import current_files, delete_version, list_versions, schema_changes, store_upload, tables_for
+from app.services.connectors.file_parsing import MAX_FILE_BYTES
 from app.services.user_service import list_users_with_permission_for_organization
 
 router = APIRouter(tags=["data-sources"])
@@ -153,6 +162,34 @@ def create_direct_connection_route(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+@router.get("/connector-presets")
+def list_connector_presets(user: User = Depends(get_current_user)) -> list[dict]:
+    """The ready-made API templates (Salesforce, Zoho CRM, Dynamics 365 CRM) and the few facts each asks for."""
+    return connector_presets.describe()
+
+
+@router.post(
+    "/data-sources/{data_source_id}/connections/connector", response_model=DataConnectionOut, status_code=status.HTTP_201_CREATED
+)
+def create_connector_connection_route(
+    data_source_id: uuid.UUID,
+    payload: ConnectorConnectionCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    """A file, SFTP or API connection (see app.services.connectors). Credentials go in `secrets` and are
+    never returned."""
+    source = _get_source_or_404(db, data_source_id)
+    enforce_same_organization(source.organization_id, user, db)
+    try:
+        return create_connector_connection(
+            db, data_source_id=data_source_id, payload=payload, created_by_user_id=user.user_id,
+            organization_id=source.organization_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 def _get_connection_in_organization(db: Session, connection_id: uuid.UUID, user: User) -> DataConnection:
     connection = db.get(DataConnection, connection_id)
     if connection is None:
@@ -176,6 +213,108 @@ def test_connection_route(
     return ConnectionTestResult(success=success, detail=detail)
 
 
+def _get_file_connection(db: Session, connection_id: uuid.UUID, user: User) -> DataConnection:
+    connection = _get_connection_in_organization(db, connection_id, user)
+    if connection.db_type != "file_upload":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Files can only be uploaded to a file connection.")
+    return connection
+
+
+def _store_uploaded_file(db: Session, *, connection: DataConnection, user: User, file_name: str, content_type: str | None, data: bytes) -> DataFileUploadOut:
+    """Runs off the event loop (parsing a large workbook takes seconds). Stores the file as the new
+    current version, then refreshes the catalogue unless the file breaks something already mapped."""
+    source = _get_source_or_404(db, connection.data_source_id)
+    name = file_name.replace("\\", "/").split("/")[-1][:255]
+    before: tuple = ()
+    existing = [f for f in current_files(db, connection.connection_id) if f.file_name == name]
+    if existing:
+        try:
+            before = tables_for(db, existing[0])
+        except Exception:  # noqa: BLE001 — an unreadable earlier version cannot be compared; it is not a reason to refuse the new one
+            before = ()
+    stored = store_upload(db, connection=connection, file_name=file_name, content_type=content_type, data=data, uploaded_by=user.user_id)
+    log_action(
+        db,
+        action="Uploaded data file",
+        organization_id=source.organization_id,
+        user_id=user.user_id,
+        entity_type="data_connections",
+        entity_id=connection.connection_id,
+        new_value={"file_name": stored.file_name, "sha256": stored.sha256, "size_bytes": stored.size_bytes},
+    )
+    db.commit()
+    warnings = schema_changes(before, tables_for(db, stored)) if before else []
+    test_direct_connection(db, connection=connection)  # a connection with a readable file is connected: the scheduler can now use it
+    discovered = False
+    if not warnings:
+        try:
+            discover_direct_connection_schema(db, connection=connection)
+            discovered = True
+            threading.Thread(
+                target=profile_data_source_in_background, args=(connection.data_source_id,), daemon=True, name="column-profiling"
+            ).start()
+        except Exception:  # noqa: BLE001 — the upload itself succeeded; "Discover schema" can be run by hand
+            db.rollback()
+    return DataFileUploadOut.model_validate(stored, from_attributes=True).model_copy(update={"warnings": warnings, "discovered": discovered})
+
+
+@router.post("/connections/{connection_id}/files", response_model=DataFileUploadOut, status_code=status.HTTP_201_CREATED)
+async def upload_data_file_route(
+    connection_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_file_connection(db, connection_id, user)
+    too_large = HTTPException(
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"The file is larger than the {MAX_FILE_BYTES // (1024 * 1024)} MB limit."
+    )
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_FILE_BYTES + 1024 * 1024:
+        raise too_large
+    data = await file.read(MAX_FILE_BYTES + 1)  # bounded: never buffer more than the limit plus one byte
+    if len(data) > MAX_FILE_BYTES:
+        raise too_large
+    try:
+        return await run_in_threadpool(
+            _store_uploaded_file, db, connection=connection, user=user, file_name=file.filename or "upload", content_type=file.content_type, data=data
+        )
+    except ValueError as exc:  # FileParseError: written to be shown
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/connections/{connection_id}/files", response_model=list[DataFileOut])
+def list_data_files_route(connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    connection = _get_connection_in_organization(db, connection_id, user)
+    return list_versions(db, connection.connection_id)
+
+
+@router.delete("/connections/{connection_id}/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_data_file_route(
+    connection_id: uuid.UUID,
+    file_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permissions("data_sources:manage")),
+):
+    connection = _get_file_connection(db, connection_id, user)
+    source = _get_source_or_404(db, connection.data_source_id)
+    if not delete_version(db, connection_id=connection.connection_id, file_id=file_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found")
+    log_action(
+        db,
+        action="Deleted data file version",
+        organization_id=source.organization_id,
+        user_id=user.user_id,
+        entity_type="data_connections",
+        entity_id=connection.connection_id,
+        new_value={"file_id": str(file_id)},
+    )
+    db.commit()
+    test_direct_connection(db, connection=connection)  # refresh "connected" now that the files have changed
+
+
 @router.post("/connections/{connection_id}/discover", response_model=list[DataEntityOut])
 def discover_connection_route(
     connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_permissions("data_sources:manage"))
@@ -194,6 +333,8 @@ def discover_connection_route(
             target=profile_data_source_in_background, args=(connection.data_source_id,), daemon=True, name="column-profiling"
         ).start()
         return entities
+    except ConnectorError as exc:  # a file / SFTP / API connection: its message was written to be shown
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — surfaced as a clean 400, never a raw driver error with the DSN in it
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not read the schema from this database. Test the connection first.") from exc
 
@@ -260,6 +401,8 @@ def request_connection_update_route(
         return request_connection_update(
             db, connection=connection, payload=payload, requested_by_user_id=user.user_id, organization_id=source.organization_id
         )
+    except ConfigError as exc:  # a setting that is not acceptable: the request is wrong, not in conflict
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

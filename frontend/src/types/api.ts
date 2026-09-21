@@ -296,6 +296,8 @@ export interface DataSourceOut {
 }
 
 export type DirectDbType = 'postgresql' | 'mysql' | 'mssql' | 'oracle' | 'sap_hana' | 'snowflake' | 'mongodb'
+// Connections that are not databases: files the user uploads, an SFTP drop, a REST or SOAP API.
+export type ConnectorDbType = 'file_upload' | 'sftp' | 'rest_api' | 'soap_api'
 export type OracleConnectionType = 'service_name' | 'sid'
 export type SnowflakeAuthMethod = 'password' | 'key_pair'
 
@@ -305,11 +307,13 @@ export interface DataConnectionOut {
   gateway_id: string | null
   connection_name: string | null
   connection_mode: 'gateway' | 'direct'
-  db_type: DirectDbType | null
+  db_type: DirectDbType | ConnectorDbType | null
   host: string | null
   port: number | null
   database_name: string | null
   username: string | null
+  // Non-secret settings of a file / SFTP / API connection. Never holds a credential.
+  connector_config: Record<string, unknown> | null
   oracle_connection_type: OracleConnectionType | null
   sap_hana_encrypt: boolean
   snowflake_warehouse: string | null
@@ -320,6 +324,43 @@ export interface DataConnectionOut {
   connection_status: string
   last_tested_at: string | null
   is_hidden: boolean
+}
+
+export interface DataFileOut {
+  file_id: string
+  connection_id: string
+  file_name: string
+  content_type: string | null
+  sha256: string
+  size_bytes: number
+  is_current: boolean
+  uploaded_by: string | null
+  uploaded_at: string
+}
+
+// What an upload broke for anything already mapped to the file; when there are warnings the catalogue
+// is NOT refreshed automatically (that would delete mappings to columns that vanished).
+export interface DataFileUploadOut extends DataFileOut {
+  warnings: string[]
+  discovered: boolean
+}
+
+export interface ConnectorPresetParam {
+  name: string
+  label: string
+  kind: 'text' | 'choice' | 'list'
+  required: boolean
+  choices: string[]
+  default: unknown
+  help: string
+}
+
+export interface ConnectorPreset {
+  key: string
+  label: string
+  description: string
+  params: ConnectorPresetParam[]
+  secrets: { name: string; label: string }[]
 }
 
 export type DataConnectionChangeType = 'update' | 'disconnect' | 'delete'

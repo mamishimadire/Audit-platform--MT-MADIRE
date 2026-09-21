@@ -35,7 +35,7 @@ const CATEGORIES: Category[] = [
     subtitle: 'Customer & revenue data',
     items: ['Salesforce', 'MS Dynamics 365 CRM', 'HubSpot', 'Zoho CRM'],
     underlying: 'Access via vendor API / OAuth connector, not direct DB',
-    note: 'HubSpot proves the API/OAuth connector model: a genuinely separate connector family from the database layer below, with its own token-refresh and revocation-detection lifecycle — see Data Sources to connect it. The rest of this category still needs their own vendor-specific OAuth integration built the same way.',
+    note: 'HubSpot has its own OAuth connector. Salesforce, Zoho CRM and Dynamics 365 CRM are ready-made templates on the REST API connection (see Data Sources → Files, SFTP or an API). † The templates follow each vendor\'s public API documentation and were tested against servers that answer in the documented shapes; they have not been run against a live tenant of that vendor.',
   },
   {
     code: 'BNK',
@@ -44,7 +44,7 @@ const CATEGORIES: Category[] = [
     subtitle: 'Reconciliation & transaction evidence',
     items: ['BankservAfrica', 'SWIFT / Temenos T24', 'Corporate banking gateways', 'PayFast', 'Peach Payments', 'Ozow', 'Adumo'],
     underlying: 'Access via secure file feed or bank API, read-only',
-    note: 'Not yet built — these need a file-feed or bank-API connector, not built yet.',
+    note: 'No vendor-specific connector for these. Where a bank or provider offers a file feed or a REST/SOAP API, connect it through the SFTP file-feed or API connection under Data Sources; the connector for that specific provider is not built.',
   },
   {
     code: 'PRC',
@@ -95,9 +95,11 @@ const CATEGORIES: Category[] = [
 // -> mapping -> execution) is actually implemented and tested, never just
 // because a driver package landed in requirements.txt.
 type ConnectorStatus = 'live' | 'planned'
-type ConnectorKind = 'database' | 'api_oauth'
+type ConnectorKind = 'database' | 'api_oauth' | 'api' | 'files'
 
-const CONNECTOR_REGISTRY: Record<string, { status: ConnectorStatus; type: ConnectorKind }> = {
+// `caveat`: what has NOT been verified for a connector that is otherwise built and tested. It is shown on the chip
+// (†), because "live" here means the flow works, not that it has been run against every vendor's real system.
+const CONNECTOR_REGISTRY: Record<string, { status: ConnectorStatus; type: ConnectorKind; caveat?: string }> = {
   'Microsoft SQL Server': { status: 'live', type: 'database' },
   'PostgreSQL': { status: 'live', type: 'database' },
   'MySQL / MariaDB': { status: 'live', type: 'database' },
@@ -107,9 +109,14 @@ const CONNECTOR_REGISTRY: Record<string, { status: ConnectorStatus; type: Connec
   'HubSpot': { status: 'live', type: 'api_oauth' },
   'Snowflake': { status: 'live', type: 'database' },
   'MongoDB': { status: 'live', type: 'database' },
+  'REST / SOAP APIs': { status: 'live', type: 'api' },
+  'CSV / Excel / SFTP files': { status: 'live', type: 'files' },
+  'Salesforce': { status: 'live', type: 'api', caveat: 'Template on the REST connection, tested against a mock server that answers the way Salesforce documents; not yet run against a live Salesforce org.' },
+  'Zoho CRM': { status: 'live', type: 'api', caveat: 'Template on the REST connection, tested against a mock server that answers the way Zoho documents; not yet run against a live Zoho account.' },
+  'MS Dynamics 365 CRM': { status: 'live', type: 'api', caveat: 'Template on the REST connection, tested against a mock server that answers the way Dataverse documents; not yet run against a live Dynamics environment.' },
 }
 
-const KIND_LABEL: Record<ConnectorKind, string> = { database: 'DB', api_oauth: 'API/OAuth' }
+const KIND_LABEL: Record<ConnectorKind, string> = { database: 'DB', api_oauth: 'API/OAuth', api: 'API', files: 'Files' }
 
 export function ConnectorCataloguePage() {
   return (
@@ -125,22 +132,27 @@ export function ConnectorCataloguePage() {
         <div className="font-semibold text-accent-ink">What's actually live today</div>
         <p className="mt-1 text-ink">
           <span className="font-medium">PostgreSQL, MySQL, Microsoft SQL Server, Oracle Database, SAP HANA, Snowflake
-          and MongoDB</span> are working end to end via the database layer — connect directly to a cloud-hosted
-          database (all seven), or via the Gateway for anything on a private network (Postgres/MySQL/MSSQL only —
-          Oracle, SAP HANA, Snowflake and MongoDB don't have a Gateway-relay connector yet, direct-cloud only) — real
-          connection testing and schema discovery, not a mockup.
-          <span className="font-medium"> HubSpot</span> is fully working end to end via a genuinely separate
-          <span className="font-medium"> API/OAuth</span> connector — no SQL involved, its own token-refresh and
-          revocation-detection lifecycle. Anything below marked <span className="font-medium">✓ DB</span> or <span className="font-medium">✓ API/OAuth</span> works
-          today for exactly that reason: it sits on one of those. Everything else (every other CRM/ERP/banking vendor)
-          is the target catalogue this platform is built to extend to next — not yet connectable.
+          and MongoDB</span> work end to end through the database layer: connect directly to a database that is reachable
+          from the internet, or through the <span className="font-medium">Gateway</span> (version 0.5.0 and later) for
+          anything on a private network. Real connection testing, schema discovery, mapping and execution — not a mockup.
+          <span className="font-medium"> Files</span> (CSV and Excel you upload, or the newest file matching a path on an
+          <span className="font-medium"> SFTP</span> server) and <span className="font-medium">REST and SOAP APIs</span> are
+          connections too: each file, sheet or API endpoint becomes a table that is discovered, mapped and tested exactly
+          like a database table. <span className="font-medium">HubSpot</span> has its own OAuth connector.
         </p>
-        <p className="mt-2 text-amber-800">
-          Known gap, applies to every connector above: a <span className="font-medium">direct</span> connection (and
-          HubSpot) can be tested and schema-discovered today, but there's no scheduler yet that picks it up for
-          <span className="font-medium"> continuous</span> monitoring test execution — only a Gateway-relay connection
-          runs on a recurring schedule right now. Mapping/approval/control-activation all work the same regardless of
-          connection mode; only the "run this automatically, repeatedly" step is Gateway-only so far.
+        <p className="mt-2 text-ink">
+          <span className="font-medium">What has not been proven against a real system:</span> Oracle, SAP HANA and Snowflake
+          through the Gateway are verified by their drivers' documented behaviour and by tests that need no server (no Oracle,
+          HANA or Snowflake server was available); Salesforce, Zoho CRM and Dynamics 365 CRM are templates tested against
+          servers that answer in each vendor's documented shape, not against a live tenant; and the Gateway executable
+          has been built and inspected but not run on a real Windows client machine. The first connection to each is the
+          remaining test — chips marked † carry that caveat.
+        </p>
+        <p className="mt-2 text-ink">
+          Continuous monitoring works for both connection modes: a Gateway-relay connection runs its due tests on the
+          client's own network on the Gateway's schedule, and a <span className="font-medium">direct</span> connection is
+          picked up by the platform's own scheduler (polled every 30 seconds). Mapping, approval and control
+          activation are identical either way.
         </p>
         <p className="mt-2 text-ink-soft">
           Set up a real connection from{' '}
@@ -171,10 +183,10 @@ export function ConnectorCataloguePage() {
                   <span
                     key={item}
                     className={`rounded-full px-2 py-0.5 text-xs ${isLive ? 'bg-accent-soft font-medium text-accent-ink' : 'bg-bg text-ink-soft'}`}
-                    title={isLive ? `Live via the ${KIND_LABEL[entry.type]} layer` : undefined}
+                    title={isLive ? (entry.caveat ?? `Live via the ${KIND_LABEL[entry.type]} layer`) : undefined}
                   >
                     {item}
-                    {isLive ? ` ✓ ${KIND_LABEL[entry.type]}` : ''}
+                    {isLive ? ` ✓ ${KIND_LABEL[entry.type]}${entry.caveat ? ' †' : ''}` : ''}
                   </span>
                 )
               })}

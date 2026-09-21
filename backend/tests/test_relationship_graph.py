@@ -257,19 +257,38 @@ def test_sqlite_schema_discovery_reads_declared_metadata(client_db, monkeypatch)
 
 
 def test_one_failing_catalog_call_never_fails_discovery(client_db, monkeypatch):
+    """Foreign keys unreadable BOTH ways (the batched read and the per-table fallback): discovery still
+    succeeds and reports them as "not reported", never as "none exist"."""
+    from sqlalchemy.engine.reflection import Inspector
+
     monkeypatch.setattr(data_source_service, "_build_direct_engine", lambda c: create_engine(f"sqlite:///{client_db}"))
-    real = data_source_service._safe_inspector_call
 
-    def flaky(call, table):
-        if getattr(call, "__name__", "") == "get_foreign_keys":
-            return None
-        return real(call, table)
+    def boom(self, *a, **k):
+        raise RuntimeError("catalog permission denied")
 
-    monkeypatch.setattr(data_source_service, "_safe_inspector_call", flaky)
+    monkeypatch.setattr(Inspector, "get_multi_foreign_keys", boom)
+    monkeypatch.setattr(Inspector, "get_foreign_keys", boom)
     captured = {}
     monkeypatch.setattr(data_source_service, "replace_discovery", lambda db, **k: captured.update(k) or [])
     data_source_service.discover_direct_connection_schema(None, connection=SimpleNamespace(db_type="sqlite", data_source_id=uuid.uuid4()))
-    assert all(e.foreign_keys is None for e in captured["payload"].entities)  # "not reported", not "none exist"
+    assert captured["payload"].entities and all(e.foreign_keys is None for e in captured["payload"].entities)
+
+
+def test_batched_and_per_table_catalog_reads_give_identical_discovery(client_db, monkeypatch):
+    """The batched read is only a speed-up: with it disabled (falling back table by table) the discovered
+    schema, constraints and foreign keys must be exactly the same."""
+    monkeypatch.setattr(data_source_service, "_build_direct_engine", lambda c: create_engine(f"sqlite:///{client_db}"))
+
+    def discover():
+        captured = {}
+        monkeypatch.setattr(data_source_service, "replace_discovery", lambda db, **k: captured.update(k) or [])
+        data_source_service.discover_direct_connection_schema(None, connection=SimpleNamespace(db_type="sqlite", data_source_id=uuid.uuid4()))
+        return [e.model_dump() for e in captured["payload"].entities]
+
+    batched = discover()
+    monkeypatch.setattr(data_source_service, "_batched", lambda inspector, method: None)
+    per_table = discover()
+    assert batched == per_table and any(e["foreign_keys"] for e in batched)
 
 
 @pytest.fixture

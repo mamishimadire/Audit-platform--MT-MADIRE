@@ -48,7 +48,7 @@ _NUMERIC_RE = re.compile(r"^-?\d+(\.\d+)?$")
 _DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$")
 
 # Data types never worth pulling over the wire to profile.
-_BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw")
+_BINARY_TYPE_MARKERS = ("bytea", "blob", "binary", "image", "raw", "lob", "bfile")  # "lob" also covers Oracle/HANA CLOB and NCLOB: the driver returns locators, not text
 
 
 _IDENTIFIER_NAME_WORDS = frozenset({"id", "no", "num", "number", "key", "uuid", "guid", "ref", "reference"})
