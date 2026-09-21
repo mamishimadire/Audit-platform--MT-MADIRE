@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import threading
 import time
 import uuid
@@ -31,9 +32,11 @@ from app.core.net_guard import UnsafeDestination, safe_request
 from app.models.data_source import DataConnection
 from app.schemas.data_source import DiscoveredEntity, DiscoveredField
 from app.services.connectors import ConnectorError, EntityNotHere, register
-from app.services.connectors.config import unpack_secrets
+from app.services.connectors.config import pack_secrets, unpack_secrets
 from app.services.connectors.file_parsing import table_from_records
 from app.services.connectors.rest_settings import PLACEHOLDER
+
+logger = logging.getLogger("app.rest_connector")
 
 DISCOVERY_RECORDS = 200
 # All the pages of one endpoint together. The platform's scheduler loop is waiting on the read, so an API that answers
@@ -140,6 +143,50 @@ def _flatten(record: dict, prefix: str = "", depth: int = 0, out: dict | None = 
     return out
 
 
+# --- a provider that rotates the refresh token on every use -----------------------------------------------------------
+# Some providers invalidate the refresh token the moment it is used and hand back a new one. If that new token is
+# not kept, the connection works once and then never again. So it is written back into the connection's encrypted
+# credentials (only that one entry; every other secret is left as it was), and the token used for the NEXT refresh
+# is always the one currently stored, read fresh, because the connection object a caller holds may predate it.
+# Known limit: two refreshes at the same instant (say a scheduled run and a person pressing "Test connection") race
+# for the one valid token on such a provider; the loser is refused and the next attempt uses the stored new one.
+def _stored_secrets(connection_id: uuid.UUID) -> dict[str, str] | None:
+    db = None
+    try:
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        row = db.get(DataConnection, connection_id)
+        return unpack_secrets(row.encrypted_password) if row is not None else None
+    except Exception:  # noqa: BLE001 — no readable stored copy: the caller falls back to the one it has
+        return None
+    finally:
+        if db is not None:
+            db.close()
+
+
+def _store_refresh_token(connection_id: uuid.UUID, token: str) -> bool:
+    db = None
+    try:
+        from app.db.session import SessionLocal
+
+        db = SessionLocal()
+        row = db.get(DataConnection, connection_id)
+        if row is None:
+            return False
+        secrets = unpack_secrets(row.encrypted_password)
+        secrets["refresh_token"] = token
+        row.encrypted_password = pack_secrets(secrets)
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001 — never let a failed write fail the read that succeeded, and never log the token
+        logger.warning("could not store a rotated refresh token for connection %s", connection_id)
+        return False
+    finally:
+        if db is not None:
+            db.close()  # an uncommitted session rolls back on close
+
+
 def _http_message(status: int) -> str:
     if status in (401, 403):
         return f"The API rejected the credentials (HTTP {status})."
@@ -191,16 +238,21 @@ class _Api:
 
     # -- authentication
     def _token(self, *, force: bool = False) -> str:
-        signature = (self.auth.get("type"), self.auth.get("token_url"), hashlib.sha256(json.dumps(self.secrets, sort_keys=True).encode()).hexdigest())
+        # The refresh token is left out of the signature: a rotated one must not orphan the access token it just bought.
+        stable = {k: v for k, v in self.secrets.items() if k != "refresh_token"}
+        signature = (self.auth.get("type"), self.auth.get("token_url"), hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest())
         with _lock:
             cached = _TOKENS.get(self.connection_id)
         if cached and not force and cached[2] == signature and time.monotonic() < cached[1]:
             return cached[0]
+        sent_refresh_token = None
         if self.auth["type"] == "oauth2_client_credentials":
             form = {"grant_type": "client_credentials", "client_id": self.secrets["client_id"], "client_secret": self.secrets["client_secret"]}
         else:
+            stored = _stored_secrets(self.connection_id)
+            sent_refresh_token = (stored or {}).get("refresh_token") or self.secrets["refresh_token"]
             form = {
-                "grant_type": "refresh_token", "refresh_token": self.secrets["refresh_token"],
+                "grant_type": "refresh_token", "refresh_token": sent_refresh_token,
                 "client_id": self.secrets["client_id"], "client_secret": self.secrets["client_secret"],
             }
         if self.auth.get("scope"):
@@ -222,6 +274,10 @@ class _Api:
             raise ConnectorError("The token service did not return an access token.") from exc
         with _lock:
             _TOKENS[self.connection_id] = (token, time.monotonic() + max(lifetime - _TOKEN_EARLY_EXPIRY_SECONDS, 1), signature)
+        rotated = payload.get("refresh_token") if isinstance(payload, dict) else None
+        if sent_refresh_token is not None and isinstance(rotated, str) and rotated and rotated != sent_refresh_token:
+            self.secrets["refresh_token"] = rotated
+            _store_refresh_token(self.connection_id, rotated)
         return token
 
     def _apply_auth(self, headers: dict, params: dict, *, refresh: bool) -> None:

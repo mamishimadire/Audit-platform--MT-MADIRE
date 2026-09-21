@@ -971,3 +971,132 @@ def test_an_api_table_is_mapped_through_the_real_routes_approved_by_someone_else
             db.commit()
         db.delete(db.get(User, maker.user_id))
         db.commit()
+
+
+# --- a provider that rotates the refresh token on every use -------------------------------------------------------------------
+class RotatingProvider:
+    """Behaves like a provider that invalidates a refresh token the moment it is used and returns a new one. A client that
+    ever sends a token twice, or an old one, is refused."""
+
+    def __init__(self, first_refresh_token="rt-1"):
+        self.valid_refresh = first_refresh_token
+        self.access = None
+        self.sent: list[str] = []
+        self.count = 0
+
+    def token(self, request):
+        form = parse_qs(request.body.decode())
+        sent = form.get("refresh_token", [""])[0]
+        self.sent.append(sent)
+        if sent != self.valid_refresh:
+            return json_resp({"error": "invalid_grant"}, 400)
+        self.count += 1
+        self.valid_refresh = f"rt-{self.count + 1}"
+        self.access = f"at-{self.count}"
+        return json_resp({"access_token": self.access, "expires_in": 3600, "refresh_token": self.valid_refresh})
+
+    def data(self, request):
+        return json_resp(INVOICES) if request.headers.get("authorization") == f"Bearer {self.access}" else json_resp({"error": "expired"}, 401)
+
+
+def _rotating_setup(api):
+    provider = RotatingProvider()
+    api.route("POST", "/oauth/token", provider.token)
+    api.route("GET", "/invoices", provider.data)
+    config = {
+        "base_url": api.base, "auth": {"type": "oauth2_refresh_token", "token_url": f"{api.base}/oauth/token"},
+        "headers": {"X-Tenant": "{{secret.tenant}}"}, "endpoints": [{"entity_name": "invoices", "path": "/invoices"}],
+    }
+    secrets = {"client_id": "cid", "client_secret": "csecret", "refresh_token": "rt-1", "tenant": "acme"}
+    return provider, config, secrets
+
+
+def test_a_rotated_refresh_token_is_stored_and_the_next_refresh_uses_it_even_from_a_stale_copy(db, connector_world, api):
+    from app.models.data_source import DataConnection
+    from app.services import data_source_service
+
+    http, world = _http(), connector_world
+    provider, config, secrets = _rotating_setup(api)
+    created = _create_rest(http, world, api, config=config, secrets=secrets)
+    assert created.status_code == 201, created.text
+    connection_id = uuid.UUID(created.json()["connection_id"])
+
+    def stored():
+        db.expire_all()
+        return connector_settings.unpack_secrets(db.get(DataConnection, connection_id).encrypted_password)
+
+    row = db.get(DataConnection, connection_id)
+    stale = SimpleNamespace(  # a copy of the connection as it was BEFORE any rotation, like one a scheduler cycle holds
+        connection_id=row.connection_id, db_type=row.db_type, connector_config=row.connector_config, encrypted_password=row.encrypted_password,
+        host=row.host, port=row.port, username=row.username,
+    )
+
+    assert len(data_source_service.fetch_direct_records(row, entity_name="invoices", field_names=["id"], limit=10)) == 2
+    assert provider.sent == ["rt-1"]
+    after_first = stored()
+    assert after_first["refresh_token"] == "rt-2"  # the new token was kept...
+    assert {k: v for k, v in after_first.items() if k != "refresh_token"} == {"client_id": "cid", "client_secret": "csecret", "tenant": "acme"}  # ...and nothing else touched
+
+    # The access token expires. The next refresh comes from the STALE copy (which still holds rt-1, now dead at the
+    # provider): it must use what is stored, or the provider refuses it and the connection is lost.
+    rest_connector._TOKENS.clear()
+    rest_connector._RECORDS.clear()
+    assert len(data_source_service.fetch_direct_records(stale, entity_name="invoices", field_names=["id"], limit=10)) == 2
+    assert provider.sent == ["rt-1", "rt-2"]  # never a token twice, never an old one
+    assert stored()["refresh_token"] == "rt-3"
+
+    # While the access token is still good, nothing is refreshed at all (so nothing rotates needlessly).
+    rest_connector._RECORDS.clear()
+    assert len(data_source_service.fetch_direct_records(row, entity_name="invoices", field_names=["id"], limit=10)) == 2
+    assert provider.sent == ["rt-1", "rt-2"]
+    listed = http.get(f"/api/v1/data-sources/{world.source.data_source_id}/connections", headers=_bearer(world.manager)).text
+    assert "rt-1" not in listed and "rt-2" not in listed and "rt-3" not in listed and "csecret" not in listed  # no token is ever returned by the API
+
+
+def test_a_person_who_replaces_the_refresh_token_by_hand_wins_over_an_older_stored_one(db, connector_world, api):
+    """A new credential typed in (through the approved edit) is the one to use, not a stale rotated token."""
+    from app.models.data_source import DataConnection
+    from app.services import data_source_service
+
+    http, world = _http(), connector_world
+    provider, config, secrets = _rotating_setup(api)
+    provider.valid_refresh = "rt-hand-typed"  # the provider has been re-authorized: only the new token works now
+    created = _create_rest(http, world, api, config=config, secrets={**secrets, "refresh_token": "rt-hand-typed"})
+    assert created.status_code == 201, created.text
+    row = db.get(DataConnection, uuid.UUID(created.json()["connection_id"]))
+    assert len(data_source_service.fetch_direct_records(row, entity_name="invoices", field_names=["id"], limit=10)) == 2
+    assert provider.sent == ["rt-hand-typed"]
+
+
+def test_a_provider_that_does_not_rotate_causes_no_write_and_client_credentials_never_read_the_store(api, monkeypatch):
+    writes, reads = [], []
+    monkeypatch.setattr(rest_connector, "_store_refresh_token", lambda cid, token: writes.append(token) or True)
+    monkeypatch.setattr(rest_connector, "_stored_secrets", lambda cid: reads.append(cid) or None)
+    api.route("POST", "/oauth/token", lambda r: json_resp({"access_token": "tok", "expires_in": 3600}))  # no refresh_token in the answer
+    api.route("GET", "/invoices", lambda r: json_resp(INVOICES) if r.headers.get("authorization") == "Bearer tok" else json_resp({}, 401))
+    conn = connection(api, auth={"type": "oauth2_refresh_token", "token_url": f"{api.base}/oauth/token"}, secrets={"client_id": "c", "client_secret": "s", "refresh_token": "rt-1"})
+    assert len(fetch(conn)) == 2 and writes == [] and len(reads) == 1  # the store is read to get the current token; nothing is written
+
+    reads.clear()
+    rest_connector._TOKENS.clear()
+    rest_connector._RECORDS.clear()
+    cc = connection(api, auth={"type": "oauth2_client_credentials", "token_url": f"{api.base}/oauth/token"}, secrets={"client_id": "c", "client_secret": "s"})
+    assert len(fetch(cc)) == 2 and writes == [] and reads == []  # there is no refresh token to rotate or to look up
+
+
+def test_failing_to_store_a_rotated_token_never_fails_the_read_and_never_leaks_it(api, monkeypatch, caplog):
+    import logging
+
+    provider = RotatingProvider()
+    api.route("POST", "/oauth/token", provider.token)
+    api.route("GET", "/invoices", provider.data)
+
+    class BrokenSession:
+        def __init__(self, *a, **k):
+            raise RuntimeError("the database is unreachable")
+
+    monkeypatch.setattr("app.db.session.SessionLocal", BrokenSession)
+    conn = connection(api, auth={"type": "oauth2_refresh_token", "token_url": f"{api.base}/oauth/token"}, secrets={"client_id": "c", "client_secret": "s", "refresh_token": "rt-1"})
+    with caplog.at_level(logging.WARNING, logger="app.rest_connector"):
+        assert len(fetch(conn)) == 2  # the data was read; only the bookkeeping failed
+    assert "could not store a rotated refresh token" in caplog.text and "rt-2" not in caplog.text
