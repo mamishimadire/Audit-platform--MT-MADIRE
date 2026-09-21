@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -79,7 +80,7 @@ from app.services.device_service import (
     request_deletion,
     request_revocation,
 )
-from app.services.endpoint_agent_download_service import build_endpoint_agent_archive
+from app.services.endpoint_agent_download_service import windows_exe
 
 router = APIRouter(tags=["devices"])
 
@@ -120,7 +121,7 @@ def download_endpoint_agent(platform: str) -> Response:
     """Public by design — same reasoning as /gateways/download: this ships
     generic installer source, not a credential."""
     try:
-        content, filename, media_type = build_endpoint_agent_archive(platform)
+        path, filename, media_type = windows_exe(platform)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except OSError as exc:
@@ -128,7 +129,7 @@ def download_endpoint_agent(platform: str) -> Response:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The Endpoint Agent application isn't available for download right now — please try again shortly.",
         ) from exc
-    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return FileResponse(path, media_type=media_type, filename=filename)  # streamed from disk, not loaded into memory
 
 
 @router.post("/organizations/{organization_id}/devices", response_model=DeviceCreatedOut, status_code=status.HTTP_201_CREATED)

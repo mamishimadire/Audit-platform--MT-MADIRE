@@ -25,20 +25,32 @@ def _iter_source_files(*, exclude_names: set[str]):
         yield path
 
 
-def build_gateway_archive(platform: str) -> tuple[bytes, str, str]:
+_EXE_MEDIA_TYPE = "application/vnd.microsoft.portable-executable"
+
+
+def windows_exe() -> tuple[Path, str, str]:
     """
     Windows gets the compiled application itself — MadireGateway.exe, built
     via PyInstaller from this same source (see gateway/build_entry.py) —
     downloaded directly, not wrapped in a zip. It's a self-contained CLI
     (register / run / service install|start|stop|remove); nothing else
-    needs to ship alongside it. Linux gets the source as a tarball, which is
-    the normal, expected way to run server-side tooling there.
-    """
-    if platform == "windows":
-        with open(WINDOWS_EXE_PATH, "rb") as fh:
-            exe_bytes = fh.read()
-        return exe_bytes, "MadireGateway.exe", "application/vnd.microsoft.portable-executable"
+    needs to ship alongside it.
 
+    Returned as a FILE, to be streamed from disk by the route, never read into
+    memory: it is tens of megabytes (76 MB since Oracle, SAP HANA and Snowflake
+    joined it) and the download endpoint is public, so reading it whole per
+    request would let a handful of concurrent requests exhaust a small server.
+    """
+    WINDOWS_EXE_PATH.stat()  # raises OSError if it is missing, so the route can say "try again shortly"
+    return WINDOWS_EXE_PATH, "MadireGateway.exe", _EXE_MEDIA_TYPE
+
+
+def build_gateway_archive(platform: str) -> tuple[bytes, str, str]:
+    """
+    Linux gets the source as a tarball, which is the normal, expected way to
+    run server-side tooling there. (It is small: the source only, never the
+    executable; Windows is served by windows_exe().)
+    """
     if platform == "linux":
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tf:

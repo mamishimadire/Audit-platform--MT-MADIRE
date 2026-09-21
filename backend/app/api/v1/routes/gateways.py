@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import enforce_same_organization, get_current_gateway, get_current_user, require_permissions
@@ -15,7 +16,7 @@ from app.schemas.gateway import (
     GatewayRegisterRequest,
     GatewayRegisterResponse,
 )
-from app.services.gateway_download_service import build_gateway_archive
+from app.services.gateway_download_service import build_gateway_archive, windows_exe
 from app.services.gateway_service import (
     create_gateway,
     list_gateways,
@@ -35,6 +36,9 @@ def download(platform: str) -> Response:
     is what actually binds an installed Gateway to a tenant.
     """
     try:
+        if platform == "windows":
+            path, filename, media_type = windows_exe()
+            return FileResponse(path, media_type=media_type, filename=filename)  # streamed from disk, not loaded into memory
         content, filename, media_type = build_gateway_archive(platform)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
