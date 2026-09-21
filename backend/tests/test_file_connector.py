@@ -389,3 +389,99 @@ def test_managing_versions_never_loads_old_file_bytes_into_memory(db, world, mon
         event.remove(db.get_bind(), "before_cursor_execute", record)
         db.query(DataFile).filter(DataFile.connection_id == connection.connection_id).delete()
         db.commit()
+
+
+USERS_CSV = (
+    "user_id,username,status,last_login,role\n"
+    + "".join(
+        f"U{i:03d},user{i},{status},2026-08-{i + 1:02d},{'admin' if i % 4 == 0 else 'clerk'}\n"
+        for i, status in enumerate(["active", "active", "locked", "terminated", "active", "active", "terminated", "active", "locked", "active"])
+    )
+)
+
+
+def _auditor(db, world):
+    """A second person who may manage mappings (the maker); world.manager cannot, and the approver must be someone else."""
+    from app.models.rbac import Role, User, UserRole
+
+    user = User(
+        organization_id=world.org.organization_id, first_name="Map", last_name="Maker", email=f"map-maker-{uuid.uuid4().hex}@test.local",
+        password_hash="not-a-real-hash", status="active",
+    )
+    db.add(user)
+    db.flush()
+    db.add(UserRole(user_id=user.user_id, role_id=db.query(Role).filter(Role.role_name == "Auditor").one().role_id))
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def test_an_uploaded_file_is_mapped_through_the_real_routes_approved_by_someone_else_and_a_rule_runs_on_it(db, world, connector_approver):
+    """The whole path a person takes, with no shortcut into the database: upload -> the table is discovered and its
+    columns read -> the platform suggests which canonical field each column is -> a maker maps it -> a DIFFERENT
+    person approves -> the platform's own runner executes a rule on the file's rows."""
+    from app.models.data_source import DataConnection
+    from app.services import direct_execution_service
+
+    maker = _auditor(db, world)
+    test = None
+    try:
+        connection_id = _connect(world, "Users export")
+        assert _upload(connection_id, "users.csv", USERS_CSV, world.manager).status_code == 201
+        [entity] = data_source_service.list_entities(db, data_source_id=world.source.data_source_id)
+        assert entity.entity_name == "users" and entity.entity_type == "file"
+        connections = data_source_service._connected_direct_connections(db, world.source.data_source_id)
+        assert data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=connections) is not None
+
+        # 1. the platform suggests what each column is, from the names AND from what the column actually holds
+        response = client.get(f"/api/v1/data-sources/entities/{entity.entity_id}/mapping-suggestions", headers=_auth(maker))
+        assert response.status_code == 200, response.text
+        by_column = {s["field_name"]: s for s in response.json()}
+        assert by_column["status"]["suggested_canonical_field"] == "user.status"
+        assert by_column["username"]["suggested_canonical_field"] == "user.username"
+        assert by_column["last_login"]["suggested_canonical_field"] == "user.last_login"
+        assert by_column["status"]["confidence_score"] > 0 and by_column["status"]["value_fit_reason"] is None  # active/locked/terminated is a good status
+
+        # 2. a maker maps the status column, as the platform suggested
+        test = AuditTest(organization_id=world.org.organization_id, test_name="terminated accounts (file)")
+        db.add(test)
+        db.flush()
+        db.add(TestRule(
+            audit_test_id=test.audit_test_id, rule_name="status is terminated", rule_type="threshold", status="active",
+            rule_definition=json.dumps({"rule_type": "threshold", "object": "user", "field": "status", "operator": "eq", "value": "terminated"}),
+        ))
+        db.add(MonitoringSchedule(audit_test_id=test.audit_test_id, frequency="daily", status="active", is_active=True))
+        db.commit()
+        status_field = by_column["status"]
+        created = client.post(
+            f"/api/v1/organizations/{world.org.organization_id}/audit-tests/{test.audit_test_id}/data-mappings",
+            json={
+                "data_source_id": str(world.source.data_source_id), "entity_id": str(entity.entity_id), "field_id": status_field["field_id"],
+                "canonical_field": status_field["suggested_canonical_field"], "confidence_score": status_field["confidence_score"],
+            },
+            headers=_auth(maker),
+        )
+        assert created.status_code == 201, created.text
+        mapping_id = created.json()["mapping_id"]
+
+        # 3. nothing runs until someone ELSE approves it (the maker cannot approve their own mapping)
+        assert not [d for d in direct_execution_service._resolve_due_direct_tests(db) if d.audit_test_id == test.audit_test_id]
+        assert client.post(f"/api/v1/data-mappings/{mapping_id}/approve", headers=_auth(maker)).status_code == 403
+        assert client.post(f"/api/v1/data-mappings/{mapping_id}/approve", headers=_auth(connector_approver)).status_code == 200
+
+        # 4. now the platform's own runner executes the rule on the file's rows
+        mine = [d for d in direct_execution_service._resolve_due_direct_tests(db) if d.audit_test_id == test.audit_test_id]
+        assert len(mine) == 1 and [c.connection_id for c in mine[0].objects["user"]["connections"]] == [uuid.UUID(connection_id)]
+        report = direct_execution_service._run_one(mine[0])
+        assert report.error_message is None
+        assert report.records_analyzed == 10 and len(report.exceptions) == 2  # U003 and U006 are terminated
+        assert db.get(DataConnection, uuid.UUID(connection_id)).connection_status == "connected"
+    finally:
+        db.rollback()
+        if test is not None:
+            db.delete(db.get(AuditTest, test.audit_test_id))
+            db.commit()
+        from app.models.rbac import User
+
+        db.delete(db.get(User, maker.user_id))
+        db.commit()

@@ -881,3 +881,93 @@ def test_the_default_limits_do_not_get_in_the_way_of_a_normal_read(api):
     api.route("GET", "/invoices", lambda r: json_resp(INVOICES))
     assert net_guard.TOTAL_TIMEOUT_SECONDS >= 30 and rest_connector.READ_BUDGET_SECONDS >= 60
     assert len(fetch(connection(api), fields=["id"])) == 2
+
+
+def test_an_api_table_is_mapped_through_the_real_routes_approved_by_someone_else_and_a_rule_runs_on_it(db, connector_world, connector_approver, api):
+    """The same path as for an uploaded file, for an API endpoint whose records have nested fields (which become dotted
+    column names): connect -> test -> discover -> read columns -> suggestions -> maker -> a different approver -> run."""
+    import json as jsonlib
+
+    from app.models.audit_test import AuditTest, TestRule
+    from app.models.data_source import DataConnection
+    from app.models.monitoring import MonitoringSchedule
+    from app.models.rbac import Role, User, UserRole
+    from app.services import data_source_service, direct_execution_service
+
+    http, world = _http(), connector_world
+    statuses = ["active", "active", "locked", "terminated", "active", "active", "terminated", "active", "locked", "active"]
+    users = [
+        {"user_id": f"U{i:03d}", "username": f"user{i}", "status": s, "last_login": f"2026-08-{i + 1:02d}", "profile": {"department": "Finance" if i % 2 else "IT"}}
+        for i, s in enumerate(statuses)
+    ]
+    api.route("GET", "/users", lambda r: json_resp({"data": users}) if r.headers.get("x-api-key") == SECRET_MARKER else json_resp({"error": "no"}, 401))
+
+    maker = User(
+        organization_id=world.org.organization_id, first_name="Map", last_name="Maker", email=f"map-maker-{uuid.uuid4().hex}@test.local",
+        password_hash="not-a-real-hash", status="active",
+    )
+    db.add(maker)
+    db.flush()
+    db.add(UserRole(user_id=maker.user_id, role_id=db.query(Role).filter(Role.role_name == "Auditor").one().role_id))
+    db.commit()
+    db.refresh(maker)
+    test = None
+    try:
+        created = _create_rest(
+            http, world, api,
+            config={"base_url": api.base, "auth": {"type": "api_key", "in": "header", "name": "X-API-Key"}, "endpoints": [{"entity_name": "users", "path": "/users", "records_path": "data"}]},
+        )
+        assert created.status_code == 201, created.text
+        connection_id = created.json()["connection_id"]
+        assert http.post(f"/api/v1/connections/{connection_id}/test", headers=_bearer(world.manager)).json()["success"] is True
+        assert http.post(f"/api/v1/connections/{connection_id}/discover", headers=_bearer(world.manager)).status_code == 200
+        [entity] = data_source_service.list_entities(db, data_source_id=world.source.data_source_id)
+        assert (entity.entity_name, entity.entity_type) == ("users", "api")
+        assert {f.field_name for f in data_source_service.list_fields(db, entity_id=entity.entity_id)} == {"user_id", "username", "status", "last_login", "profile.department"}
+        connections = data_source_service._connected_direct_connections(db, world.source.data_source_id)
+        assert data_source_service.profile_entity_columns(db, entity_id=entity.entity_id, connections=connections) is not None
+
+        suggestions = http.get(f"/api/v1/data-sources/entities/{entity.entity_id}/mapping-suggestions", headers=_bearer(maker))
+        assert suggestions.status_code == 200, suggestions.text
+        by_column = {s["field_name"]: s for s in suggestions.json()}
+        assert by_column["status"]["suggested_canonical_field"] == "user.status" and by_column["username"]["suggested_canonical_field"] == "user.username"
+        assert by_column["status"]["value_fit_reason"] is None
+
+        test = AuditTest(organization_id=world.org.organization_id, test_name="terminated accounts (api)")
+        db.add(test)
+        db.flush()
+        db.add(TestRule(
+            audit_test_id=test.audit_test_id, rule_name="status is terminated", rule_type="threshold", status="active",
+            rule_definition=jsonlib.dumps({"rule_type": "threshold", "object": "user", "field": "status", "operator": "eq", "value": "terminated"}),
+        ))
+        db.add(MonitoringSchedule(audit_test_id=test.audit_test_id, frequency="daily", status="active", is_active=True))
+        db.commit()
+        field = by_column["status"]
+        mapped = http.post(
+            f"/api/v1/organizations/{world.org.organization_id}/audit-tests/{test.audit_test_id}/data-mappings",
+            json={
+                "data_source_id": str(world.source.data_source_id), "entity_id": str(entity.entity_id), "field_id": field["field_id"],
+                "canonical_field": field["suggested_canonical_field"], "confidence_score": field["confidence_score"],
+            },
+            headers=_bearer(maker),
+        )
+        assert mapped.status_code == 201, mapped.text
+        mapping_id = mapped.json()["mapping_id"]
+        assert http.post(f"/api/v1/data-mappings/{mapping_id}/approve", headers=_bearer(maker)).status_code == 403
+        assert http.post(f"/api/v1/data-mappings/{mapping_id}/approve", headers=_bearer(connector_approver)).status_code == 200
+
+        rest_connector._RECORDS.clear()
+        mine = [d for d in direct_execution_service._resolve_due_direct_tests(db) if d.audit_test_id == test.audit_test_id]
+        assert len(mine) == 1
+        report = direct_execution_service._run_one(mine[0])
+        assert report.error_message is None
+        assert report.records_analyzed == 10 and len(report.exceptions) == 2
+        assert SECRET_MARKER not in jsonlib.dumps([e.model_dump(mode="json") for e in report.exceptions], default=str)
+        assert db.get(DataConnection, uuid.UUID(connection_id)).connection_status == "connected"
+    finally:
+        db.rollback()
+        if test is not None:
+            db.delete(db.get(AuditTest, test.audit_test_id))
+            db.commit()
+        db.delete(db.get(User, maker.user_id))
+        db.commit()
