@@ -9,13 +9,14 @@ from app.models.audit_test import AuditTest, TestDataMapping, TestRule
 from app.models.data_source import DataConnection, DataEntity, DataField
 from app.models.evidence_exception import Evidence, Exception_, ExceptionRecord
 from app.models.finding import Finding
-from app.services.exception_service import explain_exceptions_bulk, find_open_exception, get_controls_for_audit_tests_bulk
+from app.services.exception_service import OPEN_STATUSES, explain_exceptions_bulk, find_open_exception, get_controls_for_audit_tests_bulk
 from app.models.monitoring import MonitoringSchedule, TestExecution
 from app.schemas.audit_engine import DueTest, DueTestObject, ExecutionReport
 from app.schemas.test_rule import required_objects_for
 from app.services.audit_log_service import log_action
 from app.services.monitoring_service import next_run_after
 from app.services.rule_parameter_service import get_parameters, resolve_parameters
+from app.core.execution_status import EXCEPTION, PASS
 from app.core.security import fingerprint
 
 # Only an explicitly reviewed-and-approved mapping is execution-ready.
@@ -156,8 +157,10 @@ def record_execution_report(db: Session, *, report: ExecutionReport) -> TestExec
     )
 
     now = datetime.now(timezone.utc)
+    touched_descriptions: set[str] = set()
     for exc in report.exceptions:
         full_description = f"{audit_test.test_name if audit_test else 'Audit test'}: exception on {exc.record_identifier}"
+        touched_descriptions.add(full_description)
         existing = find_open_exception(db, audit_test_id=report.audit_test_id, description=full_description)
 
         if existing is not None:
@@ -193,6 +196,50 @@ def record_execution_report(db: Session, *, report: ExecutionReport) -> TestExec
             )
         )
 
+    # A check that no longer reproduces auto-resolves its own still-open
+    # exception — same design already proven in device_compliance_service
+    # (a device check-in that now passes closes its own exception), just
+    # missing here, on the generic direct/Gateway path both scheduled and
+    # on-demand runs share. Without it, nothing above ever looks at an
+    # exception a run stopped finding, so one whose underlying condition is
+    # long gone just sits open forever with nothing to ever notice or tell
+    # anyone (found live: API-002's U012 exception, still open days after
+    # the data it was flagging had changed, because the control's rule was
+    # rebuilt in between and never got a chance to re-confirm it). Only for
+    # a run that genuinely evaluated real records end to end (PASS or
+    # EXCEPTION) — never INSUFFICIENT_DATA (nothing was actually checked,
+    # so absence proves nothing) or a blocked/errored run (see
+    # execution_status.py). This only closes the EXCEPTION; a Finding
+    # already escalated from it keeps its own separate, governed closure
+    # workflow (re-test/reviewer sign-off), never silently auto-closed too.
+    # Never touches an exception already resolved/closed (a real regression
+    # after that reopens as a new exception, same design as
+    # find_open_exception above) or one this run DID reproduce
+    # (touched_descriptions).
+    auto_resolved_count = 0
+    if report.status in (PASS, EXCEPTION):
+        stale_exceptions = db.scalars(
+            select(Exception_)
+            .join(TestExecution, TestExecution.execution_id == Exception_.execution_id)
+            .where(
+                TestExecution.audit_test_id == report.audit_test_id,
+                Exception_.status.in_(OPEN_STATUSES),
+                Exception_.exception_description.notin_(touched_descriptions),
+            )
+        )
+        for stale in stale_exceptions:
+            stale.status = "resolved"
+            auto_resolved_count += 1
+            log_action(
+                db,
+                action=f"Exception auto-resolved: {stale.exception_description} (re-tested clean)",
+                organization_id=organization_id,
+                entity_type="exceptions",
+                entity_id=stale.exception_id,
+                old_value={"status": "open"},
+                new_value={"status": "resolved"},
+            )
+
     schedule = db.get(MonitoringSchedule, report.schedule_id)
     if schedule is not None:
         schedule.last_run = report.completed_at
@@ -200,11 +247,12 @@ def record_execution_report(db: Session, *, report: ExecutionReport) -> TestExec
 
     log_action(
         db,
-        action=f"Audit test executed: {report.status}",
+        action=f"Audit test executed: {report.status}"
+        + (f", {auto_resolved_count} exception(s) auto-resolved" if auto_resolved_count else ""),
         organization_id=organization_id,
         entity_type="test_executions",
         entity_id=execution.execution_id,
-        new_value={"status": report.status, "exceptions_found": len(report.exceptions)},
+        new_value={"status": report.status, "exceptions_found": len(report.exceptions), "auto_resolved": auto_resolved_count},
     )
 
     db.commit()
