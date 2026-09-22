@@ -3,8 +3,10 @@ import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
+import { useControlDomains } from '../hooks/useControlDomains'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
+import { groupByDomainAndControl } from '../lib/groupByDomain'
 import type { ExceptionExplanationOut, ExceptionOut, FindingOut, RemediationActionOut, RetestOut, RootCauseOut, TraceNode, UserOut } from '../types/api'
 
 function inNDays(days: number): string {
@@ -276,6 +278,8 @@ export function FindingsPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  const [search, setSearch] = useState('')
+  const domainByCode = useControlDomains()
   // Starts true — otherwise the table has no way to tell "still loading"
   // apart from "genuinely zero findings," and flashes an empty state on
   // every page load until the fetch resolves.
@@ -297,26 +301,33 @@ export function FindingsPage() {
   }, [organizationId])
 
   const visibleFindings = findings.filter((f) => {
-    if (view === 'active') return f.status !== 'closed'
-    if (statusFilter && f.status !== statusFilter) return false
-    const identified = new Date(f.identified_at)
-    if (fromDate && identified < new Date(fromDate)) return false
-    if (toDate && identified > new Date(`${toDate}T23:59:59`)) return false
-    return true
+    if (view === 'active') { if (f.status === 'closed') return false }
+    else {
+      if (statusFilter && f.status !== statusFilter) return false
+      const identified = new Date(f.identified_at)
+      if (fromDate && identified < new Date(fromDate)) return false
+      if (toDate && identified > new Date(`${toDate}T23:59:59`)) return false
+    }
+    const term = search.trim().toLowerCase()
+    if (!term) return true
+    const domain = (f.control_code ? domainByCode.get(f.control_code) : undefined) ?? ''
+    return (
+      (f.control_code ?? '').toLowerCase().includes(term) ||
+      (f.control_name ?? '').toLowerCase().includes(term) ||
+      f.finding_title.toLowerCase().includes(term) ||
+      (f.finding_description ?? '').toLowerCase().includes(term) ||
+      domain.toLowerCase().includes(term)
+    )
   })
 
-  // Grouped by control, same reasoning as the Exceptions page — every
-  // finding for ONE control together, not one flat undifferentiated list.
-  const findingGroups = (() => {
-    const byLabel = new Map<string, { label: string; code: string; items: FindingOut[] }>()
-    for (const f of visibleFindings) {
-      const label = f.control_code ? `${f.control_code} — ${f.control_name}` : 'Uncategorized'
-      const key = f.control_code ?? '￿'
-      if (!byLabel.has(key)) byLabel.set(key, { label, code: key, items: [] })
-      byLabel.get(key)!.items.push(f)
-    }
-    return [...byLabel.values()].sort((a, b) => a.code.localeCompare(b.code))
-  })()
+  // Grouped by audit domain, then by control within it — same reasoning as
+  // the Exceptions page, and the same shared helper.
+  const domainGroups = groupByDomainAndControl(
+    visibleFindings,
+    (f) => f.control_code,
+    (f) => f.control_name,
+    domainByCode
+  )
 
   return (
     <div>
@@ -373,6 +384,12 @@ export function FindingsPage() {
             )}
           </>
         )}
+        <input
+          placeholder="Search by control, category or title"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="min-w-[16rem] flex-1 rounded-md border border-line px-2 py-1.5 text-xs"
+        />
         <span className="text-xs text-ink-soft">{visibleFindings.length} shown</span>
       </div>
 
@@ -388,37 +405,48 @@ export function FindingsPage() {
             </tr>
           </thead>
           <tbody>
-            {findingGroups.map((group) => (
-              <Fragment key={group.code}>
-                <tr className="border-t border-line bg-bg">
-                  <td colSpan={5} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                    {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
+            {domainGroups.map((domainGroup) => (
+              <Fragment key={domainGroup.domain}>
+                <tr className="border-t border-line bg-ink/[0.04]">
+                  <td colSpan={5} className="px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-ink">
+                    {domainGroup.domain} <span className="font-normal text-ink-faint">({domainGroup.count})</span>
                   </td>
                 </tr>
-                {group.items.map((f) => (
-                  <Fragment key={f.finding_id}>
-                    <tr className="border-t border-line bg-surface">
-                      <td className="px-4 py-2 font-medium text-ink">{f.finding_title}</td>
-                      <td className="px-4 py-2">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RISK_STYLES[f.risk_rating ?? ''] ?? ''}`}>{f.risk_rating ?? '—'}</span>
-                      </td>
-                      <td className="px-4 py-2">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[f.status] ?? ''}`}>{f.status}</span>
-                      </td>
-                      <td className="px-4 py-2 text-xs text-ink-soft">{new Date(f.identified_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-2">
-                        <button onClick={() => setExpandedId(expandedId === f.finding_id ? null : f.finding_id)} className="text-xs font-medium text-accent-ink hover:underline">
-                          {expandedId === f.finding_id ? 'Hide' : 'Open'}
-                        </button>
-                      </td>
-                    </tr>
-                    {expandedId === f.finding_id && (
-                      <tr>
-                        <td colSpan={5} className="p-0">
-                          <FindingDetail finding={f} onChanged={() => organizationId && load(organizationId)} />
+                {domainGroup.controls.map((group) => (
+                  <Fragment key={group.code}>
+                    {!(domainGroup.domain === 'Uncategorized' && group.label === 'Uncategorized') && (
+                      <tr className="border-t border-line bg-bg">
+                        <td colSpan={5} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                          {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
                         </td>
                       </tr>
                     )}
+                    {group.items.map((f) => (
+                      <Fragment key={f.finding_id}>
+                        <tr className="border-t border-line bg-surface">
+                          <td className="px-4 py-2 font-medium text-ink">{f.finding_title}</td>
+                          <td className="px-4 py-2">
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RISK_STYLES[f.risk_rating ?? ''] ?? ''}`}>{f.risk_rating ?? '—'}</span>
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[f.status] ?? ''}`}>{f.status}</span>
+                          </td>
+                          <td className="px-4 py-2 text-xs text-ink-soft">{new Date(f.identified_at).toLocaleDateString()}</td>
+                          <td className="px-4 py-2">
+                            <button onClick={() => setExpandedId(expandedId === f.finding_id ? null : f.finding_id)} className="text-xs font-medium text-accent-ink hover:underline">
+                              {expandedId === f.finding_id ? 'Hide' : 'Open'}
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedId === f.finding_id && (
+                          <tr>
+                            <td colSpan={5} className="p-0">
+                              <FindingDetail finding={f} onChanged={() => organizationId && load(organizationId)} />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
                   </Fragment>
                 ))}
               </Fragment>

@@ -227,7 +227,6 @@ function ControlRow({
           {c.control_code ? `${c.control_code} — ` : ''}
           {c.control_name}
         </td>
-        <td className="px-4 py-2 text-ink-soft">{c.domain ?? '—'}</td>
         <td className="px-4 py-2">
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONTROL_STATUS_STYLES[c.status] ?? ''}`}>
             {CONTROL_STATUS_LABELS[c.status] ?? c.status}
@@ -264,7 +263,7 @@ function ControlRow({
       </tr>
       {expanded && (
         <tr className="border-t border-line bg-bg">
-          <td colSpan={6} className="px-6 py-3">
+          <td colSpan={5} className="px-6 py-3">
             <div className="text-xs font-medium uppercase tracking-wide text-ink-soft">
               Required tables {c.required_tables.length > 1 && <span className="normal-case text-ink-soft">— map each one below</span>}
             </div>
@@ -566,6 +565,42 @@ export function ControlsPage() {
     return groups
   }, [filteredLibrary])
 
+  // Activated controls grouped the same way the library browser already
+  // groups its own rows — a client that's activated most of the 157-control
+  // library otherwise gets one long undifferentiated table with a "Domain"
+  // column nobody can search or scan by. domain falls back to the
+  // library's own value keyed by control_library_id — a control created
+  // before `domain` was added to ControlOut may not carry it yet.
+  const domainByLibraryId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const entry of library) map.set(entry.control_library_id, entry.domain)
+    return map
+  }, [library])
+
+  const filteredControls = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    if (!term) return controls
+    return controls.filter((c) => {
+      const domain = c.domain ?? (c.control_library_id ? domainByLibraryId.get(c.control_library_id) : undefined) ?? ''
+      return (
+        (c.control_code ?? '').toLowerCase().includes(term) ||
+        c.control_name.toLowerCase().includes(term) ||
+        domain.toLowerCase().includes(term)
+      )
+    })
+  }, [controls, search, domainByLibraryId])
+
+  const controlsByDomain = useMemo(() => {
+    const groups = new Map<string, ControlOut[]>()
+    for (const c of filteredControls) {
+      const domain = c.domain ?? (c.control_library_id ? domainByLibraryId.get(c.control_library_id) : undefined) ?? 'Uncategorized'
+      const list = groups.get(domain) ?? []
+      list.push(c)
+      groups.set(domain, list)
+    }
+    return new Map([...groups.entries()].sort(([a], [b]) => a.localeCompare(b)))
+  }, [filteredControls, domainByLibraryId])
+
   const handleActivate = async (controlLibraryId: string) => {
     if (!organizationId) return
     setError(null)
@@ -616,64 +651,74 @@ export function ControlsPage() {
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
       {activatedMessage && <p className="mt-3 text-sm text-accent-ink">{activatedMessage}</p>}
 
+      <input
+        placeholder="Search controls by code, name or domain (e.g. AC-002, terminated employee, payroll)"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="mt-4 w-full max-w-xl rounded-md border border-line px-3 py-2 text-sm"
+      />
+
       {view === 'activated' && organizationId && <CoverageSummary controls={controls} bindingProgress={bindingProgress} />}
 
       {view === 'activated' && (
-        <div className="mt-4 overflow-x-auto rounded-lg border border-line bg-surface">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
-                <th className="px-4 py-2">Control</th>
-                <th className="px-4 py-2">Domain</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Required tables</th>
-                <th className="px-4 py-2">Linked risks</th>
-                <th className="px-4 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {organizationId &&
-                controls.map((c) => (
-                  <ControlRow
-                    key={c.control_id}
-                    control={c}
-                    organizationId={organizationId}
-                    auditTestId={auditTestIdForControl.get(c.control_id)}
-                    sources={dataSources}
-                    progress={bindingProgress[c.control_id]}
-                    suggestions={suggestions}
-                    onRefreshProgress={refreshProgressFor}
-                    canManage={canManage}
-                    onChanged={reloadControls}
-                    riskName={riskName}
-                  />
-                ))}
-              {controls.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-ink-soft">
-                    No controls activated yet.{' '}
-                    {canManage && (
-                      <button onClick={() => setView('library')} className="font-medium text-accent-ink hover:underline">
-                        Browse the control library
-                      </button>
-                    )}
-                  </td>
-                </tr>
+        <div className="mt-4 space-y-6">
+          {Array.from(controlsByDomain.entries()).map(([domain, entries]) => (
+            <div key={domain}>
+              <h2 className="text-sm font-semibold text-ink">
+                {domain} <span className="font-normal text-ink-faint">({entries.length})</span>
+              </h2>
+              <div className="mt-2 overflow-x-auto rounded-lg border border-line bg-surface">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-ink-soft">
+                      <th className="px-4 py-2">Control</th>
+                      <th className="px-4 py-2">Status</th>
+                      <th className="px-4 py-2">Required tables</th>
+                      <th className="px-4 py-2">Linked risks</th>
+                      <th className="px-4 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {organizationId &&
+                      entries.map((c) => (
+                        <ControlRow
+                          key={c.control_id}
+                          control={c}
+                          organizationId={organizationId}
+                          auditTestId={auditTestIdForControl.get(c.control_id)}
+                          sources={dataSources}
+                          progress={bindingProgress[c.control_id]}
+                          suggestions={suggestions}
+                          onRefreshProgress={refreshProgressFor}
+                          canManage={canManage}
+                          onChanged={reloadControls}
+                          riskName={riskName}
+                        />
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+          {controls.length === 0 && (
+            <p className="rounded-lg border border-line bg-surface px-4 py-6 text-center text-sm text-ink-soft">
+              No controls activated yet.{' '}
+              {canManage && (
+                <button onClick={() => setView('library')} className="font-medium text-accent-ink hover:underline">
+                  Browse the control library
+                </button>
               )}
-            </tbody>
-          </table>
+            </p>
+          )}
+          {controls.length > 0 && filteredControls.length === 0 && (
+            <p className="rounded-lg border border-line bg-surface px-4 py-6 text-center text-sm text-ink-soft">No activated controls match "{search}".</p>
+          )}
         </div>
       )}
 
       {view === 'library' && canManage && (
         <div className="mt-4">
-          <input
-            placeholder="Search controls by code, name or domain (e.g. AC-002, terminated employee, payroll)"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full max-w-xl rounded-md border border-line px-3 py-2 text-sm"
-          />
-          <div className="mt-4 space-y-6">
+          <div className="space-y-6">
             {Array.from(libraryByDomain.entries()).map(([domain, entries]) => (
               <div key={domain}>
                 <h2 className="text-sm font-semibold text-ink">{domain}</h2>

@@ -4,8 +4,10 @@ import { apiClient } from '../lib/apiClient'
 import { useAuth } from '../auth/AuthContext'
 import { AUDIT_FRAMEWORK_ROLES } from '../auth/permissions'
 import { useActiveOrganization } from '../hooks/useActiveOrganization'
+import { useControlDomains } from '../hooks/useControlDomains'
 import { OrganizationPicker } from '../components/OrganizationPicker'
 import { ExceptionExplanationBlock } from '../components/ExceptionExplanation'
+import { groupByDomainAndControl } from '../lib/groupByDomain'
 import type { EvidenceRequestOut, ExceptionCommentOut, ExceptionExplanationOut, ExceptionOut, ExceptionRecordOut, ExceptionTraceOut, UserOut } from '../types/api'
 
 // "T. Naidoo (Client IT Admin)" — showing the role alongside the name
@@ -845,6 +847,8 @@ export function ExceptionsPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
+  const [search, setSearch] = useState('')
+  const domainByCode = useControlDomains()
   // Arriving from the Dashboard's "High-Risk Exceptions" tile
   // (/exceptions?risk=high) narrows straight to what that tile counted.
   const [highRiskOnly, setHighRiskOnly] = useState(searchParams.get('risk') === 'high')
@@ -875,12 +879,23 @@ export function ExceptionsPage() {
 
   const visible = exceptions.filter((e) => {
     if (highRiskOnly && e.severity !== 'critical' && e.severity !== 'high') return false
-    if (view === 'active') return e.status !== 'resolved' && e.status !== 'closed'
-    if (statusFilter && e.status !== statusFilter) return false
-    const detected = new Date(e.last_detected_at)
-    if (fromDate && detected < new Date(fromDate)) return false
-    if (toDate && detected > new Date(`${toDate}T23:59:59`)) return false
-    return true
+    if (view === 'active') { if (e.status === 'resolved' || e.status === 'closed') return false }
+    else {
+      if (statusFilter && e.status !== statusFilter) return false
+      const detected = new Date(e.last_detected_at)
+      if (fromDate && detected < new Date(fromDate)) return false
+      if (toDate && detected > new Date(`${toDate}T23:59:59`)) return false
+    }
+    const term = search.trim().toLowerCase()
+    if (!term) return true
+    const domain = (e.control_code ? domainByCode.get(e.control_code) : undefined) ?? ''
+    return (
+      (e.control_code ?? '').toLowerCase().includes(term) ||
+      (e.control_name ?? '').toLowerCase().includes(term) ||
+      (e.exception_description ?? '').toLowerCase().includes(term) ||
+      (e.exception_reference ?? '').toLowerCase().includes(term) ||
+      domain.toLowerCase().includes(term)
+    )
   })
 
   const clearHighRiskOnly = () => {
@@ -890,20 +905,15 @@ export function ExceptionsPage() {
     setSearchParams(next, { replace: true })
   }
 
-  // Grouped by control so an auditor sees every open issue for ONE control
-  // together, instead of hunting through one flat list — "Uncategorized"
-  // is a real, rare case (a manually-created audit test with no control
-  // library link), surfaced honestly rather than hidden.
-  const groups = (() => {
-    const byLabel = new Map<string, { label: string; code: string; items: ExceptionOut[] }>()
-    for (const e of visible) {
-      const label = e.control_code ? `${e.control_code} — ${e.control_name}` : 'Uncategorized'
-      const key = e.control_code ?? '￿' // sorts after every real code
-      if (!byLabel.has(key)) byLabel.set(key, { label, code: key, items: [] })
-      byLabel.get(key)!.items.push(e)
-    }
-    return [...byLabel.values()].sort((a, b) => a.code.localeCompare(b.code))
-  })()
+  // Grouped by audit domain, then by control within it, so an auditor sees
+  // every open issue for ONE control together AND can scan/collapse by
+  // category instead of hunting through one flat list of controls.
+  const domainGroups = groupByDomainAndControl(
+    visible,
+    (e) => e.control_code,
+    (e) => e.control_name,
+    domainByCode
+  )
 
   return (
     <div>
@@ -970,6 +980,12 @@ export function ExceptionsPage() {
             )}
           </>
         )}
+        <input
+          placeholder="Search by control, category or description"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="min-w-[16rem] flex-1 rounded-md border border-line px-2 py-1.5 text-xs"
+        />
         <span className="text-xs text-ink-soft">{visible.length} shown</span>
       </div>
 
@@ -987,22 +1003,33 @@ export function ExceptionsPage() {
             </tr>
           </thead>
           <tbody>
-            {groups.map((group) => (
-              <Fragment key={group.code}>
-                <tr className="border-t border-line bg-bg">
-                  <td colSpan={7} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                    {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
+            {domainGroups.map((domainGroup) => (
+              <Fragment key={domainGroup.domain}>
+                <tr className="border-t border-line bg-ink/[0.04]">
+                  <td colSpan={7} className="px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-ink">
+                    {domainGroup.domain} <span className="font-normal text-ink-faint">({domainGroup.count})</span>
                   </td>
                 </tr>
-                {group.items.map((e) => (
-                  <ExceptionRow
-                    key={e.exception_id}
-                    exception={e}
-                    canManage={canManage}
-                    canAssign={canAssign}
-                    orgUsers={orgUsers}
-                    onChanged={() => organizationId && load(organizationId)}
-                  />
+                {domainGroup.controls.map((group) => (
+                  <Fragment key={group.code}>
+                    {!(domainGroup.domain === 'Uncategorized' && group.label === 'Uncategorized') && (
+                      <tr className="border-t border-line bg-bg">
+                        <td colSpan={7} className="px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                          {group.label} <span className="font-normal text-ink-faint">({group.items.length})</span>
+                        </td>
+                      </tr>
+                    )}
+                    {group.items.map((e) => (
+                      <ExceptionRow
+                        key={e.exception_id}
+                        exception={e}
+                        canManage={canManage}
+                        canAssign={canAssign}
+                        orgUsers={orgUsers}
+                        onChanged={() => organizationId && load(organizationId)}
+                      />
+                    ))}
+                  </Fragment>
                 ))}
               </Fragment>
             ))}
