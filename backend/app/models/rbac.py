@@ -67,6 +67,16 @@ class User(Base, TimestampMixin):
     # in the app sits behind it) redirects to /profile until it's changed,
     # with a reminder shown in the days leading up to it.
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The one user_sessions row a token must still name (its "sid" claim,
+    # see core.security.create_access_token) to be honoured — logging in
+    # anywhere replaces this, which is what makes every token issued
+    # anywhere else stop working immediately (see api.deps.get_current_user).
+    # NULL means no session is enforced yet (a legacy account that hasn't
+    # logged in since this shipped — see migration 0085), never "anything
+    # goes forever."
+    current_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_sessions.session_id", ondelete="SET NULL")
+    )
 
 
 class Role(Base, TimestampMixin):

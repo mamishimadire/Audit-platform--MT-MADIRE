@@ -1,8 +1,11 @@
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_and_session_id
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.rbac import User, UserSession
@@ -19,6 +22,19 @@ from app.services.auth_service import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _start_session(db: Session, *, user: User, request: Request) -> uuid.UUID:
+    """One account, one live session — starting a new one here is what makes
+    every token issued anywhere else for this account stop working on its
+    very next request (see api.deps.get_current_user): current_session_id
+    is the one thing a token's "sid" claim must still match."""
+    session = UserSession(user_id=user.user_id, ip_address=request.client.host if request.client else None)
+    db.add(session)
+    db.flush()
+    user.current_session_id = session.session_id
+    user.last_login = datetime.now(timezone.utc)
+    return session.session_id
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)) -> TokenResponse:
     user = authenticate_user(db, email=form.username, password=form.password)
@@ -33,16 +49,16 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Ses
         db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
-    db.add(UserSession(user_id=user.user_id, ip_address=request.client.host if request.client else None))
+    session_id = _start_session(db, user=user, request=request)
     log_action(db, action="User logged in", organization_id=user.organization_id, user_id=user.user_id)
     db.commit()
 
-    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id)
+    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id, session_id=session_id)
     return TokenResponse(access_token=token)
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(user: User = Depends(get_current_user)) -> TokenResponse:
+def refresh(user_and_session: tuple[User, uuid.UUID | None] = Depends(get_current_user_and_session_id)) -> TokenResponse:
     """Issues a fresh token with a full new expiry window, as long as the
     CURRENT one is still valid and the account is still active — sliding
     expiration rather than a hard cliff. Without this, a fixed
@@ -51,16 +67,22 @@ def refresh(user: User = Depends(get_current_user)) -> TokenResponse:
     they last did something; the frontend calls this periodically while
     the app is open (see AuthContext) so only genuine INACTIVITY (closing
     the tab, or the OS/browser going to sleep) ever lets the token actually
-    expire. get_current_user already re-checks user.status == "active" on
-    every call, so a deactivated account stops refreshing immediately —
-    this never extends a session beyond what a fresh login would also be
-    able to do."""
-    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id)
+    expire. get_current_user already re-checks user.status == "active" AND
+    (once enforced) that this token's session is still the account's
+    current one on every call, so a deactivated account, or one signed in
+    somewhere else since, stops refreshing immediately.
+
+    Reuses the SAME session id the incoming token already carried —
+    minting a fresh one here (as /login does) would invalidate every other
+    tab/device using this exact session on its very next request, which is
+    the opposite of what a background "keep me signed in" refresh is for."""
+    user, session_id = user_and_session
+    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id, session_id=session_id)
     return TokenResponse(access_token=token)
 
 
 @router.post("/activate", response_model=TokenResponse)
-def activate_account(payload: ActivateAccountRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def activate_account(payload: ActivateAccountRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
     """First-login step for a pending account: trade the one-time temporary
     password for a chosen password, then log in immediately."""
     user = activate_pending_user(
@@ -68,10 +90,42 @@ def activate_account(payload: ActivateAccountRequest, db: Session = Depends(get_
     )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or temporary password")
+    session_id = _start_session(db, user=user, request=request)
     log_action(db, action="Account activated", organization_id=user.organization_id, user_id=user.user_id)
     db.commit()
-    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id)
+    token = create_access_token(user_id=user.user_id, organization_id=user.organization_id, session_id=session_id)
     return TokenResponse(access_token=token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(user_and_session: tuple[User, uuid.UUID | None] = Depends(get_current_user_and_session_id), db: Session = Depends(get_db)) -> None:
+    """Ends the CURRENT session, deliberately — not just a local "forget the
+    token" (the frontend already does that regardless of whether this call
+    even reaches the server). Rotates current_session_id to a fresh
+    session that's immediately marked revoked, instead of clearing it to
+    NULL: NULL means "no session enforced yet" (see migration 0085) and
+    would perversely make every other still-outstanding token for this
+    account valid again, the exact opposite of what logging out should do.
+    Pointing at a brand-new (already-dead) row rather than some made-up id
+    also keeps current_session_id's own foreign key honest — nothing else
+    could ever have been issued a token naming this session, so this
+    revokes the token just used to log out, and any other copy of it,
+    without ever needing a value users.current_session_id can't really
+    reference."""
+    user, session_id = user_and_session
+    now = datetime.now(timezone.utc)
+    if session_id is not None:
+        session = db.get(UserSession, session_id)
+        if session is not None and session.status == "active":
+            session.status = "revoked"
+            session.logout_time = now
+
+    dead_session = UserSession(user_id=user.user_id, status="revoked", logout_time=now)
+    db.add(dead_session)
+    db.flush()
+    user.current_session_id = dead_session.session_id
+    log_action(db, action="User logged out", organization_id=user.organization_id, user_id=user.user_id)
+    db.commit()
 
 
 def _to_user_out(db: Session, user: User) -> UserOut:

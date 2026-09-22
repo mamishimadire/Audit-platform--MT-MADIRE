@@ -27,7 +27,9 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
     return _pwd_context.verify(plain_password, password_hash)
 
 
-def create_access_token(*, user_id: UUID, organization_id: UUID | None, extra_claims: dict | None = None) -> str:
+def create_access_token(
+    *, user_id: UUID, organization_id: UUID | None, session_id: UUID | None = None, extra_claims: dict | None = None
+) -> str:
     now = datetime.now(timezone.utc)
     payload: dict = {
         "sub": str(user_id),
@@ -35,6 +37,14 @@ def create_access_token(*, user_id: UUID, organization_id: UUID | None, extra_cl
         "iat": now,
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
     }
+    # Names the one user_sessions row this token is good for (see
+    # api.deps.get_current_user and users.current_session_id) — omitted
+    # entirely (not even a null claim) when the caller has no session to
+    # tie it to, so an old token minted before single-session enforcement
+    # existed just never carries the claim at all, rather than a
+    # meaningless "sid": null.
+    if session_id is not None:
+        payload["sid"] = str(session_id)
     if extra_claims:
         payload.update(extra_claims)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

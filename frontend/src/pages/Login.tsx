@@ -3,13 +3,19 @@ import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 
 export function LoginPage() {
-  const { login, user } = useAuth()
+  const { login, user, isLoading, authMessage, clearAuthMessage } = useAuth()
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  // isLoading covers the brief window where AuthContext is still checking a
+  // stored token via /auth/me — without it, a duplicated tab could show a
+  // blank, submittable login form for that instant even though this
+  // browser is (or is about to turn out to be) already signed in. Same
+  // loading UI as ProtectedRoute, for the same reason.
+  if (isLoading) return <div className="flex h-screen items-center justify-center text-ink-soft">Loading…</div>
   if (user) return <Navigate to="/" replace />
 
   const handleSubmit = async (event: FormEvent) => {
@@ -40,6 +46,15 @@ export function LoginPage() {
       <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg border border-line bg-surface p-8 shadow-sm">
         <h1 className="text-xl font-semibold text-ink">Audit Platform</h1>
         <p className="mt-1 text-sm text-ink-soft">Sign in to continue.</p>
+
+        {authMessage && (
+          <p className="mt-3 rounded-md border border-line bg-bg px-3 py-2 text-sm text-ink-soft">
+            {authMessage}{' '}
+            <button type="button" onClick={clearAuthMessage} className="font-medium text-accent-ink hover:underline">
+              Dismiss
+            </button>
+          </p>
+        )}
 
         <label className="mt-6 block text-sm font-medium text-ink">Email</label>
         <input

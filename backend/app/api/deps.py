@@ -34,7 +34,43 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.get(User, user_id)
     if user is None or user.status != "active":
         raise credentials_error
+
+    # Single session per account: a token only stays valid for as long as
+    # its "sid" claim still names the session logging in most recently
+    # established (users.current_session_id — see /auth/login|activate and
+    # migration 0085). user.current_session_id is None only for an account
+    # that hasn't logged in since this shipped — deliberately permissive
+    # there so nobody already signed in gets silently kicked the moment it
+    # deploys; a token with no "sid" claim at all (issued before this
+    # existed) is treated the same way. The moment either side of the
+    # comparison IS set, both must agree, which is exactly what makes
+    # logging in anywhere else invalidate every other token immediately —
+    # that includes a token that itself has no "sid": once the account has
+    # a current_session_id, an unnamed token can never match it again.
+    if user.current_session_id is not None:
+        token_session_id = payload.get("sid")
+        if token_session_id != str(user.current_session_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your session has ended — this account was signed in somewhere else.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     return user
+
+
+def get_current_user_and_session_id(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> tuple[User, uuid.UUID | None]:
+    """Same authentication/authorization as get_current_user, but also hands
+    back the token's own "sid" claim — for the one caller (/auth/refresh)
+    that must re-issue a token for the SAME session rather than establish a
+    new one (which would invalidate every other tab/device using it,
+    defeating the entire point of a background refresh)."""
+    user = get_current_user(token, db)
+    try:
+        payload = decode_access_token(token)
+    except jwt.PyJWTError as exc:  # pragma: no cover — get_current_user already validated this token above
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials") from exc
+    session_id = payload.get("sid")
+    return user, (uuid.UUID(session_id) if session_id else None)
 
 
 def get_current_user_roles(
