@@ -342,6 +342,8 @@ export interface DataFileOut {
 // is NOT refreshed automatically (that would delete mappings to columns that vanished).
 export interface DataFileUploadOut extends DataFileOut {
   warnings: string[]
+  // Information, not a problem with what is mapped: a file larger than the platform reads is used only as far as its limit.
+  notices: string[]
   discovered: boolean
 }
 

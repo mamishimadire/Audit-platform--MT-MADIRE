@@ -138,6 +138,9 @@ class DataFileUploadOut(DataFileOut):
     # changed). When there are any, the catalogue is NOT refreshed automatically: doing so would delete
     # the mappings to the vanished columns, so the user confirms by running "Discover schema".
     warnings: list[str] = Field(default_factory=list)
+    # Information, not a problem with what is mapped (so it never holds back the catalogue refresh): a file larger than
+    # the platform reads is used only as far as its limit.
+    notices: list[str] = Field(default_factory=list)
     discovered: bool = False
 
 

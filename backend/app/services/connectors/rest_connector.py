@@ -45,7 +45,9 @@ READ_BUDGET_SECONDS = 180
 DISCOVERY_PAGES = 3
 TEST_ENDPOINTS = 5
 _CACHE_TTL_SECONDS = 60
-_CACHE_MAX = 6
+_CACHE_MAX = 4
+_CACHE_MAX_RECORDS = 10_000  # a bigger read (relationship measurement) is used once, not kept
+_TRUNCATED: dict[tuple, bool] = {}  # (connection, table, settings) -> the last read stopped before the endpoint ran out
 _MAX_XML_DEPTH = 60
 _MAX_FLATTEN_DEPTH = 3
 _MAX_KEYS_PER_RECORD = 500
@@ -456,10 +458,14 @@ def _cached_records(api: _Api, endpoint: dict, want: int) -> tuple[list[dict], b
         return hit[3][:want], hit[2] or len(hit[3]) > want
     records, more = api.records(endpoint, want=want)
     with _lock:
-        _RECORDS[key] = (time.monotonic(), want, more, records)
-        _RECORDS.move_to_end(key)
-        while len(_RECORDS) > _CACHE_MAX:
-            _RECORDS.popitem(last=False)
+        if len(records) <= _CACHE_MAX_RECORDS:
+            _RECORDS[key] = (time.monotonic(), want, more, records)
+            _RECORDS.move_to_end(key)
+            while len(_RECORDS) > _CACHE_MAX:
+                _RECORDS.popitem(last=False)
+        if len(_TRUNCATED) > 64:
+            _TRUNCATED.clear()
+        _TRUNCATED[key] = more
     return records, more
 
 
@@ -505,9 +511,18 @@ class RestConnector:
         endpoint = api.endpoint(entity_name)
         if endpoint is None:
             raise EntityNotHere(f"The table '{entity_name}' is not one of this API connection's endpoints.")
-        records, _more = _cached_records(api, endpoint, limit)
+        records, more = _cached_records(api, endpoint, limit)
         table = table_from_records(entity_name, records)
+        if table.truncated:  # more records arrived than the platform keeps (file_parsing.MAX_CELLS)
+            with _lock:
+                _TRUNCATED[(api.connection_id, entity_name, api.signature())] = True
         return [{f: row.get(f) for f in field_names if f in row} for row in table.rows[:limit]]
+
+    def truncated(self, connection: DataConnection, entity_name: str) -> bool:
+        """True when the last read of this endpoint stopped before it ran out (a page or record limit, or more records than are kept)."""
+        api = _Api(connection)
+        with _lock:
+            return bool(_TRUNCATED.get((api.connection_id, entity_name, api.signature()), False))
 
 
 register("rest_api", RestConnector())

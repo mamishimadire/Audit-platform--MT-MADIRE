@@ -68,7 +68,15 @@ from app.services.data_source_service import (
 )
 from app.services.connectors import ConnectorError, presets as connector_presets
 from app.services.connectors.config import ConfigError
-from app.services.connectors.file_connector import current_files, delete_version, list_versions, schema_changes, store_upload, tables_for
+from app.services.connectors.file_connector import (
+    current_files,
+    delete_version,
+    list_versions,
+    schema_changes,
+    store_upload,
+    tables_for,
+    truncation_notices,
+)
 from app.services.connectors.file_parsing import MAX_FILE_BYTES
 from app.services.user_service import list_users_with_permission_for_organization
 
@@ -243,7 +251,9 @@ def _store_uploaded_file(db: Session, *, connection: DataConnection, user: User,
         new_value={"file_name": stored.file_name, "sha256": stored.sha256, "size_bytes": stored.size_bytes},
     )
     db.commit()
-    warnings = schema_changes(before, tables_for(db, stored)) if before else []
+    parsed = tables_for(db, stored)
+    warnings = schema_changes(before, parsed) if before else []
+    notices = truncation_notices(parsed)
     test_direct_connection(db, connection=connection)  # a connection with a readable file is connected: the scheduler can now use it
     discovered = False
     if not warnings:
@@ -255,7 +265,7 @@ def _store_uploaded_file(db: Session, *, connection: DataConnection, user: User,
             ).start()
         except Exception:  # noqa: BLE001 — the upload itself succeeded; "Discover schema" can be run by hand
             db.rollback()
-    return DataFileUploadOut.model_validate(stored, from_attributes=True).model_copy(update={"warnings": warnings, "discovered": discovered})
+    return DataFileUploadOut.model_validate(stored, from_attributes=True).model_copy(update={"warnings": warnings, "notices": notices, "discovered": discovered})
 
 
 @router.post("/connections/{connection_id}/files", response_model=DataFileUploadOut, status_code=status.HTTP_201_CREATED)

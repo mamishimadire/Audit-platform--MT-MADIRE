@@ -1228,6 +1228,17 @@ def _measure_values(child_values: list, parent_values: list, *, as_text: bool, c
     )
 
 
+def _rows_were_cut(connection: DataConnection, entity_name: str) -> bool:
+    """A file or API connection can hold more rows of a table than the platform reads; a containment measured on the
+    rows it did read is then a lower bound, and is marked as one (Measurement.capped)."""
+    connector = connectors.for_connection(connection)
+    check = getattr(connector, "truncated", None)
+    try:
+        return bool(check and check(connection, entity_name))
+    except Exception:  # noqa: BLE001 — not knowing is not a reason to lose the measurement
+        return False
+
+
 def _measure_in_memory(connections: list[DataConnection], candidates: list[Candidate]) -> list[tuple[Candidate, Measurement]]:
     """Relationship measurement over rows read into memory: for file and API connections (there is no
     database to ask), and for pairs whose two tables live on DIFFERENT connections of one source (a
@@ -1240,6 +1251,7 @@ def _measure_in_memory(connections: list[DataConnection], candidates: list[Candi
         needed.setdefault(c.child.entity_name, set()).add(c.child.name)
         needed.setdefault(c.parent.entity_name, set()).add(c.parent.name)
     rows_by_entity: dict[str, list[dict] | None] = {}
+    cut_entities: set[str] = set()  # tables that have more rows than were read
     for entity_name, columns in needed.items():
         rows_by_entity[entity_name] = None
         for connection in connections:
@@ -1247,6 +1259,8 @@ def _measure_in_memory(connections: list[DataConnection], candidates: list[Candi
                 rows_by_entity[entity_name] = fetch_profile_rows(
                     connection, entity_name=entity_name, columns=[(name, None) for name in sorted(columns)], limit=_CONNECTOR_ROW_CAP
                 )
+                if _rows_were_cut(connection, entity_name):
+                    cut_entities.add(entity_name)
                 break
             except Exception:  # noqa: BLE001 — not this connection's table, or unreadable: try the next
                 continue
@@ -1260,7 +1274,10 @@ def _measure_in_memory(connections: list[DataConnection], candidates: list[Candi
             [r.get(candidate.child.name) for r in child_rows],
             [r.get(candidate.parent.name) for r in parent_rows],
             as_text=(candidate.child.data_type or "") != (candidate.parent.data_type or ""),
-            capped=len(child_rows) >= _CONNECTOR_ROW_CAP or len(parent_rows) >= _CONNECTOR_ROW_CAP,
+            capped=(
+                len(child_rows) >= _CONNECTOR_ROW_CAP or len(parent_rows) >= _CONNECTOR_ROW_CAP
+                or candidate.child.entity_name in cut_entities or candidate.parent.entity_name in cut_entities
+            ),
         )
         if measurement is not None:
             out.append((candidate, measurement))

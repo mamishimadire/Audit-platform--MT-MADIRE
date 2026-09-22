@@ -24,7 +24,12 @@ MAX_ROWS = 100_000
 MAX_COLUMNS = 500
 # Rows x columns is what actually costs memory (each cell is a Python object): 100k rows of 500 columns
 # would be ~50M of them. A wide file is cut to fewer rows instead, and reported as truncated.
-MAX_CELLS = 2_000_000
+# MEASURED (tracemalloc, mixed text / numbers / dates): about 70 bytes per parsed cell retained, and while parsing a
+# file at the old 2,000,000-cell limit the peak was ~340 MB. That is too much for a small server that also has to
+# run everything else, so the limit is 500,000 cells (~35 MB retained, ~85 MB peak): 25,000 rows of 20 columns, 5,000
+# rows of 100. The platform tests at most the first 5,000 rows of a table per run anyway.
+MAX_CELLS = 500_000  # for the WHOLE file: a workbook's sheets share it (see parse_excel)
+MAX_SHEETS = 50
 MAX_CELL_CHARS = 32_000
 MAX_UNCOMPRESSED_XLSX_BYTES = 200 * 1024 * 1024  # a zip bomb inflates far past its file size
 
@@ -58,13 +63,14 @@ def table_stem(file_name: str) -> str:
     return re.sub(r"\.[A-Za-z0-9]{1,5}$", "", file_name.strip().replace("\\", "/").split("/")[-1]) or "file"
 
 
-def _decode(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "cp1252"):
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("latin-1")
+# Tried in order. utf-8-sig accepts a BOM; cp1252 is what Excel writes for Western text; latin-1 accepts any byte.
+_ENCODINGS = ("utf-8-sig", "cp1252", "latin-1")
+
+
+def _text_stream(data: bytes, encoding: str) -> io.TextIOWrapper:
+    """The file decoded AS IT IS READ. Decoding it all up front, then handing it to io.StringIO (which keeps four bytes
+    per character), cost a multiple of the file's size before a single row was looked at."""
+    return io.TextIOWrapper(io.BytesIO(data), encoding=encoding, newline="")
 
 
 def _clean_headers(raw: list[object]) -> list[str]:
@@ -166,37 +172,52 @@ def table_from_records(name: str, records: list[dict], *, truncated: bool = Fals
     return _finish(name, headers, [[record.get(h) for h in headers] for record in records], truncated)
 
 
+def _parse_csv_as(file_name: str, data: bytes, encoding: str) -> ParsedTable:
+    stream = _text_stream(data, encoding)
+    try:
+        sample = stream.read(8192)
+        if not sample.strip():
+            raise FileParseError("The file is empty.")
+        stream.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.excel_tab if file_name.lower().endswith(".tsv") else csv.excel
+        reader = csv.reader(stream, dialect)
+        raw_rows: list[list[object]] = []
+        headers: list[str] | None = None
+        truncated = False
+        try:
+            for record in reader:
+                if not any((c or "").strip() for c in record):
+                    continue  # blank line
+                if headers is None:
+                    if len(record) > MAX_COLUMNS:
+                        raise FileParseError(f"The file has more than {MAX_COLUMNS} columns.")
+                    headers = _clean_headers(record)
+                    continue
+                if len(raw_rows) >= _row_limit(len(headers)):
+                    truncated = True  # the rest of the file is never even decoded
+                    break
+                raw_rows.append([c[:MAX_CELL_CHARS] for c in record[: len(headers)]])
+        except csv.Error as exc:
+            raise FileParseError("The file is not valid CSV.") from exc
+        if headers is None:
+            raise FileParseError("The file has no header row.")
+        return _finish(table_stem(file_name), headers, raw_rows, truncated)
+    finally:
+        stream.detach()  # release the wrapper without closing (or copying) the bytes it was reading
+
+
 def parse_csv(file_name: str, data: bytes) -> list[ParsedTable]:
-    text = _decode(data)
-    if not text.strip():
+    if not re.search(rb"\S", data):  # (data.strip() would copy the whole file)
         raise FileParseError("The file is empty.")
-    sample = text[:8192]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-    except csv.Error:
-        dialect = csv.excel_tab if file_name.lower().endswith(".tsv") else csv.excel
-    reader = csv.reader(io.StringIO(text, newline=""), dialect)
-    raw_rows: list[list[object]] = []
-    headers: list[str] | None = None
-    truncated = False
-    try:
-        for record in reader:
-            if not any((c or "").strip() for c in record):
-                continue  # blank line
-            if headers is None:
-                if len(record) > MAX_COLUMNS:
-                    raise FileParseError(f"The file has more than {MAX_COLUMNS} columns.")
-                headers = _clean_headers(record)
-                continue
-            if len(raw_rows) >= _row_limit(len(headers)):
-                truncated = True
-                break
-            raw_rows.append([c[:MAX_CELL_CHARS] for c in record[: len(headers)]])
-    except csv.Error as exc:
-        raise FileParseError("The file is not valid CSV.") from exc
-    if headers is None:
-        raise FileParseError("The file has no header row.")
-    return [_finish(table_stem(file_name), headers, raw_rows, truncated)]
+    for encoding in _ENCODINGS:
+        try:
+            return [_parse_csv_as(file_name, data, encoding)]
+        except UnicodeDecodeError:
+            continue  # bytes that are not valid in this encoding, anywhere before the row limit: try the next
+    raise FileParseError("The file's text encoding could not be read.")  # unreachable: latin-1 decodes every byte
 
 
 def _check_zip(data: bytes) -> None:
@@ -220,10 +241,17 @@ def parse_excel(file_name: str, data: bytes) -> list[ParsedTable]:
     stem = table_stem(file_name)
     tables: list[ParsedTable] = []
     try:
+        if len(workbook.worksheets) > MAX_SHEETS:
+            raise FileParseError(f"The workbook has more than {MAX_SHEETS} sheets.")
+        # One budget for the whole workbook, not one per sheet: 30 sheets at the per-table limit was measured at over
+        # 1.2 million cells (82 MB), and the number of sheets is otherwise unbounded. A sheet that finds the budget
+        # spent is still listed (its columns are known) but with no rows, and reported as truncated.
+        remaining = MAX_CELLS
         for sheet in workbook.worksheets:
             headers: list[str] | None = None
             raw_rows: list[list[object]] = []
             truncated = False
+            limit = 0
             for record in sheet.iter_rows(values_only=True):
                 if not any(c is not None and str(c).strip() != "" for c in record):
                     continue
@@ -234,13 +262,16 @@ def parse_excel(file_name: str, data: bytes) -> list[ParsedTable]:
                     if len(trimmed) > MAX_COLUMNS:
                         raise FileParseError(f"Sheet '{sheet.title}' has more than {MAX_COLUMNS} columns.")
                     headers = _clean_headers(trimmed)
+                    limit = min(_row_limit(len(headers)), remaining // max(len(headers), 1))
                     continue
-                if len(raw_rows) >= _row_limit(len(headers)):
+                if len(raw_rows) >= limit:
                     truncated = True
                     break
                 raw_rows.append([c if not isinstance(c, str) else c[:MAX_CELL_CHARS] for c in record[: len(headers)]])
             if headers:
-                tables.append(_finish(f"{stem} / {sheet.title}" if len(workbook.worksheets) > 1 else stem, headers, raw_rows, truncated))
+                table = _finish(f"{stem} / {sheet.title}" if len(workbook.worksheets) > 1 else stem, headers, raw_rows, truncated)
+                remaining = max(remaining - len(table.rows) * len(table.headers), 0)
+                tables.append(table)
     finally:
         workbook.close()
     if not tables:

@@ -46,14 +46,21 @@ def current_files(db: Session, connection_id: uuid.UUID) -> list[DataFile]:
 
 
 _PARSE_CACHE: "OrderedDict[tuple[uuid.UUID, str], tuple[ParsedTable, ...]]" = OrderedDict()
-_PARSE_CACHE_MAX = 3  # parsed tables are large; a handful is enough for discovery + profiling + a scheduled run
+_PARSE_CACHE_MAX = 2  # parsed tables are large; two is enough for discovery + profiling + a scheduled run
+# ...and they are bounded by SIZE, not just count: at ~70 bytes a cell, 750,000 cells is ~50 MB.
+_PARSE_CACHE_MAX_CELLS = 750_000
 _parse_cache_lock = threading.Lock()
+
+
+def _cells(tables: tuple[ParsedTable, ...]) -> int:
+    return sum(len(t.rows) * len(t.headers) for t in tables)
 
 
 def _cache_put(file_id: uuid.UUID, sha256: str, tables: tuple[ParsedTable, ...]) -> None:
     with _parse_cache_lock:
         _PARSE_CACHE[(file_id, sha256)] = tables
-        while len(_PARSE_CACHE) > _PARSE_CACHE_MAX:
+        # Oldest out until it fits (the newest is always kept, even if it alone is over budget).
+        while len(_PARSE_CACHE) > 1 and (len(_PARSE_CACHE) > _PARSE_CACHE_MAX or sum(_cells(v) for v in _PARSE_CACHE.values()) > _PARSE_CACHE_MAX_CELLS):
             _PARSE_CACHE.popitem(last=False)
 
 
@@ -140,6 +147,27 @@ def delete_version(db: Session, *, connection_id: uuid.UUID, file_id: uuid.UUID)
     return True
 
 
+def truncation_notices(tables: tuple[ParsedTable, ...]) -> list[str]:
+    """Plain-language notes for tables that have more rows than the platform reads (information, not a problem)."""
+    from app.services.connectors.file_parsing import MAX_CELLS
+
+    notices = []
+    for t in tables:
+        if not t.truncated:
+            continue
+        if not t.rows:
+            notices.append(
+                f"The rows of '{t.name}' were not read: the other sheets of this file already used the platform's limit of {MAX_CELLS:,} cells "
+                "(rows x columns) for one file."
+            )
+        else:
+            notices.append(
+                f"Only the first {len(t.rows):,} rows of '{t.name}' are used: the platform reads at most {MAX_CELLS:,} cells (rows x columns) "
+                "of a file, and each control test looks at the first 5,000 rows of a table."
+            )
+    return notices
+
+
 def schema_changes(before: tuple[ParsedTable, ...], after: tuple[ParsedTable, ...]) -> list[str]:
     """What a new version of a file breaks for anything already mapped to it: a table or column that is
     gone, or a column whose type changed. Additions are harmless and not reported."""
@@ -215,6 +243,17 @@ class FileUploadConnector:
         finally:
             db.close()
         raise EntityNotHere(f"The table '{entity_name}' is not in the uploaded files.")
+
+    def truncated(self, connection: DataConnection, entity_name: str) -> bool:
+        """True when this table has more rows than the platform reads (see file_parsing.MAX_CELLS)."""
+        db = _session()
+        try:
+            for name, _file, table in _named_tables(db, connection.connection_id, for_entity=entity_name):
+                if name == entity_name:
+                    return table.truncated
+        finally:
+            db.close()
+        return False
 
 
 register("file_upload", FileUploadConnector())

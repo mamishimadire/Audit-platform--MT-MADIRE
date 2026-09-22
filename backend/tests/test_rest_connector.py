@@ -1100,3 +1100,33 @@ def test_failing_to_store_a_rotated_token_never_fails_the_read_and_never_leaks_i
     with caplog.at_level(logging.WARNING, logger="app.rest_connector"):
         assert len(fetch(conn)) == 2  # the data was read; only the bookkeeping failed
     assert "could not store a rotated refresh token" in caplog.text and "rt-2" not in caplog.text
+
+
+def test_a_read_too_big_to_keep_is_not_cached_and_an_endpoint_that_was_cut_says_so(api, monkeypatch):
+    from app.services.connectors import file_parsing
+
+    monkeypatch.setattr(rest_connector, "_CACHE_MAX_RECORDS", 5)
+    api.route("GET", "/items", lambda r: json_resp([{"n": i} for i in range(12)]))
+    whole = connection(api, endpoints=[{"entity_name": "items", "path": "/items"}])
+    assert len(fetch(whole, "items", ["n"], limit=100)) == 12
+    assert len(rest_connector._RECORDS) == 0  # 12 records is more than is kept: used once, not held in memory
+    assert connectors.for_connection(whole).truncated(whole, "items") is False  # the endpoint ran out: nothing was left behind
+
+    api.route("GET", "/paged", lambda r: json_resp([{"n": int(r.query.get("page", 1))}]))  # an endless supply
+    paged = connection(api, endpoints=[{"entity_name": "paged", "path": "/paged", "pagination": {"type": "page", "max_pages": 3}}])
+    assert len(fetch(paged, "paged", ["n"], limit=100)) == 3
+    assert connectors.for_connection(paged).truncated(paged, "paged") is True  # it stopped at the page limit, not because it ran out
+
+    monkeypatch.setattr(file_parsing, "MAX_CELLS", 8)  # more records than the platform keeps in a table
+    rest_connector._RECORDS.clear()
+    rest_connector._TRUNCATED.clear()
+    assert len(fetch(whole, "items", ["n"], limit=100)) == 8
+    assert connectors.for_connection(whole).truncated(whole, "items") is True
+
+
+def test_the_record_cache_never_holds_more_than_its_entry_limit(api):
+    api.route("GET", "/items", lambda r: json_resp([{"n": 1}]))
+    for i in range(8):
+        conn = connection(api, endpoints=[{"entity_name": "items", "path": "/items"}])
+        fetch(conn, "items", ["n"])
+    assert len(rest_connector._RECORDS) <= rest_connector._CACHE_MAX

@@ -134,6 +134,7 @@ export function FilePanel({ connection, canManage, onChanged }: { connection: Da
       <p className="mt-1 text-[11px] text-ink-soft">
         CSV, TSV or Excel (.xlsx), up to 25 MB. Each file — or each sheet of a workbook — becomes a table. Uploading a newer copy of a
         file with the same name replaces the data behind the same table, so mappings made to it keep working; earlier versions are kept.
+        The platform reads up to about 500,000 cells (rows × columns) of a file; a larger one is used as far as that goes, and you are told.
       </p>
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
       {result && (
@@ -141,6 +142,11 @@ export function FilePanel({ connection, canManage, onChanged }: { connection: Da
           <span className="text-accent-ink">
             ✓ {result.file_name} uploaded{result.discovered ? ' and its tables were added to the catalogue' : ''}.
           </span>
+          {result.notices.map((n) => (
+            <div key={n} className="mt-1 rounded-md border border-line bg-surface px-2 py-1 text-ink-soft">
+              {n}
+            </div>
+          ))}
           {result.warnings.length > 0 && (
             <div className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-amber-800">
               <div className="font-semibold">This version changes what is already mapped:</div>

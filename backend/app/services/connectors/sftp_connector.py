@@ -43,7 +43,8 @@ from app.services.connectors.file_parsing import MAX_FILE_BYTES, FileParseError,
 
 _HANDSHAKE_TIMEOUT_SECONDS = 15
 _SNAPSHOT_TTL_SECONDS = 60  # the file is looked at again at most this often; scheduled runs in between reuse it
-_SNAPSHOT_MAX = 8
+_SNAPSHOT_MAX = 3
+_SNAPSHOT_MAX_CELLS = 750_000  # ~50 MB of parsed tables at ~70 bytes a cell; the newest is always kept
 _MAX_LISTED_ENTRIES = 20_000
 _DOWNLOAD_CHUNK_BYTES = 256 * 1024
 _DOWNLOAD_DEADLINE_SECONDS = 120  # the scheduler loop that asked is waiting; a slow drip must not hold it indefinitely
@@ -256,12 +257,20 @@ def _snapshot(connection: DataConnection, *, may_pin: bool = False, force: bool 
             snapshot = _Snapshot(signature, path, mtime, size, hashlib.sha256(data).hexdigest(), file_name, tables, time.monotonic())
     if may_pin and not (connection.connector_config or {}).get("host_key_sha256"):
         _pin_host_key(connection.connection_id, seen)
-    with _snapshot_lock:
-        _SNAPSHOTS[connection.connection_id] = snapshot
-        _SNAPSHOTS.move_to_end(connection.connection_id)
-        while len(_SNAPSHOTS) > _SNAPSHOT_MAX:
-            _SNAPSHOTS.popitem(last=False)
+    _remember(connection.connection_id, snapshot)
     return snapshot
+
+
+def _remember(connection_id: uuid.UUID, snapshot: _Snapshot) -> None:
+    """Keeps the snapshot, evicting the oldest until the cache fits its budget in COUNT and in SIZE (parsed cells).
+    The newest is always kept, even if it alone is over budget."""
+    with _snapshot_lock:
+        _SNAPSHOTS[connection_id] = snapshot
+        _SNAPSHOTS.move_to_end(connection_id)
+        while len(_SNAPSHOTS) > 1 and (
+            len(_SNAPSHOTS) > _SNAPSHOT_MAX or sum(len(t.rows) * len(t.headers) for v in _SNAPSHOTS.values() for t in v.tables) > _SNAPSHOT_MAX_CELLS
+        ):
+            _SNAPSHOTS.popitem(last=False)
 
 
 def forget(connection_id: uuid.UUID) -> None:
@@ -273,7 +282,8 @@ class SftpConnector:
     def test(self, connection: DataConnection) -> tuple[bool, str]:
         snapshot = _snapshot(connection, may_pin=True, force=True)
         rows = sum(len(t.rows) for t in snapshot.tables)
-        return True, f"Connected. Latest file: {snapshot.file_name} ({snapshot.size / 1024:.0f} KB, {rows} rows)."
+        cut = " Only the first rows are read: the file is larger than the platform reads." if any(t.truncated for t in snapshot.tables) else ""
+        return True, f"Connected. Latest file: {snapshot.file_name} ({snapshot.size / 1024:.0f} KB, {rows} rows).{cut}"
 
     def discover(self, connection: DataConnection) -> list[DiscoveredEntity]:
         snapshot = _snapshot(connection, force=True)
@@ -299,6 +309,10 @@ class SftpConnector:
             if table.name == entity_name:
                 return [{f: row.get(f) for f in field_names if f in row} for row in table.rows[:limit]]
         raise EntityNotHere(f"The table '{entity_name}' is not in the latest file.")
+
+    def truncated(self, connection: DataConnection, entity_name: str) -> bool:
+        snapshot = _snapshot(connection)
+        return any(t.truncated for t in snapshot.tables if t.name == entity_name)
 
 
 register("sftp", SftpConnector())

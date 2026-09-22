@@ -9,6 +9,10 @@ scheduled test execution (which only ever asks a direct connection for `list[dic
     discover(connection)             -> list[DiscoveredEntity]
     fetch_records(connection, entity_name=..., field_names=[...], limit=N) -> list[dict]
 
+and optionally
+
+    truncated(connection, entity_name) -> bool     # more rows exist than are read; a measurement over them is a lower bound
+
 They register by `db_type`. The database engines keep their existing SQLAlchemy/Mongo paths; every
 dispatch point in data_source_service asks this registry first. A connector must never raise raw
 driver/network text at the user (it can echo credentials or addresses): raise ConnectorError with a

@@ -450,3 +450,21 @@ def test_a_download_larger_than_the_limit_is_stopped_as_it_streams_not_after(wor
     created = _create(world, server)
     result = _test(world, created["connection_id"]).json()
     assert result["success"] is False and "larger than" in result["detail"]
+
+
+def test_a_file_larger_than_the_platform_reads_is_said_so_by_the_connection_test_and_reported_as_cut(world, server, local_network, monkeypatch):
+    from app.services.connectors import file_parsing
+
+    monkeypatch.setattr(file_parsing, "MAX_CELLS", 6)  # the 3-column, 3-row payroll file has 9 cells: only 2 rows fit
+    created = _create(world, server)
+    result = _test(world, created["connection_id"]).json()
+    assert result["success"] is True and "Only the first rows are read" in result["detail"]
+    from app.models.data_source import DataConnection
+
+    row = DataConnection(  # what the scheduler would hold: the stored settings, with the server key the test just recorded
+        connection_id=uuid.UUID(created["connection_id"]), db_type="sftp", host=created["host"], port=created["port"], username=created["username"],
+        connector_config={**created["connector_config"], "host_key_sha256": server.fingerprint},
+        encrypted_password=connector_settings.pack_secrets({"password": PASSWORD}),
+    )
+    assert sftp_connector.SftpConnector().truncated(row, "payroll") is True
+    assert sftp_connector.SftpConnector().truncated(row, "something_else") is False

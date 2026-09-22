@@ -485,3 +485,24 @@ def test_an_uploaded_file_is_mapped_through_the_real_routes_approved_by_someone_
 
         db.delete(db.get(User, maker.user_id))
         db.commit()
+
+
+def test_a_file_larger_than_the_platform_reads_is_used_only_as_far_as_its_limit_and_the_user_is_told(db, world, monkeypatch):
+    from app.services.connectors import file_parsing
+
+    monkeypatch.setattr(file_parsing, "MAX_CELLS", 20)  # 2 columns -> 10 rows
+    connection_id = _connect(world)
+    response = _upload(connection_id, "big.csv", "a,b\n" + "".join(f"{i},x{i}\n" for i in range(50)), world.manager)
+    assert response.status_code == 201, response.text
+    uploaded = response.json()
+    assert uploaded["discovered"] is True and uploaded["warnings"] == []  # information, not a change to what is mapped: the catalogue is still refreshed
+    assert len(uploaded["notices"]) == 1 and "first 10 rows of 'big'" in uploaded["notices"][0]
+    [entity] = data_source_service.list_entities(db, data_source_id=world.source.data_source_id)
+    assert "First 10 rows only" in entity.description
+    connection = db.get(DataConnection, uuid.UUID(connection_id))
+    assert len(data_source_service.fetch_direct_records(connection, entity_name="big", field_names=["a"], limit=1000)) == 10
+    assert file_connector.FileUploadConnector().truncated(connection, "big") is True
+
+    small = _upload(connection_id, "small.csv", "a\n1\n2\n", world.manager).json()
+    assert small["notices"] == []
+    assert file_connector.FileUploadConnector().truncated(connection, "small") is False
