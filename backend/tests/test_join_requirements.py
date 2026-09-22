@@ -12,6 +12,7 @@ from app.core.join_requirements import (
     required_join_key_fields,
 )
 from app.models.control_library import ControlRuleTemplate
+from app.schemas.test_rule import required_fields_by_object_for
 
 
 def test_missing_match_default_and_explicit_secondary_key():
@@ -128,3 +129,31 @@ def test_every_rule_template_in_the_library_yields_valid_requirements(db):
         if join_requirements_for(definition):
             joined += 1
     assert joined >= 80 and total >= joined
+
+
+def test_every_field_a_template_requires_is_a_real_field_of_its_object(db):
+    """Broader than the join-pair check above: this also catches a field used
+    only in a condition (primary_condition/secondary_condition/gate_condition/
+    bridge_condition), which join_requirements_for never looks at because it's
+    not part of a join key. Found live this way: CM-003 required
+    'production_changes.scheduled_window' — a real join key (change_id) that
+    passed the check above, but a condition field that production_changes has
+    never had (scheduled_window is a change_requests concept) — so mapping it
+    was permanently impossible and "Generate from control template" could
+    never succeed, with nothing at seed/migration time to catch it."""
+    templates = list(db.scalars(select(ControlRuleTemplate)))
+    assert len(templates) >= 150
+    checked = 0
+    for template in templates:
+        definition = template.rule_definition
+        if isinstance(definition, str):
+            definition = json.loads(definition)
+        for obj, fields in required_fields_by_object_for(definition).items():
+            assert obj in CANONICAL_MODEL, (template.rule_name, obj)
+            for field in fields:
+                assert field in CANONICAL_MODEL[obj], (
+                    f"{template.rule_name}: '{obj}.{field}' is required but {obj} has no such field "
+                    f"(real fields: {sorted(CANONICAL_MODEL[obj])})"
+                )
+                checked += 1
+    assert checked >= 100
