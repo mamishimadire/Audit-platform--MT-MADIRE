@@ -14,7 +14,7 @@ import pytest
 
 from sqlalchemy import select
 
-from app.models.audit_test import AuditTest, TestDataMapping
+from app.models.audit_test import AuditTest, ControlAuditTest, TestDataMapping
 from app.models.evidence_exception import Exception_
 from app.models.monitoring import TestExecution
 from app.models.organization import OrganizationSetting
@@ -132,6 +132,78 @@ def test_deactivation_request_requires_a_reason(db, test_org, maker_user):
     control = _make_active_control(db, test_org.organization_id)
     with pytest.raises(ValueError, match="reason"):
         control_service.request_deactivation(db, control=control, reason="   ", requested_by_user_id=maker_user.user_id)
+
+
+# ---------------------------------------------------------------------------
+# Activation requires an actual active rule, not just bound required tables —
+# found live: API-002, EP-001 and SW-001 were all "active", with all their
+# required tables bound, yet had NO active test rule (one deleted and never
+# regenerated, two that never had a rule generated at all) — the platform's
+# own scheduler silently skips a due schedule with no active rule, so these
+# controls were doing nothing, indefinitely, with no warning anywhere.
+# ---------------------------------------------------------------------------
+
+def _make_pending_control_with_test(db, org_id):
+    """No control_library_id means 0 required tables, so binding is
+    trivially satisfied — isolates the rule check from the binding check."""
+    control = Control(organization_id=org_id, control_name="SoD test control", status="pending_mapping")
+    db.add(control)
+    db.commit()
+    db.refresh(control)
+    audit_test = _make_audit_test(db, org_id)
+    db.add(ControlAuditTest(control_id=control.control_id, audit_test_id=audit_test.audit_test_id))
+    db.commit()
+    return control, audit_test
+
+
+def test_cannot_request_activation_without_an_active_rule(db, test_org, maker_user):
+    control, _audit_test = _make_pending_control_with_test(db, test_org.organization_id)
+    with pytest.raises(ValueError, match="no active test rule"):
+        control_service.request_activation(db, control=control, requested_by_user_id=maker_user.user_id)
+    db.refresh(control)
+    assert control.status == "pending_mapping", "a rejected activation request must not have moved the control"
+
+
+def test_reactivation_succeeds_when_the_rule_is_still_active(db, test_org, maker_user, checker_user):
+    control, audit_test = _make_pending_control_with_test(db, test_org.organization_id)
+    rule = test_rule_service.create_test_rule(
+        db, audit_test_id=audit_test.audit_test_id, payload=_rule_payload(),
+        organization_id=test_org.organization_id, created_by_user_id=maker_user.user_id,
+    )
+    test_rule_service.approve_rule(db, rule=rule, approved_by_user_id=checker_user.user_id, organization_id=test_org.organization_id)
+    db.refresh(control)
+    assert control.status == "active", "approving the rule auto-activates a control still sitting in pending_mapping"
+
+    control_service.request_deactivation(db, control=control, reason="Retest", requested_by_user_id=maker_user.user_id)
+    control_service.approve_deactivation(db, control=control, approved_by_user_id=checker_user.user_id)
+    db.refresh(control)
+    assert control.status == "inactive"
+
+    requested = control_service.request_activation(db, control=control, requested_by_user_id=maker_user.user_id)
+    assert requested.status == "pending_activation", "the rule is still active, so reactivation must be requestable"
+
+
+def test_reactivation_refused_once_the_rule_is_deleted(db, test_org, maker_user, checker_user):
+    """The exact shape of the live API-002 defect: a control that WAS
+    properly active, whose only rule was later deleted, must not become
+    reactivatable again until a new rule is approved."""
+    control, audit_test = _make_pending_control_with_test(db, test_org.organization_id)
+    rule = test_rule_service.create_test_rule(
+        db, audit_test_id=audit_test.audit_test_id, payload=_rule_payload(),
+        organization_id=test_org.organization_id, created_by_user_id=maker_user.user_id,
+    )
+    test_rule_service.approve_rule(db, rule=rule, approved_by_user_id=checker_user.user_id, organization_id=test_org.organization_id)
+    db.refresh(control)
+    control_service.request_deactivation(db, control=control, reason="Retest", requested_by_user_id=maker_user.user_id)
+    control_service.approve_deactivation(db, control=control, approved_by_user_id=checker_user.user_id)
+    test_rule_service.delete_test_rule(
+        db, rule=rule, reason="No longer needed", organization_id=test_org.organization_id, deleted_by_user_id=maker_user.user_id
+    )
+    db.refresh(control)
+    assert control.status == "inactive"
+
+    with pytest.raises(ValueError, match="no active test rule"):
+        control_service.request_activation(db, control=control, requested_by_user_id=maker_user.user_id)
 
 
 # ---------------------------------------------------------------------------

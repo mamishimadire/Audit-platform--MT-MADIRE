@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.audit_test import AuditTest, ControlAuditTest
+from app.models.audit_test import AuditTest, ControlAuditTest, TestRule
 from app.models.control_library import ControlLibraryEntry
 from app.models.risk_control import Control, Risk, RiskCategory, RiskControl
 from app.schemas.control import ControlActivateRequest
@@ -129,6 +129,29 @@ def request_activation(db: Session, *, control: Control, requested_by_user_id: u
         raise ValueError(
             f"Cannot request activation — {progress.satisfied} of {progress.total} required tables are bound. "
             f"Still missing: {', '.join(missing)}."
+        )
+
+    # A control whose tables are all bound can still have nothing actually
+    # testing anything — its rule may never have been generated, or was
+    # deleted/rejected/superseded after the control went active once
+    # before. Without this, "Active" on the Controls page and in every
+    # report is not the same claim as "is being tested": the due-tests
+    # scheduler silently skips any schedule whose rule isn't active (see
+    # direct_execution_service._resolve_due_direct_tests), so a control
+    # could sit "active," producing zero exceptions, indefinitely, with
+    # nothing anywhere saying so. Found live: API-002, EP-001 and SW-001
+    # were all in exactly this state — one with a deleted rule nobody
+    # regenerated, two that were activated with no rule ever created.
+    tests = _linked_audit_tests(db, control=control)
+    tests_with_active_rule = {
+        r.audit_test_id for r in db.scalars(select(TestRule).where(TestRule.audit_test_id.in_([t.audit_test_id for t in tests]), TestRule.status == "active"))
+    }
+    tests_without_rule = [t for t in tests if t.audit_test_id not in tests_with_active_rule]
+    if tests_without_rule:
+        raise ValueError(
+            "Cannot request activation — this control has no active test rule yet "
+            f"({', '.join(t.test_name for t in tests_without_rule)}). Generate one from the control template "
+            "or create one manually, and have it approved, first."
         )
 
     control.status = "pending_activation"
