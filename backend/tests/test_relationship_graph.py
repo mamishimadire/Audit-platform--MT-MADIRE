@@ -168,6 +168,17 @@ def test_rejected_edge_is_contradicted_and_confirmed_is_valid():
     assert resolve_join(REQ, API_ACCESS, USERS, [edge(containment=40.0, status="confirmed")]).verdict == VALID
 
 
+def test_ruling_is_reported_distinctly_from_verdict():
+    """`verdict` is what the evidence shows; `ruling` is whether a person
+    actually ruled on it — the UI needs both, or "Confirm this relationship"
+    and "already confirmed" render identically and a click looks like it
+    did nothing (the live bug this exists to catch)."""
+    assert resolve_join(REQ, API_ACCESS, USERS, [edge(status="detected")]).ruling == "detected"
+    assert resolve_join(REQ, API_ACCESS, USERS, [edge(status="rejected")]).ruling == "rejected"
+    assert resolve_join(REQ, API_ACCESS, USERS, [edge(containment=40.0, status="confirmed")]).ruling == "confirmed"
+    assert resolve_join(REQ, API_ACCESS, USERS, []).ruling is None, "no edge at all means nothing to rule on"
+
+
 def test_no_evidence_at_all_is_unverified_not_a_demotion():
     assert resolve_join(REQ, API_ACCESS, USERS, []).verdict == UNVERIFIED
 

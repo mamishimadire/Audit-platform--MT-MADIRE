@@ -163,6 +163,12 @@ class JoinResolutionOut(OrmModel):
     containment: float | None = None
     evidence: list[str] = []
     alternatives: list[JoinAlternativeOut] = []
+    # An auditor's own ruling on this relationship (distinct from `verdict`,
+    # which is what the evidence currently shows) — None when there is no
+    # relationship_id to rule on at all, "detected" when there is one but
+    # nobody has ruled on it yet. Lets the UI tell "never ruled on" apart
+    # from "already confirmed/rejected," which it otherwise could not do.
+    ruling: Literal["detected", "confirmed", "rejected"] | None = None
 
 
 class JoinPathStepOut(OrmModel):

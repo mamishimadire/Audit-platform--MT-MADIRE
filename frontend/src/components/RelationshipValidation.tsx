@@ -23,6 +23,11 @@ export function RelationshipValidationPanel({ organizationId, auditTestId }: { o
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rulingError, setRulingError] = useState<string | null>(null)
+  // Which relationship_id a Confirm/Reject click is in flight for — without
+  // this, clicking gave no feedback at all until the reload finished (and
+  // even then the buttons looked identical before and after, see `ruling`
+  // below), which read as "the button doesn't do anything."
+  const [savingId, setSavingId] = useState<string | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -39,11 +44,14 @@ export function RelationshipValidationPanel({ organizationId, auditTestId }: { o
   const rule = async (join: JoinResolutionOut, status: 'confirmed' | 'rejected' | 'detected') => {
     if (!join.relationship_id) return
     setRulingError(null)
+    setSavingId(join.relationship_id)
     try {
       await apiClient.patch(`/relationships/${join.relationship_id}`, { status })
       load()
     } catch (err: any) {
       setRulingError(err?.response?.data?.detail ?? 'Could not save that decision.')
+    } finally {
+      setSavingId(null)
     }
   }
 
@@ -95,13 +103,33 @@ export function RelationshipValidationPanel({ organizationId, auditTestId }: { o
               </div>
             )}
             {j.relationship_id && j.relationship !== 'declared_fk' && (
-              <div className="mt-1 flex gap-3">
-                <button onClick={() => rule(j, 'confirmed')} className="font-medium text-accent-ink hover:underline">
-                  Confirm this relationship
-                </button>
-                <button onClick={() => rule(j, 'rejected')} className="font-medium text-red-700 hover:underline">
-                  Reject it
-                </button>
+              <div className="mt-1 flex items-center gap-3">
+                {savingId === j.relationship_id ? (
+                  <span className="text-ink-soft">Saving…</span>
+                ) : j.ruling === 'confirmed' ? (
+                  <>
+                    <span className="font-medium text-accent-ink">✓ Confirmed by an auditor</span>
+                    <button onClick={() => rule(j, 'rejected')} className="text-ink-soft hover:underline">
+                      Reject it instead
+                    </button>
+                  </>
+                ) : j.ruling === 'rejected' ? (
+                  <>
+                    <span className="font-medium text-red-700">✗ Rejected by an auditor</span>
+                    <button onClick={() => rule(j, 'confirmed')} className="text-ink-soft hover:underline">
+                      Confirm it instead
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => rule(j, 'confirmed')} className="font-medium text-accent-ink hover:underline">
+                      Confirm this relationship
+                    </button>
+                    <button onClick={() => rule(j, 'rejected')} className="font-medium text-red-700 hover:underline">
+                      Reject it
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

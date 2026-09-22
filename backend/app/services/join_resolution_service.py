@@ -132,6 +132,7 @@ def _to_out(res: JoinResolution) -> JoinResolutionOut:
         right=_col_out(res.right),
         relationship=res.relationship,
         relationship_id=uuid.UUID(res.relationship_id) if res.relationship_id else None,
+        ruling=res.ruling,
         containment=res.containment,
         evidence=list(res.evidence),
         alternatives=[JoinAlternativeOut(left=_col_out(a.left), right=_col_out(a.right), score=a.total) for a in res.alternatives],

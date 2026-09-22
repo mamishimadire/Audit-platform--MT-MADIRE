@@ -136,6 +136,14 @@ class JoinResolution:
     containment: float | None = None
     cardinality: str | None = None
     reason: str = ""
+    # An auditor's own ruling on this relationship, distinct from `verdict`
+    # (verdict is what the EVIDENCE currently shows; ruling is whether a
+    # person has actually confirmed or rejected it) — None when there is no
+    # edge to rule on at all, "detected" when one exists but nobody has
+    # ruled on it yet. Without this the UI had no way to tell "never ruled
+    # on" apart from "already confirmed," so its Confirm/Reject actions
+    # looked identical, and thus looked broken, before and after using them.
+    ruling: str | None = None  # detected | confirmed | rejected | None
 
 
 def _pretty(col: ColumnRef) -> str:
@@ -266,6 +274,7 @@ def resolve_join(
         result.relationship_id = edge.relationship_id
         result.containment = edge.containment
         result.cardinality = None
+        result.ruling = edge.status
     evidence = result.evidence
 
     if best.role_mismatch:

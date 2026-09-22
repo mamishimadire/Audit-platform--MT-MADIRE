@@ -896,6 +896,10 @@ export interface JoinResolutionOut {
   right: JoinColumnOut | null
   relationship: 'declared_fk' | 'inferred' | 'none'
   relationship_id: string | null
+  // An auditor's own ruling, distinct from `verdict` (what the evidence
+  // currently shows): null when there's no relationship to rule on at all,
+  // 'detected' when there is one but nobody has ruled on it yet.
+  ruling: 'detected' | 'confirmed' | 'rejected' | null
   containment: number | null
   evidence: string[]
   alternatives: { left: JoinColumnOut; right: JoinColumnOut; score: number }[]
